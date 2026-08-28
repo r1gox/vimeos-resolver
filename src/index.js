@@ -55,15 +55,14 @@ async function handleRequest(request) {
       sources: ['lamovie', 'hackstore', 'pelisplushd'],
       flujo: {
         '1_buscar': '?q=acaramelados',
-        '2_serie': '?url=https://lamovie.org/series/acaramelados-2026/',
-        '3_episodio': '?url=https://lamovie.org/series/acaramelados-2026/&season=1&episode=1',
-        '3b_episodio_postId': '?episodePostId=82094',
-        'pelicula': '?url=https://lamovie.org/peliculas/matrix-resurrecciones-2021/',
-        'serie_con_players_limitados': '?url=.../series/.../&players=1&maxCaps=5',
-        'una_temporada': '?url=.../series/.../&season=1',
-        'pelisplus_cap': '?url=https://www.pelisplushd.la/serie/breaking-bad/temporada/1/capitulo/1'
+        '2_serie': '?url=URL_DE_LA_SERIE',
+        '3_episodio': '?url=URL_DE_LA_SERIE&season=1&episode=1',
+        '3b_lamovie_postId': '?episodePostId=82094',
+        'pelicula': '?url=URL_DE_LA_PELICULA',
+        'serie_con_players': '?url=URL_SERIE&players=1&maxCaps=5',
+        'una_temporada': '?url=URL_SERIE&season=1'
       },
-      nota: 'Mismo flujo en las 3 fuentes: buscar → detalle serie/peli → episodio (players). Lamovie usa season+episode o episodePostId.'
+      nota: 'Mismo flujo en Lamovie, Hackstore y PelisPlus: buscar → serie → ?season=N&episode=M para players.'
     });
   }
 
@@ -115,23 +114,22 @@ async function handleRequest(request) {
   var playersQ = url.searchParams.get('players') === '1';
   var maxCapsQ = parseInt(url.searchParams.get('maxCaps') || '5', 10);
 
+  var commonOpts = {
+    season: seasonQ ? parseInt(seasonQ, 10) : null,
+    episode: episodeQ ? parseInt(episodeQ, 10) : null,
+    players: playersQ,
+    maxCaps: maxCapsQ,
+    requestUrl: request.url
+  };
+
   try {
     var resultado;
     if (source === 'pelisplushd') {
-      resultado = await scrapearPelisplus(targetUrl, {
-        players: playersQ,
-        maxCaps: maxCapsQ
-      });
+      resultado = await scrapearPelisplus(targetUrl, commonOpts);
     } else if (source === 'hackstore') {
-      resultado = await scrapearHackstore(targetUrl);
+      resultado = await scrapearHackstore(targetUrl, commonOpts);
     } else {
-      resultado = await scrapearLamovie(targetUrl, {
-        season: seasonQ ? parseInt(seasonQ, 10) : null,
-        episode: episodeQ ? parseInt(episodeQ, 10) : null,
-        players: playersQ,
-        maxCaps: maxCapsQ,
-        requestUrl: request.url
-      });
+      resultado = await scrapearLamovie(targetUrl, commonOpts);
     }
     return json(resultado);
   } catch (err) {
@@ -760,7 +758,26 @@ function extraerPlayurlsPelisplus(html) {
 async function scrapearPelisplus(pageUrl, opts) {
   opts = opts || {};
   var maxCaps = opts.maxCaps || 5;
-  var incluirPlayers = opts.players !== false;
+  var incluirPlayers = !!opts.players;
+  var seasonOnly = opts.season ? parseInt(opts.season, 10) : null;
+  var episodeOnly = opts.episode ? parseInt(opts.episode, 10) : null;
+
+  var workerOrigin = '';
+  try {
+    if (opts.requestUrl) workerOrigin = new URL(opts.requestUrl).origin;
+  } catch (e) { /* ignore */ }
+
+  // Si piden season+episode sobre URL de serie, construir URL del capítulo
+  var esSerieRoot = (/\/serie\//i.test(pageUrl) || /\/anime\//i.test(pageUrl)) &&
+    !/\/temporada\/\d+\/capitulo\/\d+/i.test(pageUrl);
+  if (esSerieRoot && seasonOnly && episodeOnly) {
+    var slugM = pageUrl.match(/\/(?:serie|anime)\/([^\/\?]+)/i);
+    var tipoPath = /\/anime\//i.test(pageUrl) ? 'anime' : 'serie';
+    if (slugM) {
+      pageUrl = PELISPLUS_BASE + '/' + tipoPath + '/' + slugM[1] +
+        '/temporada/' + seasonOnly + '/capitulo/' + episodeOnly + '/';
+    }
+  }
 
   var res = await fetch(pageUrl, {
     headers: Object.assign({}, HEADERS, { 'Referer': PELISPLUS_BASE + '/' })
@@ -780,6 +797,7 @@ async function scrapearPelisplus(pageUrl, opts) {
   var p1 = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i);
   if (p1) portada = p1[1];
 
+  // Serie raíz → listar capítulos
   if (esSerie && !esCapitulo) {
     var caps = [];
     var reCap = /href=["']((?:https?:\/\/[^"']+)?\/(?:serie|anime)\/[^"']+\/temporada\/(\d+)\/capitulo\/(\d+)\/?)["']/gi;
@@ -792,14 +810,31 @@ async function scrapearPelisplus(pageUrl, opts) {
       var key = cm[2] + 'x' + cm[3];
       if (seen[key]) continue;
       seen[key] = true;
+
+      var epSeason = parseInt(cm[2], 10);
+      var epNum = parseInt(cm[3], 10);
+      var epLink = href;
+      if (workerOrigin) {
+        // Link unificado: worker + season + episode
+        epLink = workerOrigin + '/?url=' + encodeURIComponent(pageUrl) +
+          '&season=' + epSeason + '&episode=' + epNum;
+      }
+
       caps.push({
-        temporada: parseInt(cm[2], 10),
-        episodio: parseInt(cm[3], 10),
-        link: href,
+        temporada: epSeason,
+        episodio: epNum,
+        link: epLink,
+        url: epLink,
+        source_link: href,
         reproductor: null,
         embeds: [],
         reproductores: []
       });
+    }
+
+    // Filtrar por temporada si pidieron solo una
+    if (seasonOnly) {
+      caps = caps.filter(function (c) { return c.temporada === seasonOnly; });
     }
 
     var bySeason = {};
@@ -810,19 +845,22 @@ async function scrapearPelisplus(pageUrl, opts) {
     }
 
     var resolved = 0;
-    for (var j = 0; j < caps.length && resolved < maxCaps; j++) {
-      try {
-        var r2 = await fetch(caps[j].link, {
-          headers: Object.assign({}, HEADERS, { 'Referer': PELISPLUS_BASE + '/' })
-        });
-        if (!r2.ok) continue;
-        var h2 = await r2.text();
-        var reps = extraerPlayurlsPelisplus(h2);
-        caps[j].reproductores = reps;
-        caps[j].embeds = reps.map(function (x) { return x.url; });
-        caps[j].reproductor = reps[0] ? reps[0].url : null;
-        resolved++;
-      } catch (e) { /* ignore */ }
+    if (incluirPlayers) {
+      for (var j = 0; j < caps.length && resolved < maxCaps; j++) {
+        try {
+          var srcLink = caps[j].source_link || caps[j].link;
+          var r2 = await fetch(srcLink, {
+            headers: Object.assign({}, HEADERS, { 'Referer': PELISPLUS_BASE + '/' })
+          });
+          if (!r2.ok) continue;
+          var h2 = await r2.text();
+          var reps = extraerPlayurlsPelisplus(h2);
+          caps[j].reproductores = reps;
+          caps[j].embeds = reps.map(function (x) { return x.url; });
+          caps[j].reproductor = reps[0] ? reps[0].url : null;
+          resolved++;
+        } catch (e) { /* ignore */ }
+      }
     }
 
     var temporadas = Object.keys(bySeason).map(Number).sort(function (a, b) { return a - b; }).map(function (num) {
@@ -846,11 +884,15 @@ async function scrapearPelisplus(pageUrl, opts) {
       embeds: [],
       reproductores: [],
       temporadas: temporadas,
-      nota: 'Solo los primeros ' + maxCaps + ' caps traen players. Usa la URL del capítulo para todos los servers.'
+      nota: incluirPlayers
+        ? 'Players solo en los primeros ' + maxCaps + ' caps. Usa ?url=SERIE&season=N&episode=M para un capítulo.'
+        : 'Usa ?url=SERIE&season=N&episode=M o el link de cada episodio para obtener los players.'
     };
   }
 
+  // Película o capítulo
   var reproductores = extraerPlayurlsPelisplus(html);
+  var capMatch = pageUrl.match(/\/temporada\/(\d+)\/capitulo\/(\d+)/i);
   return {
     success: true,
     fuente: 'pelisplushd',
@@ -858,6 +900,8 @@ async function scrapearPelisplus(pageUrl, opts) {
     link: pageUrl,
     titulo: titulo,
     portada: portada,
+    temporada: capMatch ? parseInt(capMatch[1], 10) : null,
+    episodio: capMatch ? parseInt(capMatch[2], 10) : null,
     total: reproductores.length,
     embeds: reproductores.map(function (r) { return r.url; }),
     reproductores: reproductores,
@@ -949,7 +993,19 @@ async function scrapearHackstoreEpisodio(pageUrl) {
   };
 }
 
-async function scrapearHackstore(pageUrl) {
+async function scrapearHackstore(pageUrl, opts) {
+  opts = opts || {};
+  var maxCaps = opts.maxCaps || 5;
+  var incluirPlayers = !!opts.players;
+  var seasonOnly = opts.season ? parseInt(opts.season, 10) : null;
+  var episodeOnly = opts.episode ? parseInt(opts.episode, 10) : null;
+
+  var workerOrigin = '';
+  try {
+    if (opts.requestUrl) workerOrigin = new URL(opts.requestUrl).origin;
+  } catch (e) { /* ignore */ }
+
+  // Episodio directo por URL
   if (/\/episodio\//i.test(pageUrl)) {
     return scrapearHackstoreEpisodio(pageUrl);
   }
@@ -973,10 +1029,21 @@ async function scrapearHackstore(pageUrl) {
       if (seen[link]) continue;
       seen[link] = true;
       var sx = slug.match(/(\d+)x(\d+)/i);
+      var epSeason = sx ? parseInt(sx[1], 10) : 1;
+      var epNum = sx ? parseInt(sx[2], 10) : caps.length + 1;
+
+      var epLink = link;
+      if (workerOrigin) {
+        epLink = workerOrigin + '/?url=' + encodeURIComponent(pageUrl) +
+          '&season=' + epSeason + '&episode=' + epNum;
+      }
+
       caps.push({
-        temporada: sx ? parseInt(sx[1], 10) : 1,
-        episodio: sx ? parseInt(sx[2], 10) : caps.length + 1,
-        link: link,
+        temporada: epSeason,
+        episodio: epNum,
+        link: epLink,
+        url: epLink,
+        source_link: link,
         slug: slug,
         reproductor: null,
         embeds: [],
@@ -984,14 +1051,35 @@ async function scrapearHackstore(pageUrl) {
       });
     }
 
-    var maxCaps = 3;
-    for (var i = 0; i < Math.min(caps.length, maxCaps); i++) {
-      try {
-        var epData = await scrapearHackstoreEpisodio(caps[i].link);
-        caps[i].reproductores = epData.reproductores || [];
-        caps[i].embeds = epData.embeds || [];
-        caps[i].reproductor = caps[i].embeds[0] || null;
-      } catch (e) { /* ignore */ }
+    // Filtrar por temporada si pidieron
+    if (seasonOnly) {
+      caps = caps.filter(function (c) { return c.temporada === seasonOnly; });
+    }
+
+    // Episodio concreto: ?url=SERIE&season=1&episode=1
+    if (seasonOnly && episodeOnly) {
+      var target = null;
+      for (var ti = 0; ti < caps.length; ti++) {
+        if (caps[ti].temporada === seasonOnly && caps[ti].episodio === episodeOnly) {
+          target = caps[ti];
+          break;
+        }
+      }
+      if (!target) {
+        throw new Error('No se encontro el episodio ' + seasonOnly + 'x' + episodeOnly);
+      }
+      return scrapearHackstoreEpisodio(target.source_link || target.link);
+    }
+
+    if (incluirPlayers) {
+      for (var i = 0; i < Math.min(caps.length, maxCaps); i++) {
+        try {
+          var epData = await scrapearHackstoreEpisodio(caps[i].source_link || caps[i].link);
+          caps[i].reproductores = epData.reproductores || [];
+          caps[i].embeds = epData.embeds || [];
+          caps[i].reproductor = caps[i].embeds[0] || null;
+        } catch (e) { /* ignore */ }
+      }
     }
 
     var bySeason = {};
@@ -1021,10 +1109,13 @@ async function scrapearHackstore(pageUrl) {
       embeds: [],
       reproductores: [],
       temporadas: temporadas,
-      nota: 'Players solo en los primeros ' + maxCaps + ' caps. Usa ?url=.../episodio/...-1x1/ para un capítulo.'
+      nota: incluirPlayers
+        ? 'Players solo en los primeros ' + maxCaps + ' caps. Usa ?url=SERIE&season=N&episode=M para un capítulo.'
+        : 'Usa ?url=SERIE&season=N&episode=M o el link de cada episodio para obtener los players.'
     };
   }
 
+  // Película
   var reproductores = [];
   var descargas = [];
   var vistos = {};
