@@ -648,31 +648,41 @@ async function scrapearLamovie(pageUrl, opts) {
 function extraerPlayurlsPelisplus(html) {
   var reproductores = [];
   var vistos = {};
-  var regex1 = /data-url=["']([^"']+)["'][^>]*data-name=["']([^"']*)["']/gi;
+
+  function add(u, idioma) {
+    if (!u || vistos[u]) return;
+    // Aceptar aunque no pase el filtro estricto si es http de host conocido
+    var ok = esReproductorValido(u) ||
+      /streamwish|vidhide|voe\.|filemoon|dood|waaw|hqq|netu|uqload|mixdrop/i.test(u);
+    if (!ok) return;
+    vistos[u] = true;
+    reproductores.push({
+      url: u,
+      idioma: idioma || 'Desconocido',
+      servidor: extraerServidor(u),
+      tipo: 'reproductor'
+    });
+  }
+
+  // Películas: data-url + data-name
+  var r1 = /data-url=["']([^"']+)["'][^>]*data-name=["']([^"']*)["']/gi;
   var m;
-  while ((m = regex1.exec(html)) !== null) {
-    if (m[1] && !vistos[m[1]]) {
-      vistos[m[1]] = true;
-      reproductores.push({
-        url: m[1],
-        idioma: m[2] || 'Desconocido',
-        servidor: extraerServidor(m[1]),
-        tipo: 'reproductor'
-      });
-    }
-  }
-  var regex2 = /data-name=["']([^"']*)["'][^>]*data-url=["']([^"']+)["']/gi;
-  while ((m = regex2.exec(html)) !== null) {
-    if (m[2] && !vistos[m[2]]) {
-      vistos[m[2]] = true;
-      reproductores.push({
-        url: m[2],
-        idioma: m[1] || 'Desconocido',
-        servidor: extraerServidor(m[2]),
-        tipo: 'reproductor'
-      });
-    }
-  }
+  while ((m = r1.exec(html)) !== null) add(m[1], m[2]);
+
+  var r2 = /data-name=["']([^"']*)["'][^>]*data-url=["']([^"']+)["']/gi;
+  while ((m = r2.exec(html)) !== null) add(m[2], m[1]);
+
+  // Capítulos de serie: <span lid="1" url="https://streamwish.to/e/..."></span>
+  var r3 = /<span[^>]+lid=["']?\d+["']?[^>]+url=["']([^"']+)["'][^>]*>/gi;
+  while ((m = r3.exec(html)) !== null) add(m[1], 'Desconocido');
+
+  var r4 = /<span[^>]+url=["']([^"']+)["'][^>]+lid=["']?\d+["']?[^>]*>/gi;
+  while ((m = r4.exec(html)) !== null) add(m[1], 'Desconocido');
+
+  // Fallback: url="https://..." en cualquier tag
+  var r5 = /\burl=["'](https?:\/\/[^"']+)["']/gi;
+  while ((m = r5.exec(html)) !== null) add(m[1], 'Desconocido');
+
   return reproductores;
 }
 
@@ -791,7 +801,26 @@ async function scrapearPelisplus(pageUrl, opts) {
 // ======================================================
 // HACKSTORE
 // ======================================================
-async function scrapearHackstore(pageUrl) {
+async function resolverPlayPhp(playUrl, referer) {
+  if (playUrl.indexOf('http') !== 0) {
+    playUrl = HACKSTORE_BASE + (playUrl.indexOf('/') === 0 ? playUrl : '/' + playUrl);
+  }
+  playUrl = playUrl.replace(/&amp;/g, '&');
+  var pr = await fetch(playUrl, {
+    headers: Object.assign({}, HEADERS, { 'Referer': referer || HACKSTORE_BASE + '/' }),
+    redirect: 'follow'
+  });
+  var phtml = await pr.text();
+  var ifr = phtml.match(/<(?:iframe|embed)[^>]+src=["']([^"']+)["']/i);
+  if (ifr && ifr[1] && esReproductorValido(ifr[1])) return ifr[1];
+  var urls = phtml.match(/https?:\/\/[^\s"'<>]+/gi) || [];
+  for (var u = 0; u < urls.length; u++) {
+    if (esReproductorValido(urls[u])) return urls[u];
+  }
+  return null;
+}
+
+async function scrapearHackstoreEpisodio(pageUrl) {
   var res = await fetch(pageUrl, {
     headers: Object.assign({}, HEADERS, { 'Referer': HACKSTORE_BASE + '/' })
   });
@@ -799,36 +828,38 @@ async function scrapearHackstore(pageUrl) {
   var html = await res.text();
 
   var reproductores = [];
-  var descargas = [];
   var vistos = {};
 
-  // play.php → seguir y extraer iframe/src
-  var playMatches = html.match(/(?:https?:\/\/[^"'<>\s]*)?\/play\.php\?[^"'<>\s]+/gi) || [];
-  for (var j = 0; j < Math.min(8, playMatches.length); j++) {
+  // a.playr data-href="/play.php?u=..."
+  var rePlayr = /class=["'][^"']*playr[^"']*["'][^>]*data-href=["']([^"']+)["'][^>]*data-lang=["']([^"']*)["']/gi;
+  var m;
+  var jobs = [];
+  while ((m = rePlayr.exec(html)) !== null) {
+    jobs.push({ href: m[1].replace(/&amp;/g, '&'), lang: m[2] || 'Desconocido' });
+  }
+  // orden alternativo de atributos
+  var rePlayr2 = /data-href=["']([^"']*play\.php[^"']*)["'][^>]*data-lang=["']([^"']*)["']/gi;
+  while ((m = rePlayr2.exec(html)) !== null) {
+    jobs.push({ href: m[1].replace(/&amp;/g, '&'), lang: m[2] || 'Desconocido' });
+  }
+
+  // dedup jobs
+  var seenJob = {};
+  var uniqueJobs = [];
+  for (var j = 0; j < jobs.length; j++) {
+    if (seenJob[jobs[j].href]) continue;
+    seenJob[jobs[j].href] = true;
+    uniqueJobs.push(jobs[j]);
+  }
+
+  for (var i = 0; i < Math.min(uniqueJobs.length, 8); i++) {
     try {
-      var playUrl = playMatches[j];
-      if (playUrl.indexOf('http') !== 0) {
-        playUrl = HACKSTORE_BASE + (playUrl.indexOf('/') === 0 ? playUrl : '/' + playUrl);
-      }
-      playUrl = playUrl.replace(/&amp;/g, '&');
-      var pr = await fetch(playUrl, {
-        headers: Object.assign({}, HEADERS, { 'Referer': pageUrl }),
-        redirect: 'follow'
-      });
-      var phtml = await pr.text();
-      var ifr = phtml.match(/<(?:iframe|embed)[^>]+src=["']([^"']+)["']/i);
-      var src = ifr ? ifr[1] : null;
-      if (!src) {
-        var urls = phtml.match(/https?:\/\/[^\s"'<>]+/gi) || [];
-        for (var u = 0; u < urls.length; u++) {
-          if (esReproductorValido(urls[u])) { src = urls[u]; break; }
-        }
-      }
-      if (src && !vistos[src] && esReproductorValido(src)) {
+      var src = await resolverPlayPhp(uniqueJobs[i].href, pageUrl);
+      if (src && !vistos[src]) {
         vistos[src] = true;
         reproductores.push({
           url: src,
-          idioma: 'Desconocido',
+          idioma: uniqueJobs[i].lang,
           servidor: extraerServidor(src),
           tipo: 'reproductor'
         });
@@ -836,47 +867,137 @@ async function scrapearHackstore(pageUrl) {
     } catch (e) { /* ignore */ }
   }
 
-  // URLs directas en HTML
-  var allUrls = html.match(/https?:\/\/[^\s"'<>\\]+/gi) || [];
-  for (var i = 0; i < allUrls.length; i++) {
-    var hu = allUrls[i].replace(/\\u002F/g, '/').replace(/\\\//g, '/').replace(/["']$/g, '').replace(/&amp;/g, '&');
-    if (vistos[hu]) continue;
-    if (esReproductorValido(hu)) {
-      vistos[hu] = true;
-      reproductores.push({ url: hu, idioma: 'Desconocido', servidor: extraerServidor(hu), tipo: 'reproductor' });
-    } else if (esDescargaValida(hu)) {
-      vistos[hu] = true;
-      descargas.push({ url: hu, servidor: extraerServidor(hu), tipo: 'descarga' });
-    }
-  }
-
-  reproductores.sort(function (a, b) {
-    var aV = a.url.toLowerCase().indexOf('vimeos') !== -1 ? 1 : 0;
-    var bV = b.url.toLowerCase().indexOf('vimeos') !== -1 ? 1 : 0;
-    return bV - aV;
-  });
-
   var titulo = '';
   var t1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
   var t2 = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
   titulo = limpiarTexto((t1 && t1[1]) || (t2 && t2[1]) || '');
-  titulo = titulo.replace(/^Descargar\s+/i, '').replace(/\s*-\s*Hackstore.*$/i, '').trim();
-
-  var portada = '';
-  var og = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i);
-  if (og) portada = og[1];
-
-  var tipo = 'Pelicula';
-  if (/\/series\//i.test(pageUrl)) tipo = 'Serie';
-  if (/\/animes\//i.test(pageUrl)) tipo = 'Anime';
 
   return {
     success: true,
     fuente: 'hackstore',
-    tipo: tipo,
+    tipo: 'Capitulo',
     link: pageUrl,
-    titulo: titulo || 'Sin titulo',
-    portada: portada,
+    titulo: titulo,
+    total: reproductores.length,
+    embeds: reproductores.map(function (r) { return r.url; }),
+    reproductores: reproductores,
+    descargas: []
+  };
+}
+
+async function scrapearHackstore(pageUrl) {
+  // Si es página de episodio directo
+  if (/\/episodio\//i.test(pageUrl)) {
+    return scrapearHackstoreEpisodio(pageUrl);
+  }
+
+  var res = await fetch(pageUrl, {
+    headers: Object.assign({}, HEADERS, { 'Referer': HACKSTORE_BASE + '/' })
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  var html = await res.text();
+
+  var esSerie = /\/series\//i.test(pageUrl) || /\/animes\//i.test(pageUrl);
+
+  // Serie: listar episodios
+  if (esSerie) {
+    var caps = [];
+    var seen = {};
+    var reEp = /href=["'](https?:\/\/(?:www\.)?hackstore\.[a-z]+\/episodio\/([^"'\/\?]+))\/?["']/gi;
+    var em;
+    while ((em = reEp.exec(html)) !== null) {
+      var link = em[1].replace(/\/$/, '') + '/';
+      var slug = em[2];
+      if (seen[link]) continue;
+      seen[link] = true;
+      // slug tipo acaramelados-2026-1x3
+      var sx = slug.match(/(\d+)x(\d+)/i);
+      caps.push({
+        temporada: sx ? parseInt(sx[1], 10) : 1,
+        episodio: sx ? parseInt(sx[2], 10) : caps.length + 1,
+        link: link,
+        slug: slug,
+        reproductor: null,
+        embeds: [],
+        reproductores: []
+      });
+    }
+
+    // Opcional: resolver primeros 3 episodios (costoso)
+    var maxCaps = 3;
+    for (var i = 0; i < Math.min(caps.length, maxCaps); i++) {
+      try {
+        var epData = await scrapearHackstoreEpisodio(caps[i].link);
+        caps[i].reproductores = epData.reproductores || [];
+        caps[i].embeds = epData.embeds || [];
+        caps[i].reproductor = caps[i].embeds[0] || null;
+      } catch (e) { /* ignore */ }
+    }
+
+    var bySeason = {};
+    for (var k = 0; k < caps.length; k++) {
+      var s = caps[k].temporada;
+      if (!bySeason[s]) bySeason[s] = [];
+      bySeason[s].push(caps[k]);
+    }
+    var temporadas = Object.keys(bySeason).map(Number).sort(function (a, b) { return a - b; }).map(function (num) {
+      return { temporada: num, total_episodios: bySeason[num].length, episodios: bySeason[num] };
+    });
+
+    var titulo = '';
+    var t1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+    var t2 = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
+    titulo = limpiarTexto((t1 && t1[1]) || (t2 && t2[1]) || '');
+
+    return {
+      success: true,
+      fuente: 'hackstore',
+      tipo: 'Serie',
+      link: pageUrl,
+      titulo: titulo,
+      total_temporadas: temporadas.length,
+      total_episodios: caps.length,
+      total: caps.filter(function (c) { return c.reproductor; }).length,
+      embeds: [],
+      reproductores: [],
+      temporadas: temporadas,
+      nota: 'Players solo en los primeros ' + maxCaps + ' caps. Usa ?url=.../episodio/...-1x1/ para un capítulo.'
+    };
+  }
+
+  // Película (comportamiento anterior con play.php en la misma página)
+  var reproductores = [];
+  var descargas = [];
+  var vistos = {};
+
+  var playMatches = html.match(/(?:https?:\/\/[^"'<>\s]*)?\/play\.php\?[^"'<>\s]+/gi) || [];
+  var dataHref = html.match(/data-href=["']([^"']*play\.php[^"']*)["']/gi) || [];
+  for (var d = 0; d < dataHref.length; d++) {
+    var hm = dataHref[d].match(/data-href=["']([^"']+)["']/i);
+    if (hm) playMatches.push(hm[1]);
+  }
+
+  for (var j = 0; j < Math.min(8, playMatches.length); j++) {
+    try {
+      var src = await resolverPlayPhp(playMatches[j], pageUrl);
+      if (src && !vistos[src] && esReproductorValido(src)) {
+        vistos[src] = true;
+        reproductores.push({ url: src, idioma: 'Desconocido', servidor: extraerServidor(src), tipo: 'reproductor' });
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  var tituloP = '';
+  var th1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+  var th2 = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
+  tituloP = limpiarTexto((th1 && th1[1]) || (th2 && th2[1]) || '');
+
+  return {
+    success: true,
+    fuente: 'hackstore',
+    tipo: 'Pelicula',
+    link: pageUrl,
+    titulo: tituloP,
     total: reproductores.length,
     embeds: reproductores.map(function (r) { return r.url; }),
     reproductores: reproductores,
