@@ -30,6 +30,9 @@ var REPRODUCTORES_BLOQUEADOS = [
   'oembed', 'wp-json', 'hackstore.fo', 'hackstore'
 ];
 
+// Palabras que identifican páginas de categorías o listados (no títulos reales)
+var PALABRAS_BLOQUEADAS_BUSQUEDA = ['estrenos', 'populares', 'genero', 'categoria', 'pagina'];
+
 async function handleRequest(request) {
   var url = new URL(request.url);
 
@@ -148,10 +151,11 @@ function esDescargaValida(url) {
   if (u.indexOf('google.com/s2/favicons') !== -1) return false;
   if (u.indexOf('acortalink') !== -1) return false;
   if (u.indexOf('favicon') !== -1) return false;
+  // Quitamos "magnet:" para que no se muestren enlaces torrent
   var hosts = [
     'mega.nz', 'mega.co.nz', 'mediafire.com', '1fichier.com',
-    'gofile.io', 'uptobox.com', 'pixeldrain.com', 'megaup.net',
-    'magnet:'
+    'gofile.io', 'uptobox.com', 'pixeldrain.com', 'megaup.net'
+    // 'magnet:' eliminado
   ];
   for (var i = 0; i < hosts.length; i++) {
     if (u.indexOf(hosts[i]) !== -1) return true;
@@ -213,6 +217,9 @@ async function buscarUniversal(query, sourceFilter, limit) {
   };
 }
 
+// ======================================================
+// BÚSQUEDA EN LAMOVIE
+// ======================================================
 async function buscarLamovie(query, limit) {
   var url = LAMOVIE_API + '/search?postType=any&q=' + encodeURIComponent(query) + '&postsPerPage=' + (limit || 15);
   var res = await fetch(url, {
@@ -256,6 +263,9 @@ async function buscarLamovie(query, limit) {
   return out;
 }
 
+// ======================================================
+// BÚSQUEDA EN HACKSTORE (con filtro mejorado)
+// ======================================================
 async function buscarHackstore(query, limit) {
   var url = HACKSTORE_BASE + '/?s=' + encodeURIComponent(query);
   var res = await fetch(url, {
@@ -273,13 +283,25 @@ async function buscarHackstore(query, limit) {
     var slug = m[3];
     if (links[full]) continue;
     if (!slug || slug === 'page') continue;
+
+    // Filtro de términos genéricos
+    var slugLower = slug.toLowerCase();
+    var esInvalido = false;
+    for (var i = 0; i < PALABRAS_BLOQUEADAS_BUSQUEDA.length; i++) {
+      if (slugLower === PALABRAS_BLOQUEADAS_BUSQUEDA[i] || slugLower.indexOf(PALABRAS_BLOQUEADAS_BUSQUEDA[i]) === 0) {
+        esInvalido = true;
+        break;
+      }
+    }
+    if (esInvalido || slug.length < 3) continue;
+
     links[full] = { seccion: seccion, slug: slug, link: full };
   }
 
   var out = [];
   var keys = Object.keys(links);
-  for (var i = 0; i < keys.length && out.length < (limit || 15); i++) {
-    var item = links[keys[i]];
+  for (var j = 0; j < keys.length && out.length < (limit || 15); j++) {
+    var item = links[keys[j]];
     var tipo = 'Pelicula';
     if (item.seccion === 'series') tipo = 'Serie';
     if (item.seccion === 'animes') tipo = 'Anime';
@@ -305,6 +327,9 @@ async function buscarHackstore(query, limit) {
   return out;
 }
 
+// ======================================================
+// BÚSQUEDA EN PELISPLUSHD (con filtro mejorado)
+// ======================================================
 async function buscarPelisplus(query, limit) {
   var bases = [
     'https://www.pelisplushd.nz',
@@ -330,6 +355,17 @@ async function buscarPelisplus(query, limit) {
         var slug = m[2];
         if (vistos[slug]) continue;
         vistos[slug] = true;
+
+        // Filtro de términos genéricos
+        var slugLower = slug.toLowerCase();
+        var esInvalido = false;
+        for (var i = 0; i < PALABRAS_BLOQUEADAS_BUSQUEDA.length; i++) {
+          if (slugLower === PALABRAS_BLOQUEADAS_BUSQUEDA[i] || slugLower.indexOf(PALABRAS_BLOQUEADAS_BUSQUEDA[i]) === 0) {
+            esInvalido = true;
+            break;
+          }
+        }
+        if (esInvalido || slug.length < 3) continue;
 
         var full = path.indexOf('http') === 0 ? path : (bases[b] + path);
         full = full.replace(/\/$/, '') + '/';
@@ -363,7 +399,7 @@ async function buscarPelisplus(query, limit) {
 }
 
 // ======================================================
-// 1. PELISPLUSHD
+// SCRAPER PELISPLUSHD
 // ======================================================
 async function scrapearPelisplus(pageUrl) {
   var res = await fetch(pageUrl, {
@@ -446,7 +482,7 @@ async function scrapearPelisplus(pageUrl) {
 }
 
 // ======================================================
-// 2. LAMOVIE
+// SCRAPER LAMOVIE
 // ======================================================
 function extraerSlugLamovie(pageUrl) {
   var m = pageUrl.match(/\/(?:peliculas|series|animes|pelicula|serie|anime)\/([^\/\?]+)/i);
@@ -592,7 +628,7 @@ async function scrapearLamovie(pageUrl) {
 }
 
 // ======================================================
-// 3. HACKSTORE
+// SCRAPER HACKSTORE (con filtro de descargas)
 // ======================================================
 async function scrapearHackstore(pageUrl) {
   var res = await fetch(pageUrl, {
