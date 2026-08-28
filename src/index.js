@@ -5,216 +5,154 @@ const CORS = {
 };
 
 const LAMOVIE = "https://lamovie.org";
-const API = `${LAMOVIE}/wp-api/v1`;
-
-const GENRES = {
-  17: "Drama",
-  18: "Comedia",
-  33: "Suspense",
-  32: "Acción",
-  520: "Animación",
-  96: "Terror",
-  180: "Crimen",
-  130: "Aventura",
-  398: "Familia",
-  115: "Romance",
-  97: "Misterio",
-  131: "Ciencia ficción",
-  229: "Fantasía",
-  164: "Documental",
-  165: "Historia",
-  8: "Música",
-  6787: "Película de TV",
-  3056: "Bélica",
-  674: "Western",
-  703: "Kids"
-};
-
-const QUALITIES = {
-  495: "Full HD",
-  496: "Dual 1080p",
-  88953: "HD 720p",
-  58679: "BDRip",
-  58681: "HDTV",
-  59268: "Dual 720p",
-  649: "HD",
-  58683: "WEB-DL 720p",
-  53691: "DVDRip",
-  58678: "WEB-DL 1080p",
-  88954: "4K Ultra HD",
-  69831: "WEB-DL 4k",
-  49673: "1080P",
-  82756: "4K HDR"
-};
-
-const LANGS = {
-  58651: "Latino",
-  58652: "Inglés",
-  58654: "Japonés",
-  58655: "Subtitulado",
-  58653: "Castellano",
-  58667: "Coreano",
-  58661: "Portugués"
-};
-
-const YEARS = {
-  4: "2025",
-  1461: "2022",
-  2236: "2023",
-  74006: "2026",
-  2169: "2021",
-  1354: "2024",
-  2792: "2020",
-  1816: "2019",
-  1926: "2018",
-  1874: "2017"
-};
-
-const COUNTRIES = {
-  457: "Estados Unidos",
-  774: "Reino Unido",
-  787: "Canadá",
-  617: "Francia",
-  5436: "México",
-  2499: "España",
-  733: "Japón",
-  4601: "Corea del Sur",
-  1431: "Alemania",
-  7746: "Argentina"
-};
+const LAMOVIE_API = "https://lamovie.org/wp-api/v1";
+const HACKSTORE = "https://www.hackstore.fo";
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
     status,
     headers: {
+      "Content-Type": "application/json; charset=utf-8",
       ...CORS,
-      "Content-Type": "application/json; charset=utf-8"
-    }
+    },
   });
 }
 
-function resolveIds(ids, mapping) {
-  if (!ids) return [];
-
-  if (!Array.isArray(ids)) {
-    ids = [ids];
-  }
-
-  return ids
-    .map(id => mapping[parseInt(id)] || String(id))
-    .filter(Boolean);
+function normalizar(texto) {
+  return String(texto || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function extraerAnio(titulo, releaseDate, years) {
-  const texto = String(titulo || "");
-
-  const match = texto.match(/\b((?:19|20)\d{2})\b/);
-
-  if (match) {
-    return match[1];
-  }
-
-  const yearArr = resolveIds(years, YEARS);
-
-  if (yearArr.length) {
-    return yearArr[0];
-  }
-
-  if (releaseDate) {
-    return String(releaseDate).substring(0, 4);
-  }
-
-  return null;
+function extraerAnio(titulo) {
+  const m = String(titulo || "").match(/\b((?:19|20)\d{2})\b/);
+  return m ? m[1] : null;
 }
 
-function formatItem(p) {
+function dedup(items) {
+  const mapa = new Map();
+
+  for (const item of items) {
+    const titulo = normalizar(item.nombre);
+    const year = item.year || extraerAnio(item.nombre);
+
+    if (!titulo) continue;
+
+    const key = `${titulo}|${year || ""}`;
+
+    if (!mapa.has(key)) {
+      mapa.set(key, item);
+    } else {
+      const anterior = mapa.get(key);
+
+      // Preferir el que tenga reproductor
+      if (
+        !anterior.reproductor &&
+        item.reproductor
+      ) {
+        mapa.set(key, item);
+      }
+    }
+  }
+
+  return [...mapa.values()];
+}
+
+function formatLamovie(p) {
   const images = p.images || {};
 
-  let poster = images.poster || "";
-  let backdrop = images.backdrop || "";
+  let poster = images.poster || p.poster || "";
+  let backdrop = images.backdrop || p.backdrop || "";
 
   if (poster && !poster.startsWith("http")) {
-    poster = `${LAMOVIE}/wp-content/uploads${poster}`;
+    poster = "https://lamovie.org/wp-content/uploads" + poster;
   }
 
   if (backdrop && !backdrop.startsWith("http")) {
-    backdrop = `${LAMOVIE}/wp-content/uploads${backdrop}`;
+    backdrop = "https://lamovie.org/wp-content/uploads" + backdrop;
   }
 
-  const type = p.type || "";
+  const tipoRaw = p.type || "";
 
   let tipo = "Película";
   let link = null;
 
-  if (type === "movies") {
+  if (tipoRaw === "movies") {
     tipo = "Película";
     link = `${LAMOVIE}/peliculas/${p.slug}/`;
   }
 
-  if (type === "tvshows") {
+  if (tipoRaw === "tvshows") {
     tipo = "Serie";
     link = `${LAMOVIE}/series/${p.slug}/`;
   }
 
-  if (type === "animes") {
+  if (tipoRaw === "animes") {
     tipo = "Anime";
     link = `${LAMOVIE}/animes/${p.slug}/`;
   }
 
-  const nombre = p.title || "Sin título";
+  const nombre =
+    p.title ||
+    p.name ||
+    "Sin título";
+
+  let year = null;
+
+  if (p.release_date) {
+    year = String(p.release_date).substring(0, 4);
+  }
+
+  if (!year) {
+    year = extraerAnio(nombre);
+  }
 
   return {
-    id: p._id || null,
-    postId: p._id || null,
+    id: p._id || p.id || null,
+    postId: p._id || p.id || null,
 
     nombre,
 
     titulo_original:
       p.original_title ||
+      p.originalTitle ||
       null,
 
-    slug:
-      p.slug ||
-      null,
+    slug: p.slug || null,
 
     tipo,
 
     descripcion:
       p.overview ||
+      p.description ||
       "",
 
-    portada:
-      poster ||
-      null,
+    portada: poster || null,
 
-    backdrop:
-      backdrop ||
-      null,
+    backdrop: backdrop || null,
 
-    year:
-      extraerAnio(
-        nombre,
-        p.release_date,
-        p.years
-      ),
+    year,
 
     genero:
-      resolveIds(
-        p.genres,
-        GENRES
-      ).join(", ") || null,
+      Array.isArray(p.genres)
+        ? p.genres.join(", ")
+        : p.genres || null,
 
     idiomas:
-      resolveIds(
-        p.lang,
-        LANGS
-      ),
+      Array.isArray(p.lang)
+        ? p.lang
+        : Array.isArray(p.languages)
+          ? p.languages
+          : [],
 
     calidad:
-      resolveIds(
-        p.quality,
-        QUALITIES
-      ),
+      Array.isArray(p.quality)
+        ? p.quality
+        : [],
 
     calificacion:
       p.rating ||
@@ -243,10 +181,9 @@ function formatItem(p) {
       null,
 
     paises:
-      resolveIds(
-        p.countries,
-        COUNTRIES
-      ),
+      Array.isArray(p.countries)
+        ? p.countries
+        : [],
 
     ultimo_episodio:
       p.latest_episode ||
@@ -254,7 +191,8 @@ function formatItem(p) {
 
     link,
 
-    reproductor: null,
+    reproductor:
+      null,
 
     embeds: [],
 
@@ -264,80 +202,277 @@ function formatItem(p) {
 
     episodios: [],
 
-    temporadas: []
+    temporadas: [],
+
+    fuente: "lamovie",
   };
 }
 
-async function apiGet(url) {
-  const response = await fetch(url, {
-    headers: {
-      "Accept": "application/json",
-      "User-Agent":
-        "Mozilla/5.0 (compatible; MovieZoneWorker/1.0)"
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `LaMovie HTTP ${response.status}`
-    );
-  }
-
-  return response.json();
-}
-
-async function listar(section, page, limit) {
+async function lamovieListing(type, page, limit) {
   let postType = "movies";
 
-  if (
-    section === "series" ||
-    section === "tvshows"
-  ) {
+  if (type === "series") {
     postType = "tvshows";
   }
 
-  if (
-    section === "anime" ||
-    section === "animes"
-  ) {
+  if (type === "anime") {
     postType = "animes";
   }
 
   const url =
-    `${API}/listing/${postType}` +
+    `${LAMOVIE_API}/listing/${postType}` +
     `?page=${page}` +
     `&orderBy=latest` +
     `&order=desc` +
     `&postType=${postType}` +
     `&postsPerPage=${limit}`;
 
-  const data = await apiGet(url);
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0",
+      "Accept": "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Lamovie HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
 
   const posts =
-    data?.data?.posts || [];
+    data?.data?.posts ||
+    data?.posts ||
+    [];
 
-  return posts.map(formatItem);
+  return posts.map(formatLamovie);
 }
 
-async function buscar(q, limit) {
+async function lamovieSearch(q, limit) {
   const url =
-    `${API}/search` +
+    `${LAMOVIE_API}/search` +
     `?postType=any` +
     `&q=${encodeURIComponent(q)}` +
     `&postsPerPage=${limit}`;
 
-  const data = await apiGet(url);
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0",
+      "Accept": "application/json",
+    },
+  });
 
-  let posts =
+  if (!response.ok) {
+    throw new Error(`Lamovie search HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+
+  const posts =
     data?.data?.posts ||
     data?.data ||
     [];
 
-  if (!Array.isArray(posts)) {
-    posts = [];
+  return Array.isArray(posts)
+    ? posts.map(formatLamovie)
+    : [];
+}
+
+/*
+ * Hackstore:
+ * Obtiene resultados de búsqueda/listado.
+ *
+ * Lo dejamos separado para poder cambiar fácilmente
+ * el selector si Hackstore cambia su HTML.
+ */
+async function hackstoreSearch(q = "", page = 1) {
+  try {
+    let url;
+
+    if (q) {
+      url =
+        `${HACKSTORE}/?s=${encodeURIComponent(q)}`;
+    } else {
+      url =
+        `${HACKSTORE}/page/${page}/`;
+    }
+
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/139 Safari/537.36",
+        "Accept":
+          "text/html,application/xhtml+xml",
+      },
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const html = await response.text();
+
+    const resultados = [];
+
+    /*
+     * Extraer enlaces de películas/series.
+     */
+    const regex =
+      /href=["']([^"']+)["'][^>]*>/gi;
+
+    const vistos = new Set();
+
+    for (const match of html.matchAll(regex)) {
+      let link = match[1];
+
+      if (!link.startsWith("http")) {
+        try {
+          link = new URL(link, HACKSTORE).href;
+        } catch {
+          continue;
+        }
+      }
+
+      if (!link.includes("hackstore.fo")) continue;
+
+      if (
+        !/\/(peliculas?|movies?|series?|anime|animes)\//i.test(
+          link
+        )
+      ) {
+        continue;
+      }
+
+      if (vistos.has(link)) continue;
+
+      vistos.add(link);
+
+      resultados.push({
+        id: null,
+        postId: null,
+        nombre: link
+          .split("/")
+          .filter(Boolean)
+          .pop()
+          ?.replace(/[-_]/g, " ") || "Sin título",
+
+        titulo_original: null,
+        slug: null,
+
+        tipo: /series/i.test(link)
+          ? "Serie"
+          : /anime/i.test(link)
+            ? "Anime"
+            : "Película",
+
+        descripcion: "",
+        portada: null,
+        backdrop: null,
+
+        year: extraerAnio(link),
+
+        genero: null,
+        idiomas: [],
+        calidad: [],
+        calificacion: null,
+        calificacion_comunidad: null,
+        votos: null,
+        fecha_estreno: null,
+        duracion: null,
+        certificacion: null,
+        paises: [],
+        ultimo_episodio: null,
+
+        link,
+
+        reproductor: null,
+        embeds: [],
+        downloads: [],
+        soloTrailer: false,
+        episodios: [],
+        temporadas: [],
+
+        fuente: "hackstore",
+      });
+
+      if (resultados.length >= 24) {
+        break;
+      }
+    }
+
+    return resultados;
+  } catch {
+    return [];
+  }
+}
+
+async function obtenerCatalogo(type, page, limit) {
+  const lamovie = await lamovieListing(
+    type,
+    page,
+    limit
+  ).catch(() => []);
+
+  const hackstore = await hackstoreSearch(
+    "",
+    page
+  ).catch(() => []);
+
+  const combinados =
+    dedup([
+      ...lamovie,
+      ...hackstore,
+    ]);
+
+  return combinados.slice(0, limit);
+}
+
+async function buscar(q, type, page, limit) {
+  let lamovie = [];
+
+  try {
+    lamovie =
+      await lamovieSearch(q, limit);
+  } catch {
+    lamovie = [];
   }
 
-  return posts.map(formatItem);
+  let hackstore = [];
+
+  try {
+    hackstore =
+      await hackstoreSearch(q, page);
+  } catch {
+    hackstore = [];
+  }
+
+  let resultados = dedup([
+    ...lamovie,
+    ...hackstore,
+  ]);
+
+  if (type === "series") {
+    resultados = resultados.filter(
+      x => x.tipo === "Serie"
+    );
+  }
+
+  if (type === "anime") {
+    resultados = resultados.filter(
+      x => x.tipo === "Anime"
+    );
+  }
+
+  if (type === "movies") {
+    resultados = resultados.filter(
+      x => x.tipo === "Película"
+    );
+  }
+
+  return resultados.slice(
+    (page - 1) * limit,
+    page * limit
+  );
 }
 
 export default {
@@ -345,214 +480,147 @@ export default {
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
-        headers: CORS
+        headers: CORS,
       });
     }
 
     const url = new URL(request.url);
-    const path = url.pathname;
 
-    try {
-
-      // =========================
-      // ROOT
-      // =========================
-
-      if (
-        path === "/" ||
-        path === "/health"
-      ) {
-        return json({
-          status: "ok",
-          service: "vimeos-resolver",
-          source: "lamovie",
-          sourceApi: API,
-          endpoints: [
-            "/movies",
-            "/series",
-            "/anime",
-            "/search?q=texto",
-            "/health"
-          ]
-        });
-      }
-
-      // =========================
-      // MOVIES
-      // =========================
-
-      if (
-        path === "/movies" ||
-        path === "/api/catalogo"
-      ) {
-        const page = Math.max(
-          1,
-          parseInt(
-            url.searchParams.get("page") || "1"
-          )
-        );
-
-        const limit = Math.min(
-          48,
-          Math.max(
-            1,
-            parseInt(
-              url.searchParams.get("limit") || "24"
-            )
-          )
-        );
-
-        const resultados =
-          await listar(
-            "movies",
-            page,
-            limit
-          );
-
-        return json({
-          resultados,
-          total: resultados.length,
-          page,
-          limit,
-          source: "lamovie"
-        });
-      }
-
-      // =========================
-      // SERIES
-      // =========================
-
-      if (
-        path === "/series" ||
-        path === "/api/series"
-      ) {
-        const page = Math.max(
-          1,
-          parseInt(
-            url.searchParams.get("page") || "1"
-          )
-        );
-
-        const limit = Math.min(
-          48,
-          Math.max(
-            1,
-            parseInt(
-              url.searchParams.get("limit") || "24"
-            )
-          )
-        );
-
-        const resultados =
-          await listar(
-            "series",
-            page,
-            limit
-          );
-
-        return json({
-          resultados,
-          total: resultados.length,
-          page,
-          limit,
-          source: "lamovie"
-        });
-      }
-
-      // =========================
-      // ANIME
-      // =========================
-
-      if (
-        path === "/anime" ||
-        path === "/animes" ||
-        path === "/api/animes"
-      ) {
-        const page = Math.max(
-          1,
-          parseInt(
-            url.searchParams.get("page") || "1"
-          )
-        );
-
-        const limit = Math.min(
-          48,
-          Math.max(
-            1,
-            parseInt(
-              url.searchParams.get("limit") || "24"
-            )
-          )
-        );
-
-        const resultados =
-          await listar(
-            "animes",
-            page,
-            limit
-          );
-
-        return json({
-          resultados,
-          total: resultados.length,
-          page,
-          limit,
-          source: "lamovie"
-        });
-      }
-
-      // =========================
-      // SEARCH
-      // =========================
-
-      if (
-        path === "/search" ||
-        path === "/api/buscar"
-      ) {
-        const q =
-          url.searchParams
-            .get("q")
-            ?.trim();
-
-        if (!q) {
-          return json({
-            error: "Falta el parámetro q"
-          }, 400);
-        }
-
-        const limit = Math.min(
-          48,
-          Math.max(
-            1,
-            parseInt(
-              url.searchParams.get("limit") || "28"
-            )
-          )
-        );
-
-        const resultados =
-          await buscar(q, limit);
-
-        return json({
-          resultados,
-          total: resultados.length,
-          page: 1,
-          limit,
-          source: "lamovie"
-        });
-      }
-
+    if (
+      url.pathname === "/" ||
+      url.pathname === "/health"
+    ) {
       return json({
-        error: "Endpoint no encontrado",
-        path
-      }, 404);
-
-    } catch (error) {
-
-      return json({
-        error: "Error consultando LaMovie",
-        detalle: error.message
-      }, 502);
+        status: "ok",
+        service: "MovieZone Worker",
+        sources: [
+          "lamovie",
+          "hackstore",
+        ],
+      });
     }
-  }
+
+    const page = Math.max(
+      1,
+      parseInt(url.searchParams.get("page") || "1")
+    );
+
+    const limit = Math.min(
+      48,
+      Math.max(
+        1,
+        parseInt(
+          url.searchParams.get("limit") || "24"
+        )
+      )
+    );
+
+    /*
+     * /api/catalogo
+     */
+    if (url.pathname === "/api/catalogo") {
+      const resultados =
+        await obtenerCatalogo(
+          "movies",
+          page,
+          limit
+        );
+
+      return json({
+        resultados,
+        total: resultados.length,
+        page,
+        limit,
+        source: "worker",
+      });
+    }
+
+    /*
+     * /api/series
+     */
+    if (url.pathname === "/api/series") {
+      const resultados =
+        await obtenerCatalogo(
+          "series",
+          page,
+          limit
+        );
+
+      return json({
+        resultados,
+        total: resultados.length,
+        page,
+        limit,
+        source: "worker",
+      });
+    }
+
+    /*
+     * /api/animes
+     */
+    if (url.pathname === "/api/animes") {
+      const resultados =
+        await obtenerCatalogo(
+          "anime",
+          page,
+          limit
+        );
+
+      return json({
+        resultados,
+        total: resultados.length,
+        page,
+        limit,
+        source: "worker",
+      });
+    }
+
+    /*
+     * /api/buscar?q=
+     */
+    if (url.pathname === "/api/buscar") {
+      const q =
+        url.searchParams.get("q")?.trim() || "";
+
+      if (!q) {
+        return json({
+          resultados: [],
+          total: 0,
+          error: "Falta q",
+        }, 400);
+      }
+
+      const type =
+        url.searchParams.get("type") || null;
+
+      const resultados =
+        await buscar(
+          q,
+          type,
+          page,
+          limit
+        );
+
+      return json({
+        resultados,
+        total: resultados.length,
+        page,
+        limit,
+        source: "worker",
+      });
+    }
+
+    return json({
+      status: "ok",
+      error: "Ruta no encontrada",
+      routes: [
+        "/",
+        "/health",
+        "/api/catalogo?page=1",
+        "/api/series?page=1",
+        "/api/animes?page=1",
+        "/api/buscar?q=spiderman",
+      ],
+    }, 404);
+  },
 };
