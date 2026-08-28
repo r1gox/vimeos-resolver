@@ -30,7 +30,6 @@ const REPRODUCTORES_BLOQUEADOS = [
 async function handleRequest(request) {
   const url = new URL(request.url);
 
-  // Health check
   if (url.pathname === '/' && !url.searchParams.has('url')) {
     return json({
       status: 'ok',
@@ -67,7 +66,7 @@ async function handleRequest(request) {
   }
 }
 
-function detectarFuente(url = '') {
+function detectarFuente(url) {
   const u = (url || '').toLowerCase();
   if (u.includes('pelisplushd')) return 'pelisplushd';
   if (u.includes('hackstore')) return 'hackstore';
@@ -92,7 +91,7 @@ function extraerServidor(url) {
     if (host.includes('vidguard')) return 'vidguard';
     if (host.includes('lulustream')) return 'lulustream';
     return host.split('.')[0];
-  } catch {
+  } catch (e) {
     return 'desconocido';
   }
 }
@@ -107,8 +106,8 @@ function esReproductorValido(url) {
   const u = String(url).toLowerCase().trim();
   if (!/^https?:\/\//i.test(u)) return false;
   if (/\.(jpg|jpeg|png|webp|gif|svg|ico|css|woff2?)(\?|$)/i.test(u)) return false;
-  if (REPRODUCTORES_BLOQUEADOS.some(d => u.includes(d))) return false;
-  return REPRODUCTORES_PERMITIDOS.some(d => u.includes(d));
+  if (REPRODUCTORES_BLOQUEADOS.some(function (d) { return u.includes(d); })) return false;
+  return REPRODUCTORES_PERMITIDOS.some(function (d) { return u.includes(d); });
 }
 
 // ======================================================
@@ -116,9 +115,9 @@ function esReproductorValido(url) {
 // ======================================================
 async function scrapearPelisplus(pageUrl) {
   const res = await fetch(pageUrl, {
-    headers: { ...HEADERS, 'Referer': 'https://www.pelisplushd.la/' }
+    headers: Object.assign({}, HEADERS, { 'Referer': 'https://www.pelisplushd.la/' })
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
   const html = await res.text();
 
   const reproductores = [];
@@ -127,21 +126,21 @@ async function scrapearPelisplus(pageUrl) {
   const regex1 = /data-url=["']([^"']+)["'][^>]*data-name=["']([^"']*)["']/gi;
   let m;
   while ((m = regex1.exec(html)) !== null) {
-    const url = m[1];
+    const u = m[1];
     const idioma = m[2] || 'Desconocido';
-    if (url && !vistos.has(url)) {
-      vistos.add(url);
-      reproductores.push({ url, idioma, servidor: extraerServidor(url), tipo: 'reproductor' });
+    if (u && !vistos.has(u)) {
+      vistos.add(u);
+      reproductores.push({ url: u, idioma: idioma, servidor: extraerServidor(u), tipo: 'reproductor' });
     }
   }
 
   const regex2 = /data-name=["']([^"']*)["'][^>]*data-url=["']([^"']+)["']/gi;
   while ((m = regex2.exec(html)) !== null) {
     const idioma = m[1] || 'Desconocido';
-    const url = m[2];
-    if (url && !vistos.has(url)) {
-      vistos.add(url);
-      reproductores.push({ url, idioma, servidor: extraerServidor(url), tipo: 'reproductor' });
+    const u = m[2];
+    if (u && !vistos.has(u)) {
+      vistos.add(u);
+      reproductores.push({ url: u, idioma: idioma, servidor: extraerServidor(u), tipo: 'reproductor' });
     }
   }
 
@@ -160,9 +159,11 @@ async function scrapearPelisplus(pageUrl) {
   descripcion = limpiarTexto((d1 && d1[1]) || (d2 && d2[1]) || '');
 
   let year = null;
-  const y1 = html.match(/(?:Año|Year|Estreno)[^0-9]{0,20}(19|20)\d{2}/i) ||
-             html.match(/\b(19|20)\d{2}\b/);
-  if (y1) year = y1[0].match(/(19|20)\d{2}/)[0];
+  const y1 = html.match(/(?:Año|Year|Estreno)[^0-9]{0,20}(19|20)\d{2}/i) || html.match(/\b(19|20)\d{2}\b/);
+  if (y1) {
+    const ym = y1[0].match(/(19|20)\d{2}/);
+    if (ym) year = ym[0];
+  }
 
   let calificacion = null;
   const c1 = html.match(/(?:IMDb|TMDB|Calificación|Rating)[^0-9]{0,15}(\d+[.,]\d+)/i) ||
@@ -172,7 +173,10 @@ async function scrapearPelisplus(pageUrl) {
   let calidad = [];
   const calMatch = html.match(/(?:Calidad|Quality)[^A-Z0-9]{0,20}(4K|1080p|720p|HD|Full HD|BluRay|WEB-DL|HDRip)/gi);
   if (calMatch) {
-    calidad = [...new Set(calMatch.map(x => x.match(/(4K|1080p|720p|HD|Full HD|BluRay|WEB-DL|HDRip)/i)[0]))];
+    calidad = [...new Set(calMatch.map(function (x) {
+      const mm = x.match(/(4K|1080p|720p|HD|Full HD|BluRay|WEB-DL|HDRip)/i);
+      return mm ? mm[0] : null;
+    }).filter(Boolean))];
   }
 
   return {
@@ -180,19 +184,19 @@ async function scrapearPelisplus(pageUrl) {
     fuente: 'pelisplushd',
     link: pageUrl,
     titulo: titulo || 'Sin título',
-    portada,
-    descripcion,
-    year,
-    calificacion,
-    calidad,
+    portada: portada,
+    descripcion: descripcion,
+    year: year,
+    calificacion: calificacion,
+    calidad: calidad,
     total: reproductores.length,
-    embeds: reproductores.map(r => r.url),
-    reproductores
+    embeds: reproductores.map(function (r) { return r.url; }),
+    reproductores: reproductores
   };
 }
 
 // ======================================================
-// 2. LAMOVIE (convertido desde MOVIEZONE — usa API)
+// 2. LAMOVIE (API — convertido desde MOVIEZONE)
 // ======================================================
 function extraerSlugLamovie(pageUrl) {
   const m = pageUrl.match(/\/(?:peliculas|series|animes|pelicula|serie|anime)\/([^\/\?]+)/i);
@@ -200,7 +204,7 @@ function extraerSlugLamovie(pageUrl) {
 }
 
 async function buscarPostIdPorSlug(slug) {
-  const url = `\( {LAMOVIE_API}/search?postType=any&q= \){encodeURIComponent(slug)}&postsPerPage=5`;
+  const url = LAMOVIE_API + '/search?postType=any&q=' + encodeURIComponent(slug) + '&postsPerPage=5';
   const res = await fetch(url, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
@@ -209,18 +213,19 @@ async function buscarPostIdPorSlug(slug) {
   });
   if (!res.ok) return null;
   const data = await res.json();
-  const posts = data?.data?.posts || data?.data || [];
+  const posts = data && data.data && data.data.posts
+    ? data.data.posts
+    : (data && data.data ? data.data : []);
   if (!Array.isArray(posts)) return null;
 
-  const exacto = posts.find(p => p.slug === slug);
+  const exacto = posts.find(function (p) { return p.slug === slug; });
   if (exacto) return { postId: exacto._id, post: exacto };
-
   if (posts[0]) return { postId: posts[0]._id, post: posts[0] };
   return null;
 }
 
 async function getPlayerLamovie(postId) {
-  const url = `\( {LAMOVIE_API}/player?postId= \){postId}&demo=0`;
+  const url = LAMOVIE_API + '/player?postId=' + postId + '&demo=0';
   const res = await fetch(url, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
@@ -228,63 +233,63 @@ async function getPlayerLamovie(postId) {
       'Referer': LAMOVIE_BASE + '/'
     }
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status} en /player`);
+  if (!res.ok) throw new Error('HTTP ' + res.status + ' en /player');
 
   const data = await res.json();
-  let embeds = data?.data?.embeds || [];
-  let downloads = data?.data?.downloads || [];
+  let embeds = (data && data.data && data.data.embeds) ? data.data.embeds : [];
+  let downloads = (data && data.data && data.data.downloads) ? data.data.downloads : [];
 
-  if ((!embeds || embeds.length === 0) && data?.data) {
+  if ((!embeds || embeds.length === 0) && data && data.data) {
     const d = data.data;
     const extras = [].concat(d.players || [], d.servers || [], d.sources || [], d.links || []);
     if (extras.length) embeds = extras;
   }
 
-  const normalizar = (e) => {
+  function normalizar(e) {
     if (!e) return null;
-    const url = typeof e === 'string' ? e : (e.url || e.link || e.src || null);
-    if (!url) return null;
+    const u = typeof e === 'string' ? e : (e.url || e.link || e.src || null);
+    if (!u) return null;
     return {
-      url,
+      url: u,
       idioma: e.lang || e.language || e.idioma || e.audio || 'Desconocido',
-      servidor: extraerServidor(url),
+      servidor: extraerServidor(u),
       tipo: 'reproductor'
     };
-  };
+  }
 
-  const normalizarDl = (d) => {
+  function normalizarDl(d) {
     if (!d) return null;
-    const url = typeof d === 'string' ? d : (d.url || d.link || d.href || null);
-    if (!url) return null;
+    const u = typeof d === 'string' ? d : (d.url || d.link || d.href || null);
+    if (!u) return null;
     return {
-      url,
-      servidor: extraerServidor(url),
+      url: u,
+      servidor: extraerServidor(u),
       tipo: 'descarga'
     };
-  };
+  }
 
   embeds = embeds.map(normalizar).filter(Boolean);
   downloads = downloads.map(normalizarDl).filter(Boolean);
 
-  const embedsValidos = embeds.filter(e => esReproductorValido(e.url));
-  const embedsInvalidos = embeds.filter(e => e.url && !esReproductorValido(e.url));
+  const embedsValidos = embeds.filter(function (e) { return esReproductorValido(e.url); });
+  const embedsInvalidos = embeds.filter(function (e) { return e.url && !esReproductorValido(e.url); });
 
-  // Resolver placeholders de Lamovie
   if (embedsValidos.length === 0 && embedsInvalidos.length > 0) {
-    for (const inv of embedsInvalidos.slice(0, 2)) {
-      if (!inv.url || !String(inv.url).includes('lamovie')) continue;
+    for (let i = 0; i < Math.min(2, embedsInvalidos.length); i++) {
+      const inv = embedsInvalidos[i];
+      if (!inv.url || String(inv.url).indexOf('lamovie') === -1) continue;
       try {
         const htmlRes = await fetch(inv.url, {
-          headers: { ...HEADERS, 'Referer': LAMOVIE_BASE + '/' }
+          headers: Object.assign({}, HEADERS, { 'Referer': LAMOVIE_BASE + '/' })
         });
         const html = await htmlRes.text();
         const urls = html.match(/https?:\/\/[^\s"'<>\\]+/gi) || [];
-        for (const u of urls) {
-          const limpia = u
+        for (let j = 0; j < urls.length; j++) {
+          const limpia = urls[j]
             .replace(/\\u002F/g, '/')
             .replace(/\\\//g, '/')
             .replace(/["'<>),;]+$/g, '');
-          if (esReproductorValido(limpia) && !embedsValidos.some(e => e.url === limpia)) {
+          if (esReproductorValido(limpia) && !embedsValidos.some(function (e) { return e.url === limpia; })) {
             embedsValidos.push({
               url: limpia,
               idioma: 'Desconocido',
@@ -293,12 +298,11 @@ async function getPlayerLamovie(postId) {
             });
           }
         }
-      } catch (_) {}
+      } catch (e) {}
     }
   }
 
-  // Vimeos primero
-  embedsValidos.sort((a, b) => {
+  embedsValidos.sort(function (a, b) {
     const aV = /vimeos/i.test(a.url);
     const bV = /vimeos/i.test(b.url);
     if (aV && !bV) return -1;
@@ -309,8 +313,8 @@ async function getPlayerLamovie(postId) {
   return {
     embeds: embedsValidos.length > 0
       ? embedsValidos
-      : embeds.filter(e => e.url && !/youtube|youtu\.be/i.test(e.url)),
-    downloads
+      : embeds.filter(function (e) { return e.url && !/youtube|youtu\.be/i.test(e.url); }),
+    downloads: downloads
   };
 }
 
@@ -320,41 +324,39 @@ async function scrapearLamovie(pageUrl) {
 
   const encontrado = await buscarPostIdPorSlug(slug);
   if (!encontrado || !encontrado.postId) {
-    throw new Error(`No se encontró postId para el slug: ${slug}`);
+    throw new Error('No se encontró postId para el slug: ' + slug);
   }
 
-  const { postId, post } = encontrado;
-  const { embeds, downloads } = await getPlayerLamovie(postId);
+  const postId = encontrado.postId;
+  const post = encontrado.post;
+  const playerData = await getPlayerLamovie(postId);
+  const embeds = playerData.embeds;
+  const downloads = playerData.downloads;
 
-  let titulo = post?.title || 'Sin título';
+  let titulo = (post && post.title) ? post.title : 'Sin título';
   let portada = '';
-  if (post?.images?.poster) {
-    portada = post.images.poster.startsWith('http')
+  if (post && post.images && post.images.poster) {
+    portada = post.images.poster.indexOf('http') === 0
       ? post.images.poster
-      : `https://lamovie.org/wp-content/uploads${post.images.poster}`;
+      : 'https://lamovie.org/wp-content/uploads' + post.images.poster;
   }
-  let descripcion = post?.overview || '';
-  let year = post?.release_date ? String(post.release_date).slice(0, 4) : null;
-  let calificacion = post?.rating || post?.imdb_rating || null;
-
-  let calidad = [];
-  if (Array.isArray(post?.quality)) {
-    // ya viene como IDs, no lo resolvemos aquí
-  }
+  let descripcion = (post && post.overview) ? post.overview : '';
+  let year = (post && post.release_date) ? String(post.release_date).slice(0, 4) : null;
+  let calificacion = (post && (post.rating || post.imdb_rating)) ? (post.rating || post.imdb_rating) : null;
 
   return {
     success: true,
     fuente: 'lamovie',
     link: pageUrl,
-    postId,
-    titulo,
-    portada,
-    descripcion,
-    year,
-    calificacion,
-    calidad,
+    postId: postId,
+    titulo: titulo,
+    portada: portada,
+    descripcion: descripcion,
+    year: year,
+    calificacion: calificacion,
+    calidad: [],
     total: embeds.length,
-    embeds: embeds.map(e => e.url),
+    embeds: embeds.map(function (e) { return e.url; }),
     reproductores: embeds,
     descargas: downloads
   };
@@ -365,9 +367,9 @@ async function scrapearLamovie(pageUrl) {
 // ======================================================
 async function scrapearHackstore(pageUrl) {
   const res = await fetch(pageUrl, {
-    headers: { ...HEADERS, 'Referer': 'https://www.hackstore.fo/' }
+    headers: Object.assign({}, HEADERS, { 'Referer': 'https://www.hackstore.fo/' })
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
   const html = await res.text();
 
   const reproductores = [];
@@ -377,13 +379,13 @@ async function scrapearHackstore(pageUrl) {
   const regex = /(?:src|data-src|data-url|href)=["'](https?:\/\/[^"']+(?:embed|player|streamwish|voe|vidhide|filemoon|dood|mixdrop|uqload|streamtape|play\.php)[^"']*)["']/gi;
   let m;
   while ((m = regex.exec(html)) !== null) {
-    let url = m[1];
-    if (url && !vistos.has(url) && !url.includes('youtube') && !url.match(/\.(jpg|png|webp|gif)/i)) {
-      vistos.add(url);
+    const u = m[1];
+    if (u && !vistos.has(u) && u.indexOf('youtube') === -1 && !/\.(jpg|png|webp|gif)/i.test(u)) {
+      vistos.add(u);
       reproductores.push({
-        url,
+        url: u,
         idioma: 'Desconocido',
-        servidor: extraerServidor(url),
+        servidor: extraerServidor(u),
         tipo: 'reproductor'
       });
     }
@@ -392,12 +394,12 @@ async function scrapearHackstore(pageUrl) {
   const hostsDescarga = ['mega.nz', 'mega.co.nz', 'mediafire.com', '1fichier.com', 'gofile.io', 'uptobox.com', 'pixeldrain.com'];
   const regexDesc = /href=["'](https?:\/\/[^"']+)["']/gi;
   while ((m = regexDesc.exec(html)) !== null) {
-    const url = m[1];
-    if (hostsDescarga.some(h => url.toLowerCase().includes(h)) && !vistos.has(url)) {
-      vistos.add(url);
+    const u = m[1];
+    if (hostsDescarga.some(function (h) { return u.toLowerCase().indexOf(h) !== -1; }) && !vistos.has(u)) {
+      vistos.add(u);
       descargas.push({
-        url,
-        servidor: hostsDescarga.find(h => url.toLowerCase().includes(h)) || 'otro',
+        url: u,
+        servidor: hostsDescarga.find(function (h) { return u.toLowerCase().indexOf(h) !== -1; }) || 'otro',
         tipo: 'descarga'
       });
     }
@@ -435,21 +437,22 @@ async function scrapearHackstore(pageUrl) {
     fuente: 'hackstore',
     link: pageUrl,
     titulo: titulo || 'Sin título',
-    portada,
-    descripcion,
-    year,
-    calificacion,
-    calidad,
+    portada: portada,
+    descripcion: descripcion,
+    year: year,
+    calificacion: calificacion,
+    calidad: calidad,
     total: reproductores.length,
-    embeds: reproductores.map(r => r.url),
-    reproductores,
-    descargas
+    embeds: reproductores.map(function (r) { return r.url; }),
+    reproductores: reproductores,
+    descargas: descargas
   };
 }
 
-function json(data, status = 200) {
+function json(data, status) {
+  status = status || 200;
   return new Response(JSON.stringify(data, null, 2), {
-    status,
+    status: status,
     headers: {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*'
