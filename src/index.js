@@ -53,20 +53,21 @@ async function handleRequest(request) {
       status: 'ok',
       service: 'MovieZone Worker',
       sources: ['lamovie', 'hackstore', 'pelisplushd'],
-      uso: {
-        buscar: '?q=acaramelados',
-        buscar_fuente: '?q=matrix&source=lamovie',
-        scrapear_pelicula: '?url=https://lamovie.org/peliculas/...',
-        scrapear_serie: '?url=https://lamovie.org/series/acaramelados-2026/',
-        serie_con_players: '?url=https://lamovie.org/series/acaramelados-2026/&players=1',
-        una_temporada: '?url=https://lamovie.org/series/acaramelados-2026/&season=1',
-        player_episodio: '?episodePostId=82094',
-        pelisplus_cap: '?url=https://www.pelisplushd.la/serie/breaking-bad/temporada/1/capitulo/1'
-      }
+      flujo: {
+        '1_buscar': '?q=acaramelados',
+        '2_serie': '?url=https://lamovie.org/series/acaramelados-2026/',
+        '3_episodio': '?url=https://lamovie.org/series/acaramelados-2026/&season=1&episode=1',
+        '3b_episodio_postId': '?episodePostId=82094',
+        'pelicula': '?url=https://lamovie.org/peliculas/matrix-resurrecciones-2021/',
+        'serie_con_players_limitados': '?url=.../series/.../&players=1&maxCaps=5',
+        'una_temporada': '?url=.../series/.../&season=1',
+        'pelisplus_cap': '?url=https://www.pelisplushd.la/serie/breaking-bad/temporada/1/capitulo/1'
+      },
+      nota: 'Mismo flujo en las 3 fuentes: buscar → detalle serie/peli → episodio (players). Lamovie usa season+episode o episodePostId.'
     });
   }
 
-  // Player de un episodio Lamovie por postId
+  // Player de un episodio Lamovie por postId (compatibilidad)
   var episodePostId = url.searchParams.get('episodePostId');
   if (episodePostId) {
     try {
@@ -74,7 +75,9 @@ async function handleRequest(request) {
       return json({
         success: true,
         fuente: 'lamovie',
+        tipo: 'Capitulo',
         postId: Number(episodePostId) || episodePostId,
+        titulo: null,
         total: pd.embeds.length,
         embeds: pd.embeds.map(function (e) { return e.url; }),
         reproductores: pd.embeds,
@@ -104,26 +107,30 @@ async function handleRequest(request) {
     return json({ error: 'Usa ?url=... | ?q=... | ?episodePostId=...' }, 400);
   }
 
-  // Normalizar URLs rotas tipo https:///series/...
   targetUrl = normalizarUrlEntrada(targetUrl);
 
   var source = url.searchParams.get('source') || detectarFuente(targetUrl);
   var seasonQ = url.searchParams.get('season');
+  var episodeQ = url.searchParams.get('episode');
   var playersQ = url.searchParams.get('players') === '1';
+  var maxCapsQ = parseInt(url.searchParams.get('maxCaps') || '5', 10);
 
   try {
     var resultado;
     if (source === 'pelisplushd') {
       resultado = await scrapearPelisplus(targetUrl, {
         players: playersQ,
-        maxCaps: parseInt(url.searchParams.get('maxCaps') || '5', 10)
+        maxCaps: maxCapsQ
       });
     } else if (source === 'hackstore') {
       resultado = await scrapearHackstore(targetUrl);
     } else {
       resultado = await scrapearLamovie(targetUrl, {
         season: seasonQ ? parseInt(seasonQ, 10) : null,
-        players: playersQ
+        episode: episodeQ ? parseInt(episodeQ, 10) : null,
+        players: playersQ,
+        maxCaps: maxCapsQ,
+        requestUrl: request.url
       });
     }
     return json(resultado);
@@ -138,7 +145,6 @@ async function handleRequest(request) {
 
 function normalizarUrlEntrada(u) {
   u = String(u || '').trim();
-  // https:///series/foo → https://lamovie.org/series/foo
   if (/^https?:\/\/\/+(series|animes|peliculas)\//i.test(u)) {
     u = u.replace(/^https?:\/\/\/+/i, LAMOVIE_BASE + '/');
   }
@@ -509,6 +515,9 @@ async function getEpisodesLamovie(serieId, season) {
 async function scrapearLamovie(pageUrl, opts) {
   opts = opts || {};
   var incluirPlayers = !!opts.players;
+  var maxCaps = opts.maxCaps || 5;
+  var seasonOnly = opts.season ? parseInt(opts.season, 10) : null;
+  var episodeOnly = opts.episode ? parseInt(opts.episode, 10) : null;
 
   var slug = extraerSlugLamovie(pageUrl);
   if (!slug) throw new Error('No se pudo extraer el slug de la URL de Lamovie');
@@ -536,6 +545,11 @@ async function scrapearLamovie(pageUrl, opts) {
   var year = post.release_date ? String(post.release_date).slice(0, 4) : null;
   var calificacion = post.rating || post.imdb_rating || null;
 
+  var workerOrigin = '';
+  try {
+    if (opts.requestUrl) workerOrigin = new URL(opts.requestUrl).origin;
+  } catch (e) { /* ignore */ }
+
   // PELÍCULA
   if (tipo === 'Pelicula') {
     var playerData = await getPlayerLamovie(postId);
@@ -558,34 +572,88 @@ async function scrapearLamovie(pageUrl, opts) {
     };
   }
 
-  // SERIE / ANIME
+  // EPISODIO CONCRETO: ?url=SERIE&season=1&episode=1
+  if (seasonOnly && episodeOnly) {
+    var epList = await getEpisodesLamovie(postId, seasonOnly);
+    var postsEps = epList.posts || [];
+    var targetEp = null;
+    for (var i = 0; i < postsEps.length; i++) {
+      var n = postsEps[i].episode_number || (i + 1);
+      if (parseInt(n, 10) === episodeOnly) {
+        targetEp = postsEps[i];
+        break;
+      }
+    }
+    if (!targetEp) {
+      throw new Error('No se encontro el episodio ' + seasonOnly + 'x' + episodeOnly);
+    }
+    var epId = targetEp._id || targetEp.id;
+    var pd = await getPlayerLamovie(epId);
+    var epTitulo = targetEp.title || (titulo + ': Temporada ' + seasonOnly + ' Episodio ' + episodeOnly);
+    return {
+      success: true,
+      fuente: 'lamovie',
+      tipo: 'Capitulo',
+      link: pageUrl,
+      postId: epId,
+      serie_postId: postId,
+      serie_titulo: titulo,
+      titulo: epTitulo,
+      portada: portada,
+      temporada: seasonOnly,
+      episodio: episodeOnly,
+      overview: targetEp.overview || '',
+      still: targetEp.still_path
+        ? (String(targetEp.still_path).indexOf('http') === 0
+            ? targetEp.still_path
+            : 'https://image.tmdb.org/t/p/w300' + targetEp.still_path)
+        : null,
+      total: pd.embeds.length,
+      embeds: pd.embeds.map(function (e) { return e.url; }),
+      reproductores: pd.embeds,
+      descargas: pd.downloads
+    };
+  }
+
+  // SERIE / ANIME (listado)
   var first = await getEpisodesLamovie(postId, 1);
   var seasonNums = first.seasons && first.seasons.length ? first.seasons.slice() : [1];
-  if (opts.season) seasonNums = [parseInt(opts.season, 10)];
+  if (seasonOnly) seasonNums = [seasonOnly];
 
   var temporadas = [];
   var totalEps = 0;
+  var resolvedPlayers = 0;
 
   for (var si = 0; si < seasonNums.length; si++) {
     var seasonNum = seasonNums[si];
-    var epData = (seasonNum === 1 && !opts.season) ? first : await getEpisodesLamovie(postId, seasonNum);
-    var postsEps = epData.posts || [];
+    var epData = (seasonNum === 1 && !seasonOnly) ? first : await getEpisodesLamovie(postId, seasonNum);
+    var postsList = epData.posts || [];
 
-    if (epData.seasons && epData.seasons.length && !opts.season) {
+    if (epData.seasons && epData.seasons.length && !seasonOnly) {
       for (var sx = 0; sx < epData.seasons.length; sx++) {
-        if (seasonNums.indexOf(epData.seasons[sx]) === -1) seasonNums.push(epData.seasons[sx]);
+        var sn = parseInt(epData.seasons[sx], 10);
+        if (!isNaN(sn) && seasonNums.indexOf(sn) === -1) seasonNums.push(sn);
       }
     }
 
     var episodios = [];
-    for (var ei = 0; ei < postsEps.length; ei++) {
-      var ep = postsEps[ei];
-      var epId = ep._id || ep.id;
+    for (var ei = 0; ei < postsList.length; ei++) {
+      var ep = postsList[ei];
+      var epId2 = ep._id || ep.id;
+      var epNum = ep.episode_number || (ei + 1);
+      var epSeason = ep.season_number || seasonNum;
+
+      var epLink = pageUrl.replace(/\/$/, '') + '/';
+      if (workerOrigin) {
+        epLink = workerOrigin + '/?url=' + encodeURIComponent(pageUrl) +
+          '&season=' + epSeason + '&episode=' + epNum;
+      }
+
       var epObj = {
-        postId: epId,
-        temporada: ep.season_number || seasonNum,
-        episodio: ep.episode_number || (ei + 1),
-        titulo: ep.title || ('Episodio ' + (ep.episode_number || ei + 1)),
+        postId: epId2,
+        temporada: epSeason,
+        episodio: epNum,
+        titulo: ep.title || ('Episodio ' + epNum),
         slug: ep.slug || null,
         overview: ep.overview || '',
         runtime: ep.runtime || null,
@@ -594,19 +662,23 @@ async function scrapearLamovie(pageUrl, opts) {
               ? ep.still_path
               : 'https://image.tmdb.org/t/p/w300' + ep.still_path)
           : null,
+        link: epLink,
+        url: epLink,
+        episodePostId: epId2,
         reproductor: null,
         embeds: [],
         reproductores: [],
         descargas: []
       };
 
-      if (incluirPlayers && epId) {
+      if (incluirPlayers && epId2 && resolvedPlayers < maxCaps) {
         try {
-          var pd = await getPlayerLamovie(epId);
-          epObj.reproductores = pd.embeds || [];
-          epObj.embeds = (pd.embeds || []).map(function (e) { return e.url; });
+          var pd2 = await getPlayerLamovie(epId2);
+          epObj.reproductores = pd2.embeds || [];
+          epObj.embeds = (pd2.embeds || []).map(function (e) { return e.url; });
           epObj.reproductor = epObj.embeds[0] || null;
-          epObj.descargas = pd.downloads || [];
+          epObj.descargas = pd2.downloads || [];
+          resolvedPlayers++;
         } catch (e) { /* ignore */ }
       }
 
@@ -634,11 +706,14 @@ async function scrapearLamovie(pageUrl, opts) {
     calificacion: calificacion,
     total_temporadas: temporadas.length,
     total_episodios: totalEps,
-    total: totalEps,
+    total: resolvedPlayers,
     embeds: [],
     reproductores: [],
     descargas: [],
-    temporadas: temporadas
+    temporadas: temporadas,
+    nota: incluirPlayers
+      ? 'Players solo en los primeros ' + maxCaps + ' caps. Usa ?url=SERIE&season=N&episode=M o ?episodePostId=XXX para un capítulo.'
+      : 'Usa ?url=SERIE&season=N&episode=M o el link de cada episodio para obtener los players.'
   };
 }
 
@@ -651,7 +726,6 @@ function extraerPlayurlsPelisplus(html) {
 
   function add(u, idioma) {
     if (!u || vistos[u]) return;
-    // Aceptar aunque no pase el filtro estricto si es http de host conocido
     var ok = esReproductorValido(u) ||
       /streamwish|vidhide|voe\.|filemoon|dood|waaw|hqq|netu|uqload|mixdrop/i.test(u);
     if (!ok) return;
@@ -664,7 +738,6 @@ function extraerPlayurlsPelisplus(html) {
     });
   }
 
-  // Películas: data-url + data-name
   var r1 = /data-url=["']([^"']+)["'][^>]*data-name=["']([^"']*)["']/gi;
   var m;
   while ((m = r1.exec(html)) !== null) add(m[1], m[2]);
@@ -672,14 +745,12 @@ function extraerPlayurlsPelisplus(html) {
   var r2 = /data-name=["']([^"']*)["'][^>]*data-url=["']([^"']+)["']/gi;
   while ((m = r2.exec(html)) !== null) add(m[2], m[1]);
 
-  // Capítulos de serie: <span lid="1" url="https://streamwish.to/e/..."></span>
   var r3 = /<span[^>]+lid=["']?\d+["']?[^>]+url=["']([^"']+)["'][^>]*>/gi;
   while ((m = r3.exec(html)) !== null) add(m[1], 'Desconocido');
 
   var r4 = /<span[^>]+url=["']([^"']+)["'][^>]+lid=["']?\d+["']?[^>]*>/gi;
   while ((m = r4.exec(html)) !== null) add(m[1], 'Desconocido');
 
-  // Fallback: url="https://..." en cualquier tag
   var r5 = /\burl=["'](https?:\/\/[^"']+)["']/gi;
   while ((m = r5.exec(html)) !== null) add(m[1], 'Desconocido');
 
@@ -689,7 +760,7 @@ function extraerPlayurlsPelisplus(html) {
 async function scrapearPelisplus(pageUrl, opts) {
   opts = opts || {};
   var maxCaps = opts.maxCaps || 5;
-  var incluirPlayers = opts.players !== false; // en capítulos siempre; en serie raíz solo si players o por defecto primeros N
+  var incluirPlayers = opts.players !== false;
 
   var res = await fetch(pageUrl, {
     headers: Object.assign({}, HEADERS, { 'Referer': PELISPLUS_BASE + '/' })
@@ -709,7 +780,6 @@ async function scrapearPelisplus(pageUrl, opts) {
   var p1 = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i);
   if (p1) portada = p1[1];
 
-  // Serie raíz → listar capítulos
   if (esSerie && !esCapitulo) {
     var caps = [];
     var reCap = /href=["']((?:https?:\/\/[^"']+)?\/(?:serie|anime)\/[^"']+\/temporada\/(\d+)\/capitulo\/(\d+)\/?)["']/gi;
@@ -732,7 +802,6 @@ async function scrapearPelisplus(pageUrl, opts) {
       });
     }
 
-    // Agrupar por temporada
     var bySeason = {};
     for (var i = 0; i < caps.length; i++) {
       var s = caps[i].temporada;
@@ -740,7 +809,6 @@ async function scrapearPelisplus(pageUrl, opts) {
       bySeason[s].push(caps[i]);
     }
 
-    // Resolver players de los primeros maxCaps
     var resolved = 0;
     for (var j = 0; j < caps.length && resolved < maxCaps; j++) {
       try {
@@ -782,7 +850,6 @@ async function scrapearPelisplus(pageUrl, opts) {
     };
   }
 
-  // Película o capítulo
   var reproductores = extraerPlayurlsPelisplus(html);
   return {
     success: true,
@@ -830,20 +897,17 @@ async function scrapearHackstoreEpisodio(pageUrl) {
   var reproductores = [];
   var vistos = {};
 
-  // a.playr data-href="/play.php?u=..."
   var rePlayr = /class=["'][^"']*playr[^"']*["'][^>]*data-href=["']([^"']+)["'][^>]*data-lang=["']([^"']*)["']/gi;
   var m;
   var jobs = [];
   while ((m = rePlayr.exec(html)) !== null) {
     jobs.push({ href: m[1].replace(/&amp;/g, '&'), lang: m[2] || 'Desconocido' });
   }
-  // orden alternativo de atributos
   var rePlayr2 = /data-href=["']([^"']*play\.php[^"']*)["'][^>]*data-lang=["']([^"']*)["']/gi;
   while ((m = rePlayr2.exec(html)) !== null) {
     jobs.push({ href: m[1].replace(/&amp;/g, '&'), lang: m[2] || 'Desconocido' });
   }
 
-  // dedup jobs
   var seenJob = {};
   var uniqueJobs = [];
   for (var j = 0; j < jobs.length; j++) {
@@ -886,7 +950,6 @@ async function scrapearHackstoreEpisodio(pageUrl) {
 }
 
 async function scrapearHackstore(pageUrl) {
-  // Si es página de episodio directo
   if (/\/episodio\//i.test(pageUrl)) {
     return scrapearHackstoreEpisodio(pageUrl);
   }
@@ -899,7 +962,6 @@ async function scrapearHackstore(pageUrl) {
 
   var esSerie = /\/series\//i.test(pageUrl) || /\/animes\//i.test(pageUrl);
 
-  // Serie: listar episodios
   if (esSerie) {
     var caps = [];
     var seen = {};
@@ -910,7 +972,6 @@ async function scrapearHackstore(pageUrl) {
       var slug = em[2];
       if (seen[link]) continue;
       seen[link] = true;
-      // slug tipo acaramelados-2026-1x3
       var sx = slug.match(/(\d+)x(\d+)/i);
       caps.push({
         temporada: sx ? parseInt(sx[1], 10) : 1,
@@ -923,7 +984,6 @@ async function scrapearHackstore(pageUrl) {
       });
     }
 
-    // Opcional: resolver primeros 3 episodios (costoso)
     var maxCaps = 3;
     for (var i = 0; i < Math.min(caps.length, maxCaps); i++) {
       try {
@@ -965,7 +1025,6 @@ async function scrapearHackstore(pageUrl) {
     };
   }
 
-  // Película (comportamiento anterior con play.php en la misma página)
   var reproductores = [];
   var descargas = [];
   var vistos = {};
