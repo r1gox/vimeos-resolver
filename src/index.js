@@ -1,3 +1,4 @@
+// src/index.js — MovieZone Worker (Lamovie + Hackstore + PelisPlusHD)
 addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request));
 });
@@ -11,6 +12,7 @@ var HEADERS = {
 var LAMOVIE_API = 'https://lamovie.org/wp-api/v1';
 var LAMOVIE_BASE = 'https://lamovie.org';
 var HACKSTORE_BASE = 'https://www.hackstore.fo';
+var PELISPLUS_BASE = 'https://www.pelisplushd.la';
 
 var REPRODUCTORES_PERMITIDOS = [
   'vimeos.net', 'player.vimeos',
@@ -20,7 +22,7 @@ var REPRODUCTORES_PERMITIDOS = [
   'vidmoly', 'mp4upload', 'uqload',
   'vidhide', 'vidguard', 'lulustream', 'filelions',
   'yourupload', 'supervideo', 'krakenfiles', 'ok.ru',
-  'videoapp.zip', 'videoapp'
+  'videoapp.zip', 'videoapp', 'waaw.', 'hqq.', 'netu.'
 ];
 
 var REPRODUCTORES_BLOQUEADOS = [
@@ -30,32 +32,65 @@ var REPRODUCTORES_BLOQUEADOS = [
   'oembed', 'wp-json', 'hackstore.fo', 'hackstore'
 ];
 
-// Palabras que identifican páginas de categorías o listados (no títulos reales)
 var PALABRAS_BLOQUEADAS_BUSQUEDA = ['estrenos', 'populares', 'genero', 'categoria', 'pagina'];
 
+// ======================================================
+// ROUTER
+// ======================================================
 async function handleRequest(request) {
   var url = new URL(request.url);
 
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: corsHeaders()
+    });
+  }
+
   // Health
-  if (url.pathname === '/' && !url.searchParams.has('url') && !url.searchParams.has('q')) {
+  if (url.pathname === '/' && !url.searchParams.has('url') && !url.searchParams.has('q') && !url.searchParams.has('episodePostId')) {
     return json({
       status: 'ok',
       service: 'MovieZone Worker',
       sources: ['lamovie', 'hackstore', 'pelisplushd'],
       uso: {
-        scrapear: '?url=https://lamovie.org/peliculas/...',
-        buscar: '?q=supergirl',
-        buscar_fuente: '?q=supergirl&source=lamovie'
+        buscar: '?q=acaramelados',
+        buscar_fuente: '?q=matrix&source=lamovie',
+        scrapear_pelicula: '?url=https://lamovie.org/peliculas/...',
+        scrapear_serie: '?url=https://lamovie.org/series/acaramelados-2026/',
+        serie_con_players: '?url=https://lamovie.org/series/acaramelados-2026/&players=1',
+        una_temporada: '?url=https://lamovie.org/series/acaramelados-2026/&season=1',
+        player_episodio: '?episodePostId=82094',
+        pelisplus_cap: '?url=https://www.pelisplushd.la/serie/breaking-bad/temporada/1/capitulo/1'
       }
     });
   }
 
-  // BUSCADOR UNIVERSAL
+  // Player de un episodio Lamovie por postId
+  var episodePostId = url.searchParams.get('episodePostId');
+  if (episodePostId) {
+    try {
+      var pd = await getPlayerLamovie(episodePostId);
+      return json({
+        success: true,
+        fuente: 'lamovie',
+        postId: Number(episodePostId) || episodePostId,
+        total: pd.embeds.length,
+        embeds: pd.embeds.map(function (e) { return e.url; }),
+        reproductores: pd.embeds,
+        descargas: pd.downloads
+      });
+    } catch (err) {
+      return json({ success: false, error: err.message }, 500);
+    }
+  }
+
+  // Buscador
   var query = url.searchParams.get('q');
   if (query) {
-    var sourceFilter = url.searchParams.get('source') || 'all';
-    var limit = parseInt(url.searchParams.get('limit') || '15', 10);
     try {
+      var sourceFilter = url.searchParams.get('source') || 'all';
+      var limit = parseInt(url.searchParams.get('limit') || '15', 10);
       var resultados = await buscarUniversal(query, sourceFilter, limit);
       return json(resultados);
     } catch (err) {
@@ -63,22 +98,33 @@ async function handleRequest(request) {
     }
   }
 
-  // SCRAPEAR por URL
+  // Scrapear por URL
   var targetUrl = url.searchParams.get('url');
-  var source = url.searchParams.get('source') || detectarFuente(targetUrl);
-
   if (!targetUrl) {
-    return json({ error: 'Usa ?url=... para scrapear o ?q=... para buscar' }, 400);
+    return json({ error: 'Usa ?url=... | ?q=... | ?episodePostId=...' }, 400);
   }
+
+  // Normalizar URLs rotas tipo https:///series/...
+  targetUrl = normalizarUrlEntrada(targetUrl);
+
+  var source = url.searchParams.get('source') || detectarFuente(targetUrl);
+  var seasonQ = url.searchParams.get('season');
+  var playersQ = url.searchParams.get('players') === '1';
 
   try {
     var resultado;
-    if (source === 'pelisplushd' || targetUrl.indexOf('pelisplushd') !== -1) {
-      resultado = await scrapearPelisplus(targetUrl);
-    } else if (source === 'hackstore' || targetUrl.indexOf('hackstore') !== -1) {
+    if (source === 'pelisplushd') {
+      resultado = await scrapearPelisplus(targetUrl, {
+        players: playersQ,
+        maxCaps: parseInt(url.searchParams.get('maxCaps') || '5', 10)
+      });
+    } else if (source === 'hackstore') {
       resultado = await scrapearHackstore(targetUrl);
     } else {
-      resultado = await scrapearLamovie(targetUrl);
+      resultado = await scrapearLamovie(targetUrl, {
+        season: seasonQ ? parseInt(seasonQ, 10) : null,
+        players: playersQ
+      });
     }
     return json(resultado);
   } catch (err) {
@@ -90,12 +136,44 @@ async function handleRequest(request) {
   }
 }
 
+function normalizarUrlEntrada(u) {
+  u = String(u || '').trim();
+  // https:///series/foo → https://lamovie.org/series/foo
+  if (/^https?:\/\/\/+(series|animes|peliculas)\//i.test(u)) {
+    u = u.replace(/^https?:\/\/\/+/i, LAMOVIE_BASE + '/');
+  }
+  if (/^\/(series|animes|peliculas)\//i.test(u)) {
+    u = LAMOVIE_BASE + u;
+  }
+  return u;
+}
+
 function detectarFuente(u) {
   u = (u || '').toLowerCase();
   if (u.indexOf('pelisplushd') !== -1) return 'pelisplushd';
   if (u.indexOf('hackstore') !== -1) return 'hackstore';
   if (u.indexOf('lamovie') !== -1) return 'lamovie';
+  if (/\/(pelicula|serie|anime)\//i.test(u)) return 'pelisplushd';
   return 'lamovie';
+}
+
+function corsHeaders() {
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type'
+  };
+}
+
+function json(data, status) {
+  status = status || 200;
+  var h = Object.assign({ 'Content-Type': 'application/json; charset=utf-8' }, corsHeaders());
+  return new Response(JSON.stringify(data, null, 2), { status: status, headers: h });
+}
+
+function limpiarTexto(txt) {
+  if (!txt) return '';
+  return String(txt).replace(/\s+/g, ' ').trim();
 }
 
 function extraerServidor(url) {
@@ -125,11 +203,6 @@ function extraerServidor(url) {
   }
 }
 
-function limpiarTexto(txt) {
-  if (!txt) return '';
-  return String(txt).replace(/\s+/g, ' ').trim();
-}
-
 function esReproductorValido(url) {
   if (!url) return false;
   var u = String(url).toLowerCase().trim();
@@ -151,27 +224,14 @@ function esDescargaValida(url) {
   if (u.indexOf('google.com/s2/favicons') !== -1) return false;
   if (u.indexOf('acortalink') !== -1) return false;
   if (u.indexOf('favicon') !== -1) return false;
-  // Quitamos "magnet:" para que no se muestren enlaces torrent
   var hosts = [
     'mega.nz', 'mega.co.nz', 'mediafire.com', '1fichier.com',
     'gofile.io', 'uptobox.com', 'pixeldrain.com', 'megaup.net'
-    // 'magnet:' eliminado
   ];
   for (var i = 0; i < hosts.length; i++) {
     if (u.indexOf(hosts[i]) !== -1) return true;
   }
   return false;
-}
-
-function json(data, status) {
-  status = status || 200;
-  return new Response(JSON.stringify(data, null, 2), {
-    status: status,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*'
-    }
-  });
 }
 
 // ======================================================
@@ -196,9 +256,7 @@ async function buscarUniversal(query, sourceFilter, limit) {
 
   var arrays = await Promise.all(promesas);
   var todos = [];
-  for (var i = 0; i < arrays.length; i++) {
-    todos = todos.concat(arrays[i]);
-  }
+  for (var i = 0; i < arrays.length; i++) todos = todos.concat(arrays[i]);
 
   var vistos = {};
   var unicos = [];
@@ -217,9 +275,6 @@ async function buscarUniversal(query, sourceFilter, limit) {
   };
 }
 
-// ======================================================
-// BÚSQUEDA EN LAMOVIE
-// ======================================================
 async function buscarLamovie(query, limit) {
   var url = LAMOVIE_API + '/search?postType=any&q=' + encodeURIComponent(query) + '&postsPerPage=' + (limit || 15);
   var res = await fetch(url, {
@@ -249,23 +304,20 @@ async function buscarLamovie(query, limit) {
     }
 
     out.push({
-      titulo: p.title || 'Sin titulo',
+      titulo: p.title || '',
       tipo: tipo,
-      year: p.release_date ? String(p.release_date).slice(0, 4) : null,
-      portada: portada,
-      calificacion: p.rating || p.imdb_rating || null,
-      link: LAMOVIE_BASE + '/' + path + '/' + p.slug + '/',
-      postId: p._id,
       fuente: 'lamovie',
-      slug: p.slug
+      postId: p._id,
+      slug: p.slug || '',
+      link: LAMOVIE_BASE + '/' + path + '/' + (p.slug || '') + '/',
+      portada: portada,
+      year: p.release_date ? String(p.release_date).slice(0, 4) : null,
+      calificacion: p.rating || p.imdb_rating || null
     });
   }
   return out;
 }
 
-// ======================================================
-// BÚSQUEDA EN HACKSTORE (con filtro mejorado)
-// ======================================================
 async function buscarHackstore(query, limit) {
   var url = HACKSTORE_BASE + '/?s=' + encodeURIComponent(query);
   var res = await fetch(url, {
@@ -273,216 +325,66 @@ async function buscarHackstore(query, limit) {
   });
   if (!res.ok) return [];
   var html = await res.text();
-
-  var links = {};
+  var out = [];
+  var vistos = {};
   var regex = /href=["'](https?:\/\/(?:www\.)?hackstore\.[a-z]+\/(peliculas|series|animes)\/([^"'\/\?]+))\/?["']/gi;
   var m;
-  while ((m = regex.exec(html)) !== null) {
-    var full = m[1].replace(/\/$/, '') + '/';
+  while ((m = regex.exec(html)) !== null && out.length < (limit || 15)) {
+    var link = m[1].replace(/\/$/, '') + '/';
     var seccion = m[2];
     var slug = m[3];
-    if (links[full]) continue;
-    if (!slug || slug === 'page') continue;
-
-    // Filtro de términos genéricos
-    var slugLower = slug.toLowerCase();
-    var esInvalido = false;
-    for (var i = 0; i < PALABRAS_BLOQUEADAS_BUSQUEDA.length; i++) {
-      if (slugLower === PALABRAS_BLOQUEADAS_BUSQUEDA[i] || slugLower.indexOf(PALABRAS_BLOQUEADAS_BUSQUEDA[i]) === 0) {
-        esInvalido = true;
-        break;
-      }
-    }
-    if (esInvalido || slug.length < 3) continue;
-
-    links[full] = { seccion: seccion, slug: slug, link: full };
-  }
-
-  var out = [];
-  var keys = Object.keys(links);
-  for (var j = 0; j < keys.length && out.length < (limit || 15); j++) {
-    var item = links[keys[j]];
+    if (vistos[link]) continue;
+    if (PALABRAS_BLOQUEADAS_BUSQUEDA.some(function (w) { return slug.indexOf(w) !== -1; })) continue;
+    vistos[link] = true;
     var tipo = 'Pelicula';
-    if (item.seccion === 'series') tipo = 'Serie';
-    if (item.seccion === 'animes') tipo = 'Anime';
-
-    var titulo = item.slug
-      .replace(/-\d{4}$/, '')
-      .replace(/-/g, ' ')
-      .replace(/\b\w/g, function (c) { return c.toUpperCase(); });
-
-    var yearMatch = item.slug.match(/-(\d{4})$/);
+    if (seccion === 'series') tipo = 'Serie';
+    if (seccion === 'animes') tipo = 'Anime';
     out.push({
-      titulo: titulo,
+      titulo: slug.replace(/-/g, ' '),
       tipo: tipo,
-      year: yearMatch ? yearMatch[1] : null,
-      portada: '',
-      calificacion: null,
-      link: item.link,
-      postId: null,
       fuente: 'hackstore',
-      slug: item.slug
+      link: link,
+      slug: slug
+    });
+  }
+  return out;
+}
+
+async function buscarPelisplus(query, limit) {
+  var url = PELISPLUS_BASE + '/search?s=' + encodeURIComponent(query);
+  var res = await fetch(url, {
+    headers: Object.assign({}, HEADERS, { 'Referer': PELISPLUS_BASE + '/' })
+  });
+  if (!res.ok) return [];
+  var html = await res.text();
+  var out = [];
+  var vistos = {};
+  var regex = /href=["']((?:https?:\/\/[^"']+)?\/(?:pelicula|serie|anime)\/([^"'\/\?]+))\/?["']/gi;
+  var m;
+  while ((m = regex.exec(html)) !== null && out.length < (limit || 15)) {
+    var path = m[1];
+    var slug = m[2];
+    var full = path.indexOf('http') === 0 ? path : PELISPLUS_BASE + path;
+    full = full.replace(/\/$/, '') + '/';
+    if (vistos[full]) continue;
+    if (PALABRAS_BLOQUEADAS_BUSQUEDA.some(function (w) { return slug.indexOf(w) !== -1; })) continue;
+    vistos[full] = true;
+    var tipo = 'Pelicula';
+    if (/\/serie\//i.test(full)) tipo = 'Serie';
+    if (/\/anime\//i.test(full)) tipo = 'Anime';
+    out.push({
+      titulo: slug.replace(/-/g, ' '),
+      tipo: tipo,
+      fuente: 'pelisplushd',
+      link: full,
+      slug: slug
     });
   }
   return out;
 }
 
 // ======================================================
-// BÚSQUEDA EN PELISPLUSHD (con filtro mejorado)
-// ======================================================
-async function buscarPelisplus(query, limit) {
-  var bases = [
-    'https://www.pelisplushd.nz',
-    'https://www.pelisplushd.la',
-    'https://pelisplushd.nz'
-  ];
-
-  for (var b = 0; b < bases.length; b++) {
-    try {
-      var url = bases[b] + '/search?s=' + encodeURIComponent(query);
-      var res = await fetch(url, {
-        headers: Object.assign({}, HEADERS, { 'Referer': bases[b] + '/' })
-      });
-      if (!res.ok) continue;
-      var html = await res.text();
-
-      var out = [];
-      var vistos = {};
-      var regex = /href=["']((?:https?:\/\/[^"']+)?\/(?:pelicula|serie|anime)s?\/([^"'\/\?]+))\/?["']/gi;
-      var m;
-      while ((m = regex.exec(html)) !== null && out.length < (limit || 15)) {
-        var path = m[1];
-        var slug = m[2];
-        if (vistos[slug]) continue;
-        vistos[slug] = true;
-
-        // Filtro de términos genéricos
-        var slugLower = slug.toLowerCase();
-        var esInvalido = false;
-        for (var i = 0; i < PALABRAS_BLOQUEADAS_BUSQUEDA.length; i++) {
-          if (slugLower === PALABRAS_BLOQUEADAS_BUSQUEDA[i] || slugLower.indexOf(PALABRAS_BLOQUEADAS_BUSQUEDA[i]) === 0) {
-            esInvalido = true;
-            break;
-          }
-        }
-        if (esInvalido || slug.length < 3) continue;
-
-        var full = path.indexOf('http') === 0 ? path : (bases[b] + path);
-        full = full.replace(/\/$/, '') + '/';
-
-        var tipo = 'Pelicula';
-        if (/\/series?\//i.test(full)) tipo = 'Serie';
-        if (/\/animes?\//i.test(full)) tipo = 'Anime';
-
-        var titulo = slug
-          .replace(/-\d{4}$/, '')
-          .replace(/-/g, ' ')
-          .replace(/\b\w/g, function (c) { return c.toUpperCase(); });
-
-        var yearMatch = slug.match(/-(\d{4})$/);
-        out.push({
-          titulo: titulo,
-          tipo: tipo,
-          year: yearMatch ? yearMatch[1] : null,
-          portada: '',
-          calificacion: null,
-          link: full,
-          postId: null,
-          fuente: 'pelisplushd',
-          slug: slug
-        });
-      }
-      if (out.length > 0) return out;
-    } catch (e) {}
-  }
-  return [];
-}
-
-// ======================================================
-// SCRAPER PELISPLUSHD
-// ======================================================
-async function scrapearPelisplus(pageUrl) {
-  var res = await fetch(pageUrl, {
-    headers: Object.assign({}, HEADERS, { 'Referer': 'https://www.pelisplushd.la/' })
-  });
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  var html = await res.text();
-
-  var reproductores = [];
-  var vistos = {};
-
-  var regex1 = /data-url=["']([^"']+)["'][^>]*data-name=["']([^"']*)["']/gi;
-  var m;
-  while ((m = regex1.exec(html)) !== null) {
-    var u = m[1];
-    var idioma = m[2] || 'Desconocido';
-    if (u && !vistos[u]) {
-      vistos[u] = true;
-      reproductores.push({ url: u, idioma: idioma, servidor: extraerServidor(u), tipo: 'reproductor' });
-    }
-  }
-
-  var regex2 = /data-name=["']([^"']*)["'][^>]*data-url=["']([^"']+)["']/gi;
-  while ((m = regex2.exec(html)) !== null) {
-    var idioma2 = m[1] || 'Desconocido';
-    var u2 = m[2];
-    if (u2 && !vistos[u2]) {
-      vistos[u2] = true;
-      reproductores.push({ url: u2, idioma: idioma2, servidor: extraerServidor(u2), tipo: 'reproductor' });
-    }
-  }
-
-  var titulo = '';
-  var t1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
-  var t2 = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
-  titulo = limpiarTexto((t1 && t1[1]) || (t2 && t2[1]) || '');
-
-  var portada = '';
-  var p1 = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i);
-  if (p1) portada = p1[1];
-
-  var descripcion = '';
-  var d1 = html.match(/property=["']og:description["']\s+content=["']([^"']+)["']/i);
-  var d2 = html.match(/name=["']description["']\s+content=["']([^"']+)["']/i);
-  descripcion = limpiarTexto((d1 && d1[1]) || (d2 && d2[1]) || '');
-
-  var year = null;
-  var y1 = html.match(/(?:Año|Year|Estreno)[^0-9]{0,20}(19|20)\d{2}/i) || html.match(/\b(19|20)\d{2}\b/);
-  if (y1) {
-    var ym = y1[0].match(/(19|20)\d{2}/);
-    if (ym) year = ym[0];
-  }
-
-  var calificacion = null;
-  var c1 = html.match(/(?:IMDb|TMDB|Calificación|Rating)[^0-9]{0,15}(\d+[.,]\d+)/i) || html.match(/(\d+[.,]\d+)\s*\/\s*10/);
-  if (c1) calificacion = c1[1].replace(',', '.');
-
-  var calidad = [];
-  var calMatch = html.match(/(4K|1080p|720p|Full HD|HD|BluRay|WEB-DL|HDRip)/gi);
-  if (calMatch) {
-    var set = {};
-    for (var i = 0; i < calMatch.length; i++) set[calMatch[i].toUpperCase()] = true;
-    calidad = Object.keys(set);
-  }
-
-  return {
-    success: true,
-    fuente: 'pelisplushd',
-    link: pageUrl,
-    titulo: titulo || 'Sin titulo',
-    portada: portada,
-    descripcion: descripcion,
-    year: year,
-    calificacion: calificacion,
-    calidad: calidad,
-    total: reproductores.length,
-    embeds: reproductores.map(function (r) { return r.url; }),
-    reproductores: reproductores
-  };
-}
-
-// ======================================================
-// SCRAPER LAMOVIE
+// LAMOVIE
 // ======================================================
 function extraerSlugLamovie(pageUrl) {
   var m = pageUrl.match(/\/(?:peliculas|series|animes|pelicula|serie|anime)\/([^\/\?]+)/i);
@@ -553,7 +455,7 @@ async function getPlayerLamovie(postId) {
     embeds.push({
       url: u,
       idioma: (e && (e.lang || e.language || e.idioma)) || 'Desconocido',
-      servidor: extraerServidor(u),
+      servidor: (e && e.server) || extraerServidor(u),
       calidad: (e && (e.quality || e.calidad)) || null,
       tipo: 'reproductor'
     });
@@ -583,7 +485,31 @@ async function getPlayerLamovie(postId) {
   return { embeds: embeds, downloads: downloads };
 }
 
-async function scrapearLamovie(pageUrl) {
+async function getEpisodesLamovie(serieId, season) {
+  season = season || 1;
+  var url = LAMOVIE_API + '/single/episodes/list?_id=' + encodeURIComponent(serieId) +
+    '&season=' + season + '&page=1&postsPerPage=50';
+  var res = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+      'Accept': 'application/json',
+      'Referer': LAMOVIE_BASE + '/'
+    }
+  });
+  if (!res.ok) return { posts: [], seasons: [] };
+  var data = await res.json();
+  var d = (data && data.data) ? data.data : {};
+  var posts = Array.isArray(d.posts) ? d.posts : [];
+  var seasons = Array.isArray(d.seasons)
+    ? d.seasons.map(function (s) { return parseInt(s, 10); }).filter(function (n) { return !isNaN(n); })
+    : [];
+  return { posts: posts, seasons: seasons };
+}
+
+async function scrapearLamovie(pageUrl, opts) {
+  opts = opts || {};
+  var incluirPlayers = !!opts.players;
+
   var slug = extraerSlugLamovie(pageUrl);
   if (!slug) throw new Error('No se pudo extraer el slug de la URL de Lamovie');
 
@@ -594,9 +520,10 @@ async function scrapearLamovie(pageUrl) {
 
   var postId = encontrado.postId;
   var post = encontrado.post || {};
-  var playerData = await getPlayerLamovie(postId);
-  var embeds = playerData.embeds;
-  var downloads = playerData.downloads;
+
+  var tipo = 'Pelicula';
+  if (post.type === 'tvshows' || /\/series\//i.test(pageUrl)) tipo = 'Serie';
+  if (post.type === 'animes' || /\/animes\//i.test(pageUrl)) tipo = 'Anime';
 
   var titulo = post.title || 'Sin titulo';
   var portada = '';
@@ -609,9 +536,95 @@ async function scrapearLamovie(pageUrl) {
   var year = post.release_date ? String(post.release_date).slice(0, 4) : null;
   var calificacion = post.rating || post.imdb_rating || null;
 
+  // PELÍCULA
+  if (tipo === 'Pelicula') {
+    var playerData = await getPlayerLamovie(postId);
+    return {
+      success: true,
+      fuente: 'lamovie',
+      tipo: tipo,
+      link: pageUrl,
+      postId: postId,
+      titulo: titulo,
+      portada: portada,
+      descripcion: descripcion,
+      year: year,
+      calificacion: calificacion,
+      total: playerData.embeds.length,
+      embeds: playerData.embeds.map(function (e) { return e.url; }),
+      reproductores: playerData.embeds,
+      descargas: playerData.downloads,
+      temporadas: []
+    };
+  }
+
+  // SERIE / ANIME
+  var first = await getEpisodesLamovie(postId, 1);
+  var seasonNums = first.seasons && first.seasons.length ? first.seasons.slice() : [1];
+  if (opts.season) seasonNums = [parseInt(opts.season, 10)];
+
+  var temporadas = [];
+  var totalEps = 0;
+
+  for (var si = 0; si < seasonNums.length; si++) {
+    var seasonNum = seasonNums[si];
+    var epData = (seasonNum === 1 && !opts.season) ? first : await getEpisodesLamovie(postId, seasonNum);
+    var postsEps = epData.posts || [];
+
+    if (epData.seasons && epData.seasons.length && !opts.season) {
+      for (var sx = 0; sx < epData.seasons.length; sx++) {
+        if (seasonNums.indexOf(epData.seasons[sx]) === -1) seasonNums.push(epData.seasons[sx]);
+      }
+    }
+
+    var episodios = [];
+    for (var ei = 0; ei < postsEps.length; ei++) {
+      var ep = postsEps[ei];
+      var epId = ep._id || ep.id;
+      var epObj = {
+        postId: epId,
+        temporada: ep.season_number || seasonNum,
+        episodio: ep.episode_number || (ei + 1),
+        titulo: ep.title || ('Episodio ' + (ep.episode_number || ei + 1)),
+        slug: ep.slug || null,
+        overview: ep.overview || '',
+        runtime: ep.runtime || null,
+        still: ep.still_path
+          ? (String(ep.still_path).indexOf('http') === 0
+              ? ep.still_path
+              : 'https://image.tmdb.org/t/p/w300' + ep.still_path)
+          : null,
+        reproductor: null,
+        embeds: [],
+        reproductores: [],
+        descargas: []
+      };
+
+      if (incluirPlayers && epId) {
+        try {
+          var pd = await getPlayerLamovie(epId);
+          epObj.reproductores = pd.embeds || [];
+          epObj.embeds = (pd.embeds || []).map(function (e) { return e.url; });
+          epObj.reproductor = epObj.embeds[0] || null;
+          epObj.descargas = pd.downloads || [];
+        } catch (e) { /* ignore */ }
+      }
+
+      episodios.push(epObj);
+      totalEps++;
+    }
+
+    temporadas.push({
+      temporada: seasonNum,
+      total_episodios: episodios.length,
+      episodios: episodios
+    });
+  }
+
   return {
     success: true,
     fuente: 'lamovie',
+    tipo: tipo,
     link: pageUrl,
     postId: postId,
     titulo: titulo,
@@ -619,16 +632,164 @@ async function scrapearLamovie(pageUrl) {
     descripcion: descripcion,
     year: year,
     calificacion: calificacion,
-    calidad: [],
-    total: embeds.length,
-    embeds: embeds.map(function (e) { return e.url; }),
-    reproductores: embeds,
-    descargas: downloads
+    total_temporadas: temporadas.length,
+    total_episodios: totalEps,
+    total: totalEps,
+    embeds: [],
+    reproductores: [],
+    descargas: [],
+    temporadas: temporadas
   };
 }
 
 // ======================================================
-// SCRAPER HACKSTORE (con filtro de descargas)
+// PELISPLUSHD
+// ======================================================
+function extraerPlayurlsPelisplus(html) {
+  var reproductores = [];
+  var vistos = {};
+  var regex1 = /data-url=["']([^"']+)["'][^>]*data-name=["']([^"']*)["']/gi;
+  var m;
+  while ((m = regex1.exec(html)) !== null) {
+    if (m[1] && !vistos[m[1]]) {
+      vistos[m[1]] = true;
+      reproductores.push({
+        url: m[1],
+        idioma: m[2] || 'Desconocido',
+        servidor: extraerServidor(m[1]),
+        tipo: 'reproductor'
+      });
+    }
+  }
+  var regex2 = /data-name=["']([^"']*)["'][^>]*data-url=["']([^"']+)["']/gi;
+  while ((m = regex2.exec(html)) !== null) {
+    if (m[2] && !vistos[m[2]]) {
+      vistos[m[2]] = true;
+      reproductores.push({
+        url: m[2],
+        idioma: m[1] || 'Desconocido',
+        servidor: extraerServidor(m[2]),
+        tipo: 'reproductor'
+      });
+    }
+  }
+  return reproductores;
+}
+
+async function scrapearPelisplus(pageUrl, opts) {
+  opts = opts || {};
+  var maxCaps = opts.maxCaps || 5;
+  var incluirPlayers = opts.players !== false; // en capítulos siempre; en serie raíz solo si players o por defecto primeros N
+
+  var res = await fetch(pageUrl, {
+    headers: Object.assign({}, HEADERS, { 'Referer': PELISPLUS_BASE + '/' })
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  var html = await res.text();
+
+  var esSerie = /\/serie\//i.test(pageUrl) || /\/anime\//i.test(pageUrl);
+  var esCapitulo = /\/temporada\/\d+\/capitulo\/\d+/i.test(pageUrl);
+
+  var titulo = '';
+  var t1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+  var t2 = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
+  titulo = limpiarTexto((t1 && t1[1]) || (t2 && t2[1]) || '');
+
+  var portada = '';
+  var p1 = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i);
+  if (p1) portada = p1[1];
+
+  // Serie raíz → listar capítulos
+  if (esSerie && !esCapitulo) {
+    var caps = [];
+    var reCap = /href=["']((?:https?:\/\/[^"']+)?\/(?:serie|anime)\/[^"']+\/temporada\/(\d+)\/capitulo\/(\d+)\/?)["']/gi;
+    var cm;
+    var seen = {};
+    while ((cm = reCap.exec(html)) !== null) {
+      var href = cm[1];
+      if (href.indexOf('http') !== 0) href = PELISPLUS_BASE + href;
+      href = href.replace(/\/$/, '') + '/';
+      var key = cm[2] + 'x' + cm[3];
+      if (seen[key]) continue;
+      seen[key] = true;
+      caps.push({
+        temporada: parseInt(cm[2], 10),
+        episodio: parseInt(cm[3], 10),
+        link: href,
+        reproductor: null,
+        embeds: [],
+        reproductores: []
+      });
+    }
+
+    // Agrupar por temporada
+    var bySeason = {};
+    for (var i = 0; i < caps.length; i++) {
+      var s = caps[i].temporada;
+      if (!bySeason[s]) bySeason[s] = [];
+      bySeason[s].push(caps[i]);
+    }
+
+    // Resolver players de los primeros maxCaps
+    var resolved = 0;
+    for (var j = 0; j < caps.length && resolved < maxCaps; j++) {
+      try {
+        var r2 = await fetch(caps[j].link, {
+          headers: Object.assign({}, HEADERS, { 'Referer': PELISPLUS_BASE + '/' })
+        });
+        if (!r2.ok) continue;
+        var h2 = await r2.text();
+        var reps = extraerPlayurlsPelisplus(h2);
+        caps[j].reproductores = reps;
+        caps[j].embeds = reps.map(function (x) { return x.url; });
+        caps[j].reproductor = reps[0] ? reps[0].url : null;
+        resolved++;
+      } catch (e) { /* ignore */ }
+    }
+
+    var temporadas = Object.keys(bySeason).map(Number).sort(function (a, b) { return a - b; }).map(function (num) {
+      return {
+        temporada: num,
+        total_episodios: bySeason[num].length,
+        episodios: bySeason[num]
+      };
+    });
+
+    return {
+      success: true,
+      fuente: 'pelisplushd',
+      tipo: 'Serie',
+      link: pageUrl,
+      titulo: titulo,
+      portada: portada,
+      total_temporadas: temporadas.length,
+      total_episodios: caps.length,
+      total: resolved,
+      embeds: [],
+      reproductores: [],
+      temporadas: temporadas,
+      nota: 'Solo los primeros ' + maxCaps + ' caps traen players. Usa la URL del capítulo para todos los servers.'
+    };
+  }
+
+  // Película o capítulo
+  var reproductores = extraerPlayurlsPelisplus(html);
+  return {
+    success: true,
+    fuente: 'pelisplushd',
+    tipo: esCapitulo ? 'Capitulo' : 'Pelicula',
+    link: pageUrl,
+    titulo: titulo,
+    portada: portada,
+    total: reproductores.length,
+    embeds: reproductores.map(function (r) { return r.url; }),
+    reproductores: reproductores,
+    descargas: []
+  };
+}
+
+// ======================================================
+// HACKSTORE
 // ======================================================
 async function scrapearHackstore(pageUrl) {
   var res = await fetch(pageUrl, {
@@ -641,64 +802,51 @@ async function scrapearHackstore(pageUrl) {
   var descargas = [];
   var vistos = {};
 
+  // play.php → seguir y extraer iframe/src
   var playMatches = html.match(/(?:https?:\/\/[^"'<>\s]*)?\/play\.php\?[^"'<>\s]+/gi) || [];
-  for (var j = 0; j < Math.min(6, playMatches.length); j++) {
+  for (var j = 0; j < Math.min(8, playMatches.length); j++) {
     try {
       var playUrl = playMatches[j];
       if (playUrl.indexOf('http') !== 0) {
         playUrl = HACKSTORE_BASE + (playUrl.indexOf('/') === 0 ? playUrl : '/' + playUrl);
       }
-      playUrl = playUrl.replace(/&amp;/g, '&').replace(/&#038;/g, '&');
-
-      var playRes = await fetch(playUrl, {
-        headers: Object.assign({}, HEADERS, { 'Referer': pageUrl })
+      playUrl = playUrl.replace(/&amp;/g, '&');
+      var pr = await fetch(playUrl, {
+        headers: Object.assign({}, HEADERS, { 'Referer': pageUrl }),
+        redirect: 'follow'
       });
-      var playHtml = await playRes.text();
-
-      var loc = playHtml.match(/window\.location\.href\s*=\s*['"]([^'"]+)/i) ||
-                playHtml.match(/location\.href\s*=\s*['"]([^'"]+)/i);
-      if (loc && loc[1]) {
-        var real = loc[1].trim();
-        if (esReproductorValido(real) && !vistos[real]) {
-          vistos[real] = true;
-          reproductores.push({
-            url: real,
-            idioma: 'Desconocido',
-            servidor: extraerServidor(real),
-            tipo: 'reproductor'
-          });
+      var phtml = await pr.text();
+      var ifr = phtml.match(/<(?:iframe|embed)[^>]+src=["']([^"']+)["']/i);
+      var src = ifr ? ifr[1] : null;
+      if (!src) {
+        var urls = phtml.match(/https?:\/\/[^\s"'<>]+/gi) || [];
+        for (var u = 0; u < urls.length; u++) {
+          if (esReproductorValido(urls[u])) { src = urls[u]; break; }
         }
       }
-    } catch (e) {}
+      if (src && !vistos[src] && esReproductorValido(src)) {
+        vistos[src] = true;
+        reproductores.push({
+          url: src,
+          idioma: 'Desconocido',
+          servidor: extraerServidor(src),
+          tipo: 'reproductor'
+        });
+      }
+    } catch (e) { /* ignore */ }
   }
 
-  var domainUrls = html.match(/domain_url=(https?:\/\/[^"'&\s]+)/gi) || [];
-  for (var d = 0; d < domainUrls.length; d++) {
-    var raw = domainUrls[d].replace(/^domain_url=/i, '');
-    try { raw = decodeURIComponent(raw); } catch (e) {}
-    raw = raw.replace(/["'<>),;]+$/g, '');
-    if (!raw || vistos[raw]) continue;
-    if (!esDescargaValida(raw)) continue;
-    vistos[raw] = true;
-    descargas.push({
-      url: raw,
-      servidor: extraerServidor(raw),
-      tipo: 'descarga'
-    });
-  }
-
-  var hrefs = html.match(/href=["'](https?:\/\/[^"']+)["']/gi) || [];
-  for (var h = 0; h < hrefs.length; h++) {
-    var hu = hrefs[h].replace(/^href=["']/i, '').replace(/["']$/g, '');
-    hu = hu.replace(/&amp;/g, '&');
+  // URLs directas en HTML
+  var allUrls = html.match(/https?:\/\/[^\s"'<>\\]+/gi) || [];
+  for (var i = 0; i < allUrls.length; i++) {
+    var hu = allUrls[i].replace(/\\u002F/g, '/').replace(/\\\//g, '/').replace(/["']$/g, '').replace(/&amp;/g, '&');
     if (vistos[hu]) continue;
-    if (esDescargaValida(hu)) {
+    if (esReproductorValido(hu)) {
       vistos[hu] = true;
-      descargas.push({
-        url: hu,
-        servidor: extraerServidor(hu),
-        tipo: 'descarga'
-      });
+      reproductores.push({ url: hu, idioma: 'Desconocido', servidor: extraerServidor(hu), tipo: 'reproductor' });
+    } else if (esDescargaValida(hu)) {
+      vistos[hu] = true;
+      descargas.push({ url: hu, servidor: extraerServidor(hu), tipo: 'descarga' });
     }
   }
 
@@ -712,55 +860,23 @@ async function scrapearHackstore(pageUrl) {
   var t1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
   var t2 = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
   titulo = limpiarTexto((t1 && t1[1]) || (t2 && t2[1]) || '');
-  titulo = titulo
-    .replace(/^Descargar\s+/i, '')
-    .replace(/\s*online\s*$/i, '')
-    .replace(/\s*gratis\s*$/i, '')
-    .replace(/\s*-\s*Hackstore.*$/i, '')
-    .trim();
+  titulo = titulo.replace(/^Descargar\s+/i, '').replace(/\s*-\s*Hackstore.*$/i, '').trim();
 
   var portada = '';
-  var p1 = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i);
-  var p2 = html.match(/thumbnailUrl["']?\s*:\s*["']([^"']+)["']/i);
-  var p3 = html.match(/https:\/\/image\.tmdb\.org\/t\/p\/[^"'\\]+/i);
-  if (p1) portada = p1[1];
-  else if (p2) portada = p2[1];
-  else if (p3) portada = p3[0];
+  var og = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i);
+  if (og) portada = og[1];
 
-  var descripcion = '';
-  var d1 = html.match(/property=["']og:description["']\s+content=["']([^"']+)["']/i);
-  var d2 = html.match(/name=["']description["']\s+content=["']([^"']+)["']/i);
-  descripcion = limpiarTexto((d1 && d1[1]) || (d2 && d2[1]) || '');
-
-  var year = null;
-  var yMatch = titulo.match(/\((19|20)\d{2}\)/) || html.match(/\b(19|20)\d{2}\b/);
-  if (yMatch) {
-    var ym = yMatch[0].match(/(19|20)\d{2}/);
-    if (ym) year = ym[0];
-  }
-
-  var calificacion = null;
-  var cMatch = html.match(/(\d+[.,]\d+)\s*\/\s*10/) || html.match(/(?:rating|imdb|tmdb)[^0-9]{0,15}(\d+[.,]\d+)/i);
-  if (cMatch) calificacion = cMatch[1].replace(',', '.');
-
-  var calidad = [];
-  var calMatch = html.match(/(4K|1080p|720p|Full HD|HD|BluRay|WEB-DL|HDRip|BDRip)/gi);
-  if (calMatch) {
-    var set = {};
-    for (var c = 0; c < calMatch.length; c++) set[calMatch[c].toUpperCase()] = true;
-    calidad = Object.keys(set);
-  }
+  var tipo = 'Pelicula';
+  if (/\/series\//i.test(pageUrl)) tipo = 'Serie';
+  if (/\/animes\//i.test(pageUrl)) tipo = 'Anime';
 
   return {
     success: true,
     fuente: 'hackstore',
+    tipo: tipo,
     link: pageUrl,
     titulo: titulo || 'Sin titulo',
     portada: portada,
-    descripcion: descripcion,
-    year: year,
-    calificacion: calificacion,
-    calidad: calidad,
     total: reproductores.length,
     embeds: reproductores.map(function (r) { return r.url; }),
     reproductores: reproductores,
