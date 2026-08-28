@@ -1,11 +1,5 @@
 {
   "name": "vimeos-resolver",
   "main": "src/index.js",
-  "compatibility_date": "2026-08-28",
-
-  "vars": {
-    "MOVIES_API_URL": "",
-    "SERIES_API_URL": "",
-    "ANIME_API_URL": ""
-  }
+  "compatibility_date": "2026-08-28"
 }
