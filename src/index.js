@@ -605,4 +605,129 @@ async function scrapearHackstore(pageUrl) {
   var descargas = [];
   var vistos = {};
 
-  var playMatches = html.match(/(?:https?:\/\/[^"'<>\s]*)?\/play\.php\?[^"'<>\s]+/gi) ||
+  var playMatches = html.match(/(?:https?:\/\/[^"'<>\s]*)?\/play\.php\?[^"'<>\s]+/gi) || [];
+  for (var j = 0; j < Math.min(6, playMatches.length); j++) {
+    try {
+      var playUrl = playMatches[j];
+      if (playUrl.indexOf('http') !== 0) {
+        playUrl = HACKSTORE_BASE + (playUrl.indexOf('/') === 0 ? playUrl : '/' + playUrl);
+      }
+      playUrl = playUrl.replace(/&amp;/g, '&').replace(/&#038;/g, '&');
+
+      var playRes = await fetch(playUrl, {
+        headers: Object.assign({}, HEADERS, { 'Referer': pageUrl })
+      });
+      var playHtml = await playRes.text();
+
+      var loc = playHtml.match(/window\.location\.href\s*=\s*['"]([^'"]+)/i) ||
+                playHtml.match(/location\.href\s*=\s*['"]([^'"]+)/i);
+      if (loc && loc[1]) {
+        var real = loc[1].trim();
+        if (esReproductorValido(real) && !vistos[real]) {
+          vistos[real] = true;
+          reproductores.push({
+            url: real,
+            idioma: 'Desconocido',
+            servidor: extraerServidor(real),
+            tipo: 'reproductor'
+          });
+        }
+      }
+    } catch (e) {}
+  }
+
+  var domainUrls = html.match(/domain_url=(https?:\/\/[^"'&\s]+)/gi) || [];
+  for (var d = 0; d < domainUrls.length; d++) {
+    var raw = domainUrls[d].replace(/^domain_url=/i, '');
+    try { raw = decodeURIComponent(raw); } catch (e) {}
+    raw = raw.replace(/["'<>),;]+$/g, '');
+    if (!raw || vistos[raw]) continue;
+    if (!esDescargaValida(raw)) continue;
+    vistos[raw] = true;
+    descargas.push({
+      url: raw,
+      servidor: extraerServidor(raw),
+      tipo: 'descarga'
+    });
+  }
+
+  var hrefs = html.match(/href=["'](https?:\/\/[^"']+)["']/gi) || [];
+  for (var h = 0; h < hrefs.length; h++) {
+    var hu = hrefs[h].replace(/^href=["']/i, '').replace(/["']$/g, '');
+    hu = hu.replace(/&amp;/g, '&');
+    if (vistos[hu]) continue;
+    if (esDescargaValida(hu)) {
+      vistos[hu] = true;
+      descargas.push({
+        url: hu,
+        servidor: extraerServidor(hu),
+        tipo: 'descarga'
+      });
+    }
+  }
+
+  reproductores.sort(function (a, b) {
+    var aV = a.url.toLowerCase().indexOf('vimeos') !== -1 ? 1 : 0;
+    var bV = b.url.toLowerCase().indexOf('vimeos') !== -1 ? 1 : 0;
+    return bV - aV;
+  });
+
+  var titulo = '';
+  var t1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+  var t2 = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
+  titulo = limpiarTexto((t1 && t1[1]) || (t2 && t2[1]) || '');
+  titulo = titulo
+    .replace(/^Descargar\s+/i, '')
+    .replace(/\s*online\s*$/i, '')
+    .replace(/\s*gratis\s*$/i, '')
+    .replace(/\s*-\s*Hackstore.*$/i, '')
+    .trim();
+
+  var portada = '';
+  var p1 = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i);
+  var p2 = html.match(/thumbnailUrl["']?\s*:\s*["']([^"']+)["']/i);
+  var p3 = html.match(/https:\/\/image\.tmdb\.org\/t\/p\/[^"'\\]+/i);
+  if (p1) portada = p1[1];
+  else if (p2) portada = p2[1];
+  else if (p3) portada = p3[0];
+
+  var descripcion = '';
+  var d1 = html.match(/property=["']og:description["']\s+content=["']([^"']+)["']/i);
+  var d2 = html.match(/name=["']description["']\s+content=["']([^"']+)["']/i);
+  descripcion = limpiarTexto((d1 && d1[1]) || (d2 && d2[1]) || '');
+
+  var year = null;
+  var yMatch = titulo.match(/\((19|20)\d{2}\)/) || html.match(/\b(19|20)\d{2}\b/);
+  if (yMatch) {
+    var ym = yMatch[0].match(/(19|20)\d{2}/);
+    if (ym) year = ym[0];
+  }
+
+  var calificacion = null;
+  var cMatch = html.match(/(\d+[.,]\d+)\s*\/\s*10/) || html.match(/(?:rating|imdb|tmdb)[^0-9]{0,15}(\d+[.,]\d+)/i);
+  if (cMatch) calificacion = cMatch[1].replace(',', '.');
+
+  var calidad = [];
+  var calMatch = html.match(/(4K|1080p|720p|Full HD|HD|BluRay|WEB-DL|HDRip|BDRip)/gi);
+  if (calMatch) {
+    var set = {};
+    for (var c = 0; c < calMatch.length; c++) set[calMatch[c].toUpperCase()] = true;
+    calidad = Object.keys(set);
+  }
+
+  return {
+    success: true,
+    fuente: 'hackstore',
+    link: pageUrl,
+    titulo: titulo || 'Sin titulo',
+    portada: portada,
+    descripcion: descripcion,
+    year: year,
+    calificacion: calificacion,
+    calidad: calidad,
+    total: reproductores.length,
+    embeds: reproductores.map(function (r) { return r.url; }),
+    reproductores: reproductores,
+    descargas: descargas
+  };
+}
