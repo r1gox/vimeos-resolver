@@ -30,10 +30,13 @@ var REPRODUCTORES_BLOQUEADOS = [
   'oembed', 'wp-json', 'hackstore.fo', 'hackstore'
 ];
 
+// ======================================================
+// MANEJADOR PRINCIPAL
+// ======================================================
 async function handleRequest(request) {
   var url = new URL(request.url);
 
-  // Health
+  // Health check
   if (url.pathname === '/' && !url.searchParams.has('url') && !url.searchParams.has('q')) {
     return json({
       status: 'ok',
@@ -174,28 +177,21 @@ function json(data, status) {
 // ENRIQUECER RESULTADOS CON LAMOVIE
 // ======================================================
 async function enriquecerConLamovie(resultado) {
-  // Si ya tiene portada y calificación, no hacer nada
   if (resultado.portada && resultado.calificacion) {
     return resultado;
   }
-  
   try {
-    // Buscar en Lamovie por el título exacto
     var lamovieResults = await buscarLamovie(resultado.titulo, 1);
     if (lamovieResults && lamovieResults.length > 0) {
       var lamovieData = lamovieResults[0];
-      // Solo reemplazar si Lamovie tiene mejores datos
       if (lamovieData.portada) resultado.portada = lamovieData.portada;
       if (lamovieData.calificacion) resultado.calificacion = lamovieData.calificacion;
       if (lamovieData.year && !resultado.year) resultado.year = lamovieData.year;
-      // Si el título es más completo, usarlo
       if (lamovieData.titulo && lamovieData.titulo.length > resultado.titulo.length) {
         resultado.titulo = lamovieData.titulo;
       }
     }
-  } catch (e) {
-    // Silencioso
-  }
+  } catch (e) {}
   return resultado;
 }
 
@@ -314,7 +310,6 @@ async function buscarHackstore(query, limit) {
   if (!res.ok) return [];
   var html = await res.text();
 
-  // Palabras para filtrar resultados genéricos
   var PALABRAS_BLOQUEADAS = ['estrenos', 'populares', 'genero', 'categoria', 'pagina'];
 
   var links = {};
@@ -326,7 +321,6 @@ async function buscarHackstore(query, limit) {
     var slug = m[3];
     if (links[full]) continue;
     if (!slug || slug === 'page') continue;
-    // FILTRO: ignorar slugs genéricos
     var slugLower = slug.toLowerCase();
     var esInvalido = false;
     for (var i = 0; i < PALABRAS_BLOQUEADAS.length; i++) {
@@ -399,7 +393,6 @@ async function buscarPelisplus(query, limit) {
         if (vistos[slug]) continue;
         vistos[slug] = true;
 
-        // FILTRO: ignorar slugs genéricos
         var slugLower = slug.toLowerCase();
         var esInvalido = false;
         for (var i = 0; i < PALABRAS_BLOQUEADAS.length; i++) {
@@ -525,7 +518,55 @@ async function scrapearPelisplus(pageUrl) {
 }
 
 // ======================================================
-// 5. SCRAPER LAMOVIE
+// 5. EXTRACCIÓN DE REPRODUCTOR DESDE EMBED DE LAMOVIE
+// ======================================================
+async function extraerReproductorLamovieEmbed(embedUrl) {
+  try {
+    var res = await fetch(embedUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': LAMOVIE_BASE + '/'
+      }
+    });
+    if (!res.ok) return null;
+    var html = await res.text();
+    
+    // Buscar iframe con el reproductor
+    var iframeMatch = html.match(/<iframe[^>]*src=["']([^"']+)["'][^>]*>/i);
+    if (iframeMatch && iframeMatch[1]) {
+      var url = iframeMatch[1];
+      if (esReproductorValido(url)) {
+        return url;
+      }
+    }
+    
+    // Buscar window.location.href
+    var locMatch = html.match(/window\.location\.href\s*=\s*["']([^"']+)["']/i);
+    if (locMatch && locMatch[1]) {
+      var url2 = locMatch[1];
+      if (esReproductorValido(url2)) {
+        return url2;
+      }
+    }
+    
+    // Buscar cualquier URL de reproductor en el HTML
+    var urlRegex = /https?:\/\/[^\s"'<>]+/gi;
+    var urls = html.match(urlRegex) || [];
+    for (var i = 0; i < urls.length; i++) {
+      var u = urls[i];
+      if (esReproductorValido(u)) {
+        return u;
+      }
+    }
+    
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// ======================================================
+// 6. SCRAPER LAMOVIE (MEJORADO)
 // ======================================================
 function extraerSlugLamovie(pageUrl) {
   var m = pageUrl.match(/\/(?:peliculas|series|animes|pelicula|serie|anime)\/([^\/\?]+)/i);
@@ -591,6 +632,23 @@ async function getPlayerLamovie(postId) {
     var e = embedsRaw[i];
     var u = typeof e === 'string' ? e : (e.url || e.link || e.src || null);
     if (!u || vistos[u]) continue;
+    
+    // Si es embed de Lamovie, seguir la URL para extraer el reproductor real
+    if (u.indexOf('lamovie.org/embed.html') !== -1) {
+      var realUrl = await extraerReproductorLamovieEmbed(u);
+      if (realUrl && esReproductorValido(realUrl) && !vistos[realUrl]) {
+        vistos[realUrl] = true;
+        embeds.push({
+          url: realUrl,
+          idioma: (e && (e.lang || e.language || e.idioma)) || 'Desconocido',
+          servidor: extraerServidor(realUrl),
+          calidad: (e && (e.quality || e.calidad)) || null,
+          tipo: 'reproductor'
+        });
+      }
+      continue;
+    }
+    
     if (!esReproductorValido(u)) continue;
     vistos[u] = true;
     embeds.push({
@@ -671,7 +729,7 @@ async function scrapearLamovie(pageUrl) {
 }
 
 // ======================================================
-// 6. SCRAPER HACKSTORE (CON FALLBACK A LAMOVIE)
+// 7. SCRAPER HACKSTORE (CON FALLBACK A LAMOVIE)
 // ======================================================
 async function scrapearHackstore(pageUrl) {
   var res = await fetch(pageUrl, {
@@ -794,7 +852,7 @@ async function scrapearHackstore(pageUrl) {
     calidad = Object.keys(set);
   }
 
-  // --- NUEVO: Fallback a Lamovie para series sin reproductores ---
+  // Fallback a Lamovie para series sin reproductores
   var esSerie = pageUrl.indexOf('/series/') !== -1;
   var esAnime = pageUrl.indexOf('/animes/') !== -1;
   
@@ -808,9 +866,7 @@ async function scrapearHackstore(pageUrl) {
         lamovieData.fuente = 'hackstore (via lamovie)';
         return lamovieData;
       }
-    } catch (e) {
-      // Fallback silencioso
-    }
+    } catch (e) {}
   }
 
   return {
