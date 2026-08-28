@@ -95,6 +95,7 @@ function extraerServidor(url) {
     if (host.indexOf('mega.nz') !== -1 || host.indexOf('mega.co') !== -1) return 'mega';
     if (host.indexOf('mediafire') !== -1) return 'mediafire';
     if (host.indexOf('1fichier') !== -1) return '1fichier';
+    if (host.indexOf('megaup') !== -1) return 'megaup';
     return host.split('.')[0];
   } catch (e) {
     return 'desconocido';
@@ -136,6 +137,17 @@ function esDescargaValida(url) {
     if (u.indexOf(hosts[i]) !== -1) return true;
   }
   return false;
+}
+
+function json(data, status) {
+  status = status || 200;
+  return new Response(JSON.stringify(data, null, 2), {
+    status: status,
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*'
+    }
+  });
 }
 
 // ======================================================
@@ -222,7 +234,7 @@ async function scrapearPelisplus(pageUrl) {
 }
 
 // ======================================================
-// 2. LAMOVIE (igual que MOVIEZONE)
+// 2. LAMOVIE
 // ======================================================
 function extraerSlugLamovie(pageUrl) {
   var m = pageUrl.match(/\/(?:peliculas|series|animes|pelicula|serie|anime)\/([^\/\?]+)/i);
@@ -230,10 +242,7 @@ function extraerSlugLamovie(pageUrl) {
 }
 
 function slugAQuery(slug) {
-  return String(slug || '')
-    .replace(/-\d{4}$/, '')
-    .replace(/-/g, ' ')
-    .trim();
+  return String(slug || '').replace(/-\d{4}$/, '').replace(/-/g, ' ').trim();
 }
 
 async function buscarPostIdPorSlug(slug) {
@@ -306,7 +315,7 @@ async function getPlayerLamovie(postId) {
     var dl = downloadsRaw[j];
     var du = typeof dl === 'string' ? dl : (dl.url || dl.link || dl.href || null);
     if (!du || vistos[du]) continue;
-    if (!esDescargaValida(du) && !esReproductorValido(du)) continue;
+    if (!esDescargaValida(du)) continue;
     vistos[du] = true;
     downloads.push({
       url: du,
@@ -371,7 +380,7 @@ async function scrapearLamovie(pageUrl) {
 }
 
 // ======================================================
-// 3. HACKSTORE (igual que MOVIEZONE)
+// 3. HACKSTORE
 // ======================================================
 async function scrapearHackstore(pageUrl) {
   var res = await fetch(pageUrl, {
@@ -384,7 +393,7 @@ async function scrapearHackstore(pageUrl) {
   var descargas = [];
   var vistos = {};
 
-  // 1) PLAYERS: /play.php?u=... → seguir redirect a vimeos, voe, etc.
+  // Players: /play.php → window.location.href = vimeos/voe/...
   var playMatches = html.match(/(?:https?:\/\/[^"'<>\s]*)?\/play\.php\?[^"'<>\s]+/gi) || [];
   for (var j = 0; j < Math.min(6, playMatches.length); j++) {
     try {
@@ -416,7 +425,7 @@ async function scrapearHackstore(pageUrl) {
     } catch (e) {}
   }
 
-  // 2) DESCARGAS: sacar URL real de domain_url= en favicons de Google
+  // Descargas: domain_url= de favicons
   var domainUrls = html.match(/domain_url=(https?:\/\/[^"'&\s]+)/gi) || [];
   for (var d = 0; d < domainUrls.length; d++) {
     var raw = domainUrls[d].replace(/^domain_url=/i, '');
@@ -432,13 +441,13 @@ async function scrapearHackstore(pageUrl) {
     });
   }
 
-  // Fallback: href directos a mega/mediafire/etc (por si no hay domain_url)
+  // Fallback href directos
   var hrefs = html.match(/href=["'](https?:\/\/[^"']+)["']/gi) || [];
   for (var h = 0; h < hrefs.length; h++) {
     var hu = hrefs[h].replace(/^href=["']/i, '').replace(/["']$/g, '');
     hu = hu.replace(/&amp;/g, '&');
     if (vistos[hu]) continue;
-    if (esDescargaValida(hu) && hu.indexOf('google.com') === -1 && hu.indexOf('acortalink') === -1) {
+    if (esDescargaValida(hu)) {
       vistos[hu] = true;
       descargas.push({
         url: hu,
@@ -512,122 +521,4 @@ async function scrapearHackstore(pageUrl) {
     reproductores: reproductores,
     descargas: descargas
   };
-}
-
-  // Seguir play.php (como MOVIEZONE)
-  var playMatches = html.match(/https?:\/\/[^"'<>\s]*play\.php[^"'<>\s]*/gi) || [];
-  for (var j = 0; j < Math.min(3, playMatches.length); j++) {
-    try {
-      var playUrl = playMatches[j].replace(/["'<>),;]+$/g, '');
-      var playRes = await fetch(playUrl, {
-        headers: Object.assign({}, HEADERS, { 'Referer': HACKSTORE_BASE + '/' })
-      });
-      var playHtml = await playRes.text();
-
-      var loc = playHtml.match(/window\.location\.href\s*=\s*["']([^"']+)/i) ||
-                playHtml.match(/location\.href\s*=\s*["']([^"']+)/i);
-      if (loc && loc[1]) {
-        var siguiente = loc[1];
-        try { siguiente = new URL(siguiente, playUrl).toString(); } catch (e) {}
-        if (esReproductorValido(siguiente) && !vistos[siguiente]) {
-          vistos[siguiente] = true;
-          reproductores.push({
-            url: siguiente,
-            idioma: 'Desconocido',
-            servidor: extraerServidor(siguiente),
-            tipo: 'reproductor'
-          });
-        }
-      }
-
-      var playUrls = playHtml.match(/https?:\/\/[^\s"'<>\\]+/gi) || [];
-      for (var k = 0; k < playUrls.length; k++) {
-        var pu = playUrls[k]
-          .replace(/\\u002F/g, '/')
-          .replace(/\\\//g, '/')
-          .replace(/["'<>),;]+$/g, '');
-        if (esReproductorValido(pu) && !vistos[pu]) {
-          vistos[pu] = true;
-          reproductores.push({
-            url: pu,
-            idioma: 'Desconocido',
-            servidor: extraerServidor(pu),
-            tipo: 'reproductor'
-          });
-        }
-      }
-    } catch (e) {}
-  }
-
-  reproductores.sort(function (a, b) {
-    var aV = a.url.toLowerCase().indexOf('vimeos') !== -1 ? 1 : 0;
-    var bV = b.url.toLowerCase().indexOf('vimeos') !== -1 ? 1 : 0;
-    return bV - aV;
-  });
-
-  var titulo = '';
-  var t1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
-  var t2 = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
-  titulo = limpiarTexto((t1 && t1[1]) || (t2 && t2[1]) || '');
-  titulo = titulo
-    .replace(/^Descargar\s+/i, '')
-    .replace(/\s*online\s*$/i, '')
-    .replace(/\s*gratis\s*$/i, '')
-    .replace(/\s*-\s*Hackstore.*$/i, '')
-    .trim();
-
-  var portada = '';
-  var p1 = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i);
-  if (p1) portada = p1[1];
-
-  var descripcion = '';
-  var d1 = html.match(/property=["']og:description["']\s+content=["']([^"']+)["']/i);
-  var d2 = html.match(/name=["']description["']\s+content=["']([^"']+)["']/i);
-  descripcion = limpiarTexto((d1 && d1[1]) || (d2 && d2[1]) || '');
-
-  var year = null;
-  var yMatch = titulo.match(/\((19|20)\d{2}\)/) || html.match(/\b(19|20)\d{2}\b/);
-  if (yMatch) {
-    var ym = yMatch[0].match(/(19|20)\d{2}/);
-    if (ym) year = ym[0];
-  }
-
-  var calificacion = null;
-  var cMatch = html.match(/(\d+[.,]\d+)\s*\/\s*10/) || html.match(/(?:rating|imdb|tmdb)[^0-9]{0,15}(\d+[.,]\d+)/i);
-  if (cMatch) calificacion = cMatch[1].replace(',', '.');
-
-  var calidad = [];
-  var calMatch = html.match(/(4K|1080p|720p|Full HD|HD|BluRay|WEB-DL|HDRip|BDRip)/gi);
-  if (calMatch) {
-    var set = {};
-    for (var c = 0; c < calMatch.length; c++) set[calMatch[c].toUpperCase()] = true;
-    calidad = Object.keys(set);
-  }
-
-  return {
-    success: true,
-    fuente: 'hackstore',
-    link: pageUrl,
-    titulo: titulo || 'Sin titulo',
-    portada: portada,
-    descripcion: descripcion,
-    year: year,
-    calificacion: calificacion,
-    calidad: calidad,
-    total: reproductores.length,
-    embeds: reproductores.map(function (r) { return r.url; }),
-    reproductores: reproductores,
-    descargas: descargas
-  };
-}
-
-function json(data, status) {
-  status = status || 200;
-  return new Response(JSON.stringify(data, null, 2), {
-    status: status,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*'
-    }
-  });
 }
