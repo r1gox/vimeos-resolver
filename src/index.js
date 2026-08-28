@@ -122,16 +122,17 @@ function esReproductorValido(url) {
   return false;
 }
 
+
 function esDescargaValida(url) {
   if (!url) return false;
   var u = String(url).toLowerCase();
   if (u.indexOf('google.com/s2/favicons') !== -1) return false;
   if (u.indexOf('acortalink') !== -1) return false;
   if (u.indexOf('favicon') !== -1) return false;
+  if (u.indexOf('magnet:') === 0) return false; // quitar torrents
   var hosts = [
     'mega.nz', 'mega.co.nz', 'mediafire.com', '1fichier.com',
-    'gofile.io', 'uptobox.com', 'pixeldrain.com', 'megaup.net',
-    'magnet:'
+    'gofile.io', 'uptobox.com', 'pixeldrain.com', 'megaup.net'
   ];
   for (var i = 0; i < hosts.length; i++) {
     if (u.indexOf(hosts[i]) !== -1) return true;
