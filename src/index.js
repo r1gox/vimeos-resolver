@@ -519,7 +519,13 @@ function limpiarTexto(txt) {
 /** Quita basura de títulos: "Descargar serie", " - Hackstore.fo Oficial...", etc. */
 function limpiarTitulo(txt) {
   if (!txt) return '';
-  var t = String(txt);
+  var t = limpiarTexto(String(txt));
+  // Mojibake frecuente en títulos
+  t = t.replace(/CÃ³digo/gi, 'Código').replace(/CÃ\x93digo/gi, 'Código');
+  t = t.replace(/Ã¡/g, 'á').replace(/Ã©/g, 'é').replace(/Ã­/g, 'í')
+    .replace(/Ã³/g, 'ó').replace(/Ãº/g, 'ú').replace(/Ã±/g, 'ñ')
+    .replace(/ÃÁ/g, 'Á').replace(/Ã‰/g, 'É').replace(/Ã/g, 'Í')
+    .replace(/Ã“/g, 'Ó').replace(/Ãš/g, 'Ú').replace(/Ã‘/g, 'Ñ');
   t = t.replace(/\s*[-|–—]\s*Hackstore\.fo Oficial.*$/i, '');
   t = t.replace(/\s*[-|–—]\s*Peliculas,?\s*Series y animes.*$/i, '');
   t = t.replace(/\s*[-|–—]\s*Pelisplus.*$/i, '');
@@ -1291,13 +1297,41 @@ async function buscarLamovie(query, limit) {
   return out;
 }
 
+/** Query limpia para buscadores: sin acentos raros, sin ":", sin mojibake */
+function normalizarQueryBusqueda(q) {
+  var s = limpiarTexto(String(q || ''));
+  // Quitar mojibake residual y normalizar Unicode
+  try {
+    s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  } catch (e) { /* ok */ }
+  // "CÃ³digo" → "Codigo" si aún queda
+  s = s.replace(/CAdigo|CÃ³digo|CÃ\x93digo/gi, 'Codigo');
+  s = s.replace(/[:;|/\\]+/g, ' ');
+  s = s.replace(/\s+/g, ' ').trim();
+  return s;
+}
+
+/** Título legible desde slug: codigo-venganza → Código Venganza (aprox.) */
+function tituloDesdeSlug(slug) {
+  var t = String(slug || '')
+    .replace(/-\d{4}$/, '')
+    .replace(/-+/g, ' ')
+    .trim();
+  // Capitalizar palabras
+  t = t.replace(/\b([a-z])/g, function (c) { return c.toUpperCase(); });
+  return limpiarTitulo(t);
+}
+
 async function buscarHackstore(query, limit) {
-  var url = HACKSTORE_BASE + '/?s=' + encodeURIComponent(query);
+  var q = normalizarQueryBusqueda(query);
+  if (!q) return [];
+  var url = HACKSTORE_BASE + '/?s=' + encodeURIComponent(q);
   var res = await fetch(url, {
     headers: Object.assign({}, HEADERS, { 'Referer': HACKSTORE_BASE + '/' })
   });
   if (!res.ok) return [];
   var html = await res.text();
+  html = html.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&');
   var out = [];
   var vistos = {};
   var regex = /href=["'](https?:\/\/(?:www\.)?hackstore\.[a-z]+\/(peliculas|series|animes)\/([^"'\/\?]+))\/?["']/gi;
@@ -1312,46 +1346,114 @@ async function buscarHackstore(query, limit) {
     var tipo = 'Pelicula';
     if (seccion === 'series') tipo = 'Serie';
     if (seccion === 'animes') tipo = 'Anime';
+
+    // Portada: data-src de lazyload cerca del enlace
+    var portada = null;
+    var pos = m.index;
+    var chunk = html.slice(Math.max(0, pos - 80), pos + 900);
+    var imgM = chunk.match(/data-src=["'](https?:\/\/[^"']+)["']/i)
+      || chunk.match(/data-lazy-src=["'](https?:\/\/[^"']+)["']/i)
+      || chunk.match(/src=["'](https?:\/\/image\.tmdb\.org\/[^"']+)["']/i);
+    if (imgM && !/data:image|svg\+xml|lazyload\.min/i.test(imgM[1])) {
+      portada = imgM[1].replace('/w300/', '/w500/');
+    }
+
+    // Año desde slug
+    var year = null;
+    var ym = slug.match(/-(\d{4})$/);
+    if (ym) year = ym[1];
+
     out.push({
-      titulo: limpiarTitulo(slug.replace(/-/g, ' ')),
+      titulo: tituloDesdeSlug(slug),
       tipo: tipo,
       fuente: 'hackstore',
       link: link,
-      slug: slug
+      slug: slug,
+      portada: portada,
+      year: year
     });
   }
   return out;
 }
 
 async function buscarPelisplus(query, limit) {
-  var url = PELISPLUS_BASE + '/search?s=' + encodeURIComponent(query);
-  var res = await fetch(url, {
-    headers: Object.assign({}, HEADERS, { 'Referer': PELISPLUS_BASE + '/' })
-  });
-  if (!res.ok) return [];
-  var html = await res.text();
+  // Variantes: con y sin acentos, sin ":"
+  var variantes = [];
+  var q0 = limpiarTexto(String(query || ''));
+  var q1 = normalizarQueryBusqueda(query);
+  if (q0) variantes.push(q0);
+  if (q1 && variantes.indexOf(q1) === -1) variantes.push(q1);
+  // Sin dos puntos / caracteres especiales
+  var q2 = q1.replace(/[^\w\s\-]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (q2 && variantes.indexOf(q2) === -1) variantes.push(q2);
+  // Primera palabra + última si hay muchas (Código Venganza → Codigo Venganza)
+  if (variantes.length === 0) return [];
+
   var out = [];
   var vistos = {};
-  var regex = /href=["']((?:https?:\/\/[^"']+)?\/(?:pelicula|serie|anime)\/([^"'\/\?]+))\/?["']/gi;
-  var m;
-  while ((m = regex.exec(html)) !== null && out.length < (limit || 15)) {
-    var path = m[1];
-    var slug = m[2];
-    var full = path.indexOf('http') === 0 ? path : PELISPLUS_BASE + path;
-    full = full.replace(/\/$/, '') + '/';
-    if (vistos[full]) continue;
-    if (PALABRAS_BLOQUEADAS_BUSQUEDA.some(function (w) { return slug.indexOf(w) !== -1; })) continue;
-    vistos[full] = true;
-    var tipo = 'Pelicula';
-    if (/\/serie\//i.test(full)) tipo = 'Serie';
-    if (/\/anime\//i.test(full)) tipo = 'Anime';
-    out.push({
-      titulo: limpiarTitulo(slug.replace(/-/g, ' ')),
-      tipo: tipo,
-      fuente: 'pelisplushd',
-      link: full,
-      slug: slug
-    });
+  var limitN = limit || 15;
+
+  for (var vi = 0; vi < variantes.length && out.length < limitN; vi++) {
+    var q = variantes[vi];
+    if (!q) continue;
+    try {
+      var url = PELISPLUS_BASE + '/search?s=' + encodeURIComponent(q);
+      var res = await fetch(url, {
+        headers: Object.assign({}, HEADERS, {
+          'Referer': PELISPLUS_BASE + '/',
+          'Accept-Language': 'es-ES,es;q=0.9'
+        })
+      });
+      if (!res.ok) continue;
+      var html = await res.text();
+
+      // Links pelicula/serie/anime
+      var regex = /href=["']((?:https?:\/\/[^"']+)?\/(?:pelicula|serie|anime)\/([^"'\/\?]+))\/?["']/gi;
+      var m;
+      while ((m = regex.exec(html)) !== null && out.length < limitN) {
+        var path = m[1];
+        var slug = decodeURIComponent(m[2] || '');
+        // Arreglar slugs rotos tipo c-digo-traje-rojo → codigo-...
+        slug = slug.replace(/\bc-digo\b/gi, 'codigo').replace(/\bc-\s*digo\b/gi, 'codigo');
+        var full = path.indexOf('http') === 0 ? path : PELISPLUS_BASE + path;
+        full = full.replace(/\/$/, '') + '/';
+        if (vistos[full]) continue;
+        if (PALABRAS_BLOQUEADAS_BUSQUEDA.some(function (w) { return slug.indexOf(w) !== -1; })) continue;
+        vistos[full] = true;
+        var tipo = 'Pelicula';
+        if (/\/serie\//i.test(full)) tipo = 'Serie';
+        if (/\/anime\//i.test(full)) tipo = 'Anime';
+
+        // Portada desde /poster/slug-thumb.jpg cerca del link
+        var portada = null;
+        var chunk = html.slice(Math.max(0, m.index - 200), m.index + 500);
+        var pm = chunk.match(/(?:src|data-src)=["'](\/?poster\/[^"']+)["']/i)
+          || chunk.match(/(?:src|data-src)=["'](https?:\/\/[^"']*\/poster\/[^"']+)["']/i);
+        if (pm) {
+          portada = pm[1].indexOf('http') === 0 ? pm[1] : PELISPLUS_BASE + (pm[1].charAt(0) === '/' ? pm[1] : '/' + pm[1]);
+          // Preferir poster completo sin -thumb si existe patrón
+          portada = portada.replace(/-thumb\.(jpg|png|webp)/i, '.$1');
+        }
+        if (!portada) {
+          portada = PELISPLUS_BASE + '/poster/' + slug + '.jpg';
+        }
+
+        var titulo = tituloDesdeSlug(slug);
+        // Título visible en el HTML (alt o texto)
+        var tm = chunk.match(/alt=["']([^"']{3,80})["']/i)
+          || chunk.match(/title=["']([^"']{3,80})["']/i);
+        if (tm) titulo = limpiarTitulo(limpiarTexto(tm[1]));
+
+        out.push({
+          titulo: titulo,
+          tipo: tipo,
+          fuente: 'pelisplushd',
+          link: full,
+          slug: slug,
+          portada: portada
+        });
+      }
+    } catch (e) { /* next variante */ }
   }
   return out;
 }
