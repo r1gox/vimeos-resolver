@@ -111,10 +111,13 @@ async function handleRequest(request) {
             ? (r.tipo === 'Anime' ? 'anime' : 'serie')
             : 'pelicula';
           var sid = sourceIdFromName(r.fuente);
+          r.titulo = limpiarTitulo(r.titulo || '');
           if (r.slug) {
-            r.url = origin + '/' + sid + '/' + tipoPath + '/' + r.slug;
+            r.url_extract = origin + '/' + sid + '/' + tipoPath + '/' + r.slug;
             r.source_id = sid;
           }
+          delete r.link;
+          delete r.url;
         }
       }
       return json(resultados);
@@ -350,17 +353,23 @@ function reescribirLinksCortos(resultado, origin, slugHint, tipoHint, fuenteHint
         var s = ep.temporada || resultado.temporadas[t].temporada || 1;
         var n = ep.episodio || (e + 1);
         if (slug) {
-          ep.link = origin + '/' + sid + '/' + tipoPath + '/' + slug + '/' + s + '/' + n;
-          ep.url = ep.link;
+          var uv = origin + '/' + sid + '/' + tipoPath + '/' + slug + '/' + s + '/' + n;
+          ep.url_video = uv;
+          ep.link = uv;
           ep.source_id = sid;
+          delete ep.url;
+          delete ep.source_link;
         }
       }
     }
   }
 
   if (resultado.tipo === 'Capitulo' && slug && resultado.temporada && resultado.episodio) {
-    resultado.url = origin + '/' + sid + '/' + tipoPath + '/' + slug + '/' + resultado.temporada + '/' + resultado.episodio;
+    resultado.url_video = origin + '/' + sid + '/' + tipoPath + '/' + slug + '/' + resultado.temporada + '/' + resultado.episodio;
+    delete resultado.url;
   }
+
+  if (resultado.titulo) resultado.titulo = limpiarTitulo(resultado.titulo);
 
   return resultado;
 }
@@ -402,6 +411,107 @@ function json(data, status) {
 function limpiarTexto(txt) {
   if (!txt) return '';
   return String(txt).replace(/\s+/g, ' ').trim();
+}
+
+/** Quita basura de títulos: "Descargar serie", " - Hackstore.fo Oficial...", etc. */
+function limpiarTitulo(txt) {
+  if (!txt) return '';
+  var t = String(txt);
+  t = t.replace(/\s*[-|–—]\s*Hackstore\.fo Oficial.*$/i, '');
+  t = t.replace(/\s*[-|–—]\s*Peliculas,?\s*Series y animes.*$/i, '');
+  t = t.replace(/\s*[-|–—]\s*Pelisplus.*$/i, '');
+  t = t.replace(/\s*Online Latino HD.*$/i, '');
+  t = t.replace(/\s*Gratis\s*$/i, '');
+  t = t.replace(/^Ver\s+Serie:\s*/i, '');
+  t = t.replace(/^Ver\s+Pel[ií]cula:\s*/i, '');
+  t = t.replace(/^Descargar\s+(serie|pel[ií]cula|anime)\s+/i, '');
+  t = t.replace(/^Serie\s+/i, '');
+  t = t.replace(/\s*:\s*\d+x\d+(\s*[-–].*)?$/i, '');
+  return limpiarTexto(t);
+}
+
+/** Extrae titulo, descripcion y portada del HTML (og / meta / h1) */
+function extraerMetas(html) {
+  html = html || '';
+  var titulo = '';
+  var m;
+
+  m = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i)
+    || html.match(/content=["']([^"']+)["']\s+property=["']og:title["']/i);
+  if (m) titulo = m[1];
+  if (!titulo) {
+    m = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+    if (m) titulo = m[1];
+  }
+  if (!titulo) {
+    m = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    if (m) titulo = m[1];
+  }
+  titulo = limpiarTitulo(titulo);
+
+  var descripcion = '';
+  m = html.match(/property=["']og:description["']\s+content=["']([^"']+)["']/i)
+    || html.match(/content=["']([^"']+)["']\s+property=["']og:description["']/i)
+    || html.match(/name=["']description["']\s+content=["']([^"']+)["']/i)
+    || html.match(/content=["']([^"']+)["']\s+name=["']description["']/i);
+  if (m) descripcion = limpiarTexto(m[1]);
+  descripcion = descripcion.replace(/^Serie\s+[^:]+:\s*/i, '');
+
+  var portada = '';
+  m = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i)
+    || html.match(/content=["']([^"']+)["']\s+property=["']og:image["']/i);
+  if (m) portada = m[1];
+  if (!portada) {
+    m = html.match(/data-src=["'](https?:\/\/image\.tmdb\.org\/[^"']+)["']/i)
+      || html.match(/src=["'](https?:\/\/image\.tmdb\.org\/t\/p\/w(?:300|500|780)\/[^"']+)["']/i);
+    if (m) portada = m[1];
+  }
+  if (!portada) {
+    m = html.match(/src=["'](\/?poster\/[^"']+)["']/i);
+    if (m) {
+      portada = m[1].indexOf('http') === 0 ? m[1] : PELISPLUS_BASE + (m[1].charAt(0) === '/' ? m[1] : '/' + m[1]);
+    }
+  }
+  if (portada && /image\.tmdb\.org\/t\/p\/w300\//i.test(portada)) {
+    portada = portada.replace('/w300/', '/w500/');
+  }
+
+  return { titulo: titulo, descripcion: descripcion, portada: portada };
+}
+
+/** Extrae links de descarga (mega, mediafire, etc.) del HTML */
+function extraerDescargas(html) {
+  var out = [];
+  var vistos = {};
+
+  function add(u) {
+    if (!u || vistos[u]) return;
+    var low = String(u).toLowerCase();
+    if (low.indexOf('favicon') !== -1 || low.indexOf('google.com/s2') !== -1) return;
+    if (!esDescargaValida(u)) return;
+    vistos[u] = true;
+    out.push({
+      url: u,
+      servidor: extraerServidor(u),
+      tipo: 'descarga'
+    });
+  }
+
+  var reDom = /domain_url=(https?%3A%2F%2F[^&"'>\s]+|https?:\/\/[^&"'>\s]+)/gi;
+  var m;
+  while ((m = reDom.exec(html)) !== null) {
+    var u = m[1];
+    try { u = decodeURIComponent(u); } catch (e) { /* ignore */ }
+    add(u);
+  }
+
+  var reHref = /href=["'](https?:\/\/[^"']+)["']/gi;
+  while ((m = reHref.exec(html)) !== null) add(m[1]);
+
+  var rePlain = /https?:\/\/(?:www\.)?(?:mega\.nz|mediafire\.com|1fichier\.com|megaup\.net|gofile\.io)[^\s"'<>]*/gi;
+  while ((m = rePlain.exec(html)) !== null) add(m[0]);
+
+  return out;
 }
 
 function extraerServidor(url) {
@@ -568,7 +678,7 @@ async function buscarHackstore(query, limit) {
     if (seccion === 'series') tipo = 'Serie';
     if (seccion === 'animes') tipo = 'Anime';
     out.push({
-      titulo: slug.replace(/-/g, ' '),
+      titulo: limpiarTitulo(slug.replace(/-/g, ' ')),
       tipo: tipo,
       fuente: 'hackstore',
       link: link,
@@ -601,7 +711,7 @@ async function buscarPelisplus(query, limit) {
     if (/\/serie\//i.test(full)) tipo = 'Serie';
     if (/\/anime\//i.test(full)) tipo = 'Anime';
     out.push({
-      titulo: slug.replace(/-/g, ' '),
+      titulo: limpiarTitulo(slug.replace(/-/g, ' ')),
       tipo: tipo,
       fuente: 'pelisplushd',
       link: full,
@@ -1012,14 +1122,10 @@ async function scrapearPelisplus(pageUrl, opts) {
   var esSerie = /\/serie\//i.test(pageUrl) || /\/anime\//i.test(pageUrl);
   var esCapitulo = /\/temporada\/\d+\/capitulo\/\d+/i.test(pageUrl);
 
-  var titulo = '';
-  var t1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
-  var t2 = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
-  titulo = limpiarTexto((t1 && t1[1]) || (t2 && t2[1]) || '');
-
-  var portada = '';
-  var p1 = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i);
-  if (p1) portada = p1[1];
+  var metas = extraerMetas(html);
+  var titulo = metas.titulo;
+  var portada = metas.portada;
+  var descripcion = metas.descripcion;
 
   // Serie raíz → listar capítulos
   if (esSerie && !esCapitulo) {
@@ -1102,20 +1208,25 @@ async function scrapearPelisplus(pageUrl, opts) {
       link: pageUrl,
       titulo: titulo,
       portada: portada,
+      descripcion: descripcion,
+      year: null,
+      calificacion: null,
       total_temporadas: temporadas.length,
       total_episodios: caps.length,
       total: resolved,
       embeds: [],
       reproductores: [],
+      descargas: [],
       temporadas: temporadas,
       nota: incluirPlayers
-        ? 'Players solo en los primeros ' + maxCaps + ' caps. Usa ?url=SERIE&season=N&episode=M para un capítulo.'
-        : 'Usa ?url=SERIE&season=N&episode=M o el link de cada episodio para obtener los players.'
+        ? 'Players solo en los primeros ' + maxCaps + ' caps. Usa /3/serie/slug/T/E para un capítulo.'
+        : 'Usa /3/serie/slug/T/E o url_video de cada episodio para obtener los players.'
     };
   }
 
   // Película o capítulo
   var reproductores = extraerPlayurlsPelisplus(html);
+  var descargas = extraerDescargas(html);
   var capMatch = pageUrl.match(/\/temporada\/(\d+)\/capitulo\/(\d+)/i);
   return {
     success: true,
@@ -1124,12 +1235,15 @@ async function scrapearPelisplus(pageUrl, opts) {
     link: pageUrl,
     titulo: titulo,
     portada: portada,
+    descripcion: descripcion,
+    year: null,
+    calificacion: null,
     temporada: capMatch ? parseInt(capMatch[1], 10) : null,
     episodio: capMatch ? parseInt(capMatch[2], 10) : null,
     total: reproductores.length,
     embeds: reproductores.map(function (r) { return r.url; }),
     reproductores: reproductores,
-    descargas: []
+    descargas: descargas
   };
 }
 
@@ -1199,21 +1313,21 @@ async function scrapearHackstoreEpisodio(pageUrl) {
     } catch (e) { /* ignore */ }
   }
 
-  var titulo = '';
-  var t1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
-  var t2 = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
-  titulo = limpiarTexto((t1 && t1[1]) || (t2 && t2[1]) || '');
+  var metas = extraerMetas(html);
+  var descargas = extraerDescargas(html);
 
   return {
     success: true,
     fuente: 'hackstore',
     tipo: 'Capitulo',
     link: pageUrl,
-    titulo: titulo,
+    titulo: metas.titulo,
+    portada: metas.portada,
+    descripcion: metas.descripcion,
     total: reproductores.length,
     embeds: reproductores.map(function (r) { return r.url; }),
     reproductores: reproductores,
-    descargas: []
+    descargas: descargas
   };
 }
 
@@ -1316,26 +1430,28 @@ async function scrapearHackstore(pageUrl, opts) {
       return { temporada: num, total_episodios: bySeason[num].length, episodios: bySeason[num] };
     });
 
-    var titulo = '';
-    var t1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
-    var t2 = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
-    titulo = limpiarTexto((t1 && t1[1]) || (t2 && t2[1]) || '');
+    var metas = extraerMetas(html);
 
     return {
       success: true,
       fuente: 'hackstore',
       tipo: 'Serie',
       link: pageUrl,
-      titulo: titulo,
+      titulo: metas.titulo,
+      portada: metas.portada,
+      descripcion: metas.descripcion,
+      year: null,
+      calificacion: null,
       total_temporadas: temporadas.length,
       total_episodios: caps.length,
       total: caps.filter(function (c) { return c.reproductor; }).length,
       embeds: [],
       reproductores: [],
+      descargas: [],
       temporadas: temporadas,
       nota: incluirPlayers
-        ? 'Players solo en los primeros ' + maxCaps + ' caps. Usa ?url=SERIE&season=N&episode=M para un capítulo.'
-        : 'Usa ?url=SERIE&season=N&episode=M o el link de cada episodio para obtener los players.'
+        ? 'Players solo en los primeros ' + maxCaps + ' caps. Usa /2/serie/slug/T/E para un capítulo.'
+        : 'Usa /2/serie/slug/T/E o url_video de cada episodio para obtener los players.'
     };
   }
 
@@ -1361,17 +1477,19 @@ async function scrapearHackstore(pageUrl, opts) {
     } catch (e) { /* ignore */ }
   }
 
-  var tituloP = '';
-  var th1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
-  var th2 = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
-  tituloP = limpiarTexto((th1 && th1[1]) || (th2 && th2[1]) || '');
+  var metasP = extraerMetas(html);
+  descargas = extraerDescargas(html);
 
   return {
     success: true,
     fuente: 'hackstore',
     tipo: 'Pelicula',
     link: pageUrl,
-    titulo: tituloP,
+    titulo: metasP.titulo,
+    portada: metasP.portada,
+    descripcion: metasP.descripcion,
+    year: null,
+    calificacion: null,
     total: reproductores.length,
     embeds: reproductores.map(function (r) { return r.url; }),
     reproductores: reproductores,
