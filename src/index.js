@@ -539,6 +539,49 @@ function limpiarTitulo(txt) {
   return limpiarTexto(t);
 }
 
+/**
+ * Portadas Hackstore: wp-content/uploads/.../HASH.jpg suelen ser copias rotas de TMDB.
+ * → https://image.tmdb.org/t/p/w500/HASH.jpg
+ */
+function normalizarPortadaUrl(url) {
+  if (!url) return null;
+  var u = String(url).trim();
+  if (!u || u.indexOf('data:') === 0) return null;
+  if (/image\.tmdb\.org/i.test(u)) {
+    return u.replace(/\/w\d+\//, '/w500/');
+  }
+  var m = u.match(/\/(?:uploads\/\d{4}\/\d{2}\/|t\/p\/w\d+\/)([a-zA-Z0-9]{20,}\.(?:jpg|jpeg|png|webp))/i);
+  if (m) {
+    return 'https://image.tmdb.org/t/p/w500/' + m[1];
+  }
+  m = u.match(/\/([a-zA-Z0-9]{27,}\.(?:jpg|jpeg|png|webp))(?:\?|$)/i);
+  if (m && /hackstore|wp-content/i.test(u)) {
+    return 'https://image.tmdb.org/t/p/w500/' + m[1];
+  }
+  if (/media-amazon|amazon\.com/i.test(u)) return null;
+  return u;
+}
+
+/** Portada Hackstore: preferir TMDB data-src del lazyload */
+function extraerPortadaHackstore(html) {
+  html = html || '';
+  var m;
+  m = html.match(/data-src=["'](https?:\/\/image\.tmdb\.org\/[^"']+)["']/i)
+    || html.match(/data-lazy-src=["'](https?:\/\/image\.tmdb\.org\/[^"']+)["']/i)
+    || html.match(/src=["'](https?:\/\/image\.tmdb\.org\/[^"']+)["']/i);
+  if (m) return normalizarPortadaUrl(m[1]);
+  m = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i)
+    || html.match(/content=["']([^"']+)["']\s+property=["']og:image["']/i);
+  if (m) {
+    var p = normalizarPortadaUrl(m[1]);
+    if (p) return p;
+  }
+  m = html.match(/src=["'](https?:\/\/[^"']*hackstore[^"']*\/uploads\/[^"']+\.(?:jpg|png|webp))["']/i)
+    || html.match(/src=["'](https?:\/\/[^"']*\/wp-content\/uploads\/[^"']+\.(?:jpg|png|webp))["']/i);
+  if (m) return normalizarPortadaUrl(m[1]);
+  return null;
+}
+
 /** Extrae titulo, descripcion completa, portada, géneros y año del HTML de la fuente */
 function extraerMetas(html) {
   html = html || '';
@@ -605,6 +648,7 @@ function extraerMetas(html) {
       || html.match(/src=["'](https?:\/\/image\.tmdb\.org\/t\/p\/w(?:300|500|780)\/[^"']+)["']/i);
     if (m) portada = m[1];
   }
+  if (portada) portada = normalizarPortadaUrl(portada) || portada;
   if (portada && /image\.tmdb\.org\/t\/p\/w300\//i.test(portada)) {
     portada = portada.replace('/w300/', '/w500/');
   }
@@ -2151,9 +2195,9 @@ async function scrapearHackstoreEpisodio(pageUrl) {
     fuente: 'hackstore',
     tipo: 'Capitulo',
     link: pageUrl,
-    titulo: metas.titulo,
-    portada: metas.portada,
-    descripcion: metas.descripcion,
+    titulo: limpiarTitulo(metas.titulo),
+    portada: extraerPortadaHackstore(html) || normalizarPortadaUrl(metas.portada) || metas.portada,
+    descripcion: limpiarTexto(metas.descripcion),
     total: reproductores.length,
     embeds: reproductores.map(function (r) { return r.url; }),
     reproductores: reproductores,
@@ -2261,16 +2305,20 @@ async function scrapearHackstore(pageUrl, opts) {
     });
 
     var metas = extraerMetas(html);
+    var portadaHs = extraerPortadaHackstore(html) || normalizarPortadaUrl(metas.portada) || metas.portada;
+    var yearHs = null;
+    var ym = (metas.titulo || pageUrl).match(/\((\d{4})\)/) || pageUrl.match(/-(\d{4})\/?$/);
+    if (ym) yearHs = ym[1];
 
     return {
       success: true,
       fuente: 'hackstore',
       tipo: 'Serie',
       link: pageUrl,
-      titulo: metas.titulo,
-      portada: metas.portada,
-      descripcion: metas.descripcion,
-      year: null,
+      titulo: limpiarTitulo(metas.titulo),
+      portada: portadaHs,
+      descripcion: limpiarTexto(metas.descripcion),
+      year: yearHs,
       calificacion: null,
       total_temporadas: temporadas.length,
       total_episodios: caps.length,
@@ -2309,16 +2357,20 @@ async function scrapearHackstore(pageUrl, opts) {
 
   var metasP = extraerMetas(html);
   descargas = extraerDescargas(html);
+  var portadaPel = extraerPortadaHackstore(html) || normalizarPortadaUrl(metasP.portada) || metasP.portada;
+  var yearPel = null;
+  var ymP = (metasP.titulo || pageUrl).match(/\((\d{4})\)/) || pageUrl.match(/-(\d{4})\/?$/);
+  if (ymP) yearPel = ymP[1];
 
   return {
     success: true,
     fuente: 'hackstore',
     tipo: 'Pelicula',
     link: pageUrl,
-    titulo: metasP.titulo,
-    portada: metasP.portada,
-    descripcion: metasP.descripcion,
-    year: null,
+    titulo: limpiarTitulo(metasP.titulo),
+    portada: portadaPel,
+    descripcion: limpiarTexto(metasP.descripcion),
+    year: yearPel,
     calificacion: null,
     total: reproductores.length,
     embeds: reproductores.map(function (r) { return r.url; }),
