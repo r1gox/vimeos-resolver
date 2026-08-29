@@ -1129,17 +1129,13 @@ function extraerPlayurlsPelisplus(html) {
 }
 
 async function listarPelisplusCatalogo(seccion, filtro, page, origin) {
-  seccion = (seccion || 'peliculas').toLowerCase(); // peliculas|series|animes
-  filtro = (filtro || '').toLowerCase(); // estrenos|populares|''
+  seccion = (seccion || 'peliculas').toLowerCase();
+  filtro = (filtro || '').toLowerCase();
   page = page || 1;
 
   var pathCat = '/' + seccion;
   if (filtro === 'estrenos' || filtro === 'populares') {
     pathCat += '/' + filtro;
-  }
-  if (page > 1) {
-    pathCat += (pathCat.indexOf('?') === -1 ? '' : '') ;
-    // pelisplus suele usar ?page=N
   }
   var listUrl = PELISPLUS_BASE + pathCat + (page > 1 ? '?page=' + page : '');
 
@@ -1154,42 +1150,42 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin) {
   if (seccion === 'series') { tipoItem = 'Serie'; tipoPath = 'serie'; }
   if (seccion === 'animes') { tipoItem = 'Anime'; tipoPath = 'anime'; }
 
-  var re = seccion === 'series'
-    ? /href=["']((?:https?:\/\/[^"']+)?\/serie\/([^"'\/\?]+))\/?["']/gi
-    : seccion === 'animes'
-      ? /href=["']((?:https?:\/\/[^"']+)?\/anime\/([^"'\/\?]+))\/?["']/gi
-      : /href=["']((?:https?:\/\/[^"']+)?\/pelicula\/([^"'\/\?]+))\/?["']/gi;
-
   var items = [];
   var vistos = {};
   var m;
-  while ((m = re.exec(html)) !== null) {
-    var slug = m[2];
+
+  // Tarjeta completa: <a href="/pelicula/slug" ...Posters-link...>...<img src="/poster/slug.jpg"...></a>
+  var reCard = /<a\b[^>]*href=["'](?:https?:\/\/[^"']+)?\/(?:pelicula|serie|anime)\/([^"'\/\?]+)\/?["'][^>]*>[\s\S]*?<\/a>/gi;
+  while ((m = reCard.exec(html)) !== null) {
+    var slug = m[1];
     if (!slug || vistos[slug]) continue;
-    // filtrar basura de navegacion
     if (PALABRAS_BLOQUEADAS_BUSQUEDA.some(function (w) { return slug.indexOf(w) !== -1; })) continue;
+    if (!/Posters-link|\/poster\//i.test(m[0])) continue;
     vistos[slug] = true;
 
-    // Buscar titulo/portada cerca del match
-    var start = Math.max(0, m.index - 400);
-    var chunk = html.substring(start, m.index + m[0].length + 150);
+    var tag = m[0];
     var titulo = '';
-    var tm = chunk.match(/data-title=["']([^"']+)["']/i)
-      || chunk.match(/alt=["']([^"']+)["']/i)
-      || chunk.match(/title=["']([^"']+)["']/i);
+    var tm = tag.match(/data-title=["']([^"']+)["']/i) || tag.match(/alt=["']([^"']+)["']/i);
     if (tm) titulo = limpiarTitulo(tm[1].replace(/^VER\s+/i, '').replace(/\s+Online.*$/i, ''));
     if (!titulo) titulo = limpiarTitulo(slug.replace(/-/g, ' '));
 
     var portada = '';
-    var pm = chunk.match(/(?:src|data-src|srcset)=["'](\/?poster\/[^"'\\s]+)/i)
-      || chunk.match(/(?:src|data-src)=["'](https?:\/\/[^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/i);
-    if (pm) {
-      portada = pm[1];
-      // srcset may have multiple - take first
-      if (portada.indexOf(',') !== -1) portada = portada.split(',')[0].trim().split(/\\s+/)[0];
+    // Buscar src de poster DENTRO de esta tarjeta
+    var imgM = tag.match(/src=["']([^"']*\/poster\/[^"'\s>]+)["']/i)
+      || tag.match(/data-src=["']([^"']*\/poster\/[^"'\s>]+)["']/i)
+      || tag.match(/srcset=["']([^"'\s,>]*\/poster\/[^"'\s,>]+)/i);
+    if (imgM) {
+      portada = imgM[1];
       if (portada.indexOf('http') !== 0) {
         portada = PELISPLUS_BASE + (portada.charAt(0) === '/' ? portada : '/' + portada);
       }
+    }
+    // Si el src no coincide con el slug, preferir convención /poster/{slug}.jpg
+    if (!portada || portada.indexOf('/poster/' + slug + '.') === -1) {
+      var bySlug = PELISPLUS_BASE + '/poster/' + slug + '.jpg';
+      // Solo forzar si no había imagen, o si la imagen es de otro slug
+      if (!portada) portada = bySlug;
+      else if (portada.indexOf('/poster/' + slug + '.') === -1) portada = bySlug;
     }
 
     items.push({
