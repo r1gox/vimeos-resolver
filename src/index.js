@@ -151,18 +151,36 @@ async function handleRequest(request, env) {
   // ---------- Streamwish streamurl (JSON rico: hls, status, qualities + proxy) ----------
   // /wish/streamurl?url=https://streamwish.to/e/xxx
   // /streamurl?url=... (alias)
-  if ((parts[0] === 'wish' && parts[1] === 'streamurl') || parts[0] === 'streamurl') {
+  // /wish/streamurl | /vidhide/streamurl | /voe/streamurl | /goodstream/streamurl | /streamurl?url=
+  if (
+    (parts[0] === 'wish' && parts[1] === 'streamurl') ||
+    (parts[0] === 'vidhide' && parts[1] === 'streamurl') ||
+    (parts[0] === 'voe' && parts[1] === 'streamurl') ||
+    (parts[0] === 'goodstream' && parts[1] === 'streamurl') ||
+    parts[0] === 'streamurl'
+  ) {
     var swUrl = url.searchParams.get('url') || '';
     if (!swUrl) {
       return json({
         success: false,
-        error: 'Falta url del embed Streamwish',
-        uso: origin + '/wish/streamurl?url=https://streamwish.to/e/XXXX'
+        error: 'Falta url del embed',
+        uso: {
+          streamwish: origin + '/wish/streamurl?url=https://streamwish.to/e/XXXX',
+          vidhide: origin + '/vidhide/streamurl?url=https://vidhidepro.com/v/XXXX',
+          voe: origin + '/voe/streamurl?url=https://voe.sx/e/XXXX',
+          goodstream: origin + '/goodstream/streamurl?url=https://goodstream.one/embed-XXXX.html',
+          auto: origin + '/streamurl?url={embed}'
+        }
       }, 400);
     }
     try { swUrl = decodeURIComponent(swUrl); } catch (eSw) {}
+    var forceProv = '';
+    if (parts[0] === 'wish') forceProv = 'streamwish';
+    else if (parts[0] === 'vidhide') forceProv = 'vidhide';
+    else if (parts[0] === 'voe') forceProv = 'voe';
+    else if (parts[0] === 'goodstream') forceProv = 'goodstream';
     try {
-      var rich = await buildStreamwishRichResponse(swUrl, origin);
+      var rich = await buildProviderRichResponse(swUrl, origin, forceProv);
       return json(rich);
     } catch (errSw) {
       return json({ success: false, error: errSw.message || 'Error streamurl' }, 500);
@@ -993,6 +1011,349 @@ function proxyUrlFor(origin, target, ref) {
 }
 
 /** Respuesta rica: hls + status + qualities con proxy_url listos para player */
+
+var VIDHIDE_MIRRORS = [
+  'vidhidepro.com', 'vidhide.com', 'vidhidepre.com', 'earnvids.com',
+  'callistanise.com', 'smoothpre.com', 'filelions.com'
+];
+
+var VOE_MIRRORS = [
+  'voe.sx', 'jilliandescribecompany.com', 'voe-unblock.com',
+  'donaldlineelse.com', 'kathleenmemberhistory.com'
+];
+
+function extractIdGeneric(url, patterns) {
+  for (var i = 0; i < patterns.length; i++) {
+    var m = String(url).match(patterns[i]);
+    if (m) return m[1];
+  }
+  return String(url).replace(/\/$/, '').split('/').pop().split('?')[0].replace(/^embed-/, '').replace(/\.html$/, '');
+}
+
+async function fetchEmbedHtmlCandidates(url, hosts, pathTemplates, refererBase) {
+  var id = extractIdGeneric(url, [
+    /\/(?:e|v|f)\/([a-zA-Z0-9]+)/,
+    /embed-([a-zA-Z0-9]+)/,
+    /\/([a-zA-Z0-9]{10,})(?:\.html)?(?:\?|$)/
+  ]);
+  var candidates = [url];
+  for (var h = 0; h < hosts.length; h++) {
+    for (var t = 0; t < pathTemplates.length; t++) {
+      var u = 'https://' + hosts[h] + pathTemplates[t].replace('{id}', id);
+      if (candidates.indexOf(u) === -1) candidates.push(u);
+    }
+  }
+  var lastErr = null;
+  for (var i = 0; i < candidates.length; i++) {
+    var u2 = candidates[i];
+    var host = 'localhost';
+    try { host = new URL(u2).hostname; } catch (e) {}
+    var headers = {
+      'User-Agent': HEADERS['User-Agent'],
+      'Accept': HEADERS['Accept'],
+      'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
+      'Referer': refererBase || ('https://' + host + '/'),
+      'Origin': 'https://' + host
+    };
+    try {
+      var res = await fetch(u2, { headers: headers, redirect: 'follow' });
+      var html = await res.text();
+      if (res.ok && html.length > 500 && (
+        html.indexOf('eval(function(p,a,c,k,e,d)') !== -1 ||
+        html.indexOf('jwplayer') !== -1 ||
+        html.indexOf('sources') !== -1 ||
+        /\.m3u8/.test(html)
+      )) {
+        return { html: html, used: u2, host: host };
+      }
+      lastErr = 'HTTP ' + res.status + ' ' + u2 + ' len=' + html.length;
+    } catch (e2) {
+      lastErr = u2 + ': ' + (e2.message || e2);
+    }
+  }
+  throw new Error(lastErr || 'No se pudo descargar el embed');
+}
+
+function extractLinksFromDecoded(decoded) {
+  var urls = findStreamUrlsInDecoded(decoded);
+  // links object style hls2/hls3
+  var reHls = /"(hls\d*|file|src)"\s*:\s*"(https?:\/\/[^"]+)"/gi;
+  var mm;
+  while ((mm = reHls.exec(decoded))) {
+    if (urls.indexOf(mm[2]) === -1) urls.push(mm[2]);
+  }
+  var reM = /https?:\/\/[^"'\s<>\\]+\.m3u8(?:\?[^"'\s<>\\]*)?/gi;
+  while ((mm = reM.exec(decoded))) {
+    var u = mm[0].replace(/\\+$/g, '');
+    if (urls.indexOf(u) === -1) urls.push(u);
+  }
+  return urls;
+}
+
+function extractDirectFromHtml(html) {
+  var urls = [];
+  var re = /https?:\/\/[^"'\s<>\\]+\.m3u8(?:\?[^"'\s<>\\]*)?/gi;
+  var m;
+  while ((m = re.exec(html))) {
+    var u = m[0].replace(/\\\//g, '/');
+    if (urls.indexOf(u) === -1) urls.push(u);
+  }
+  // JW sources file:"..."
+  var re2 = /file\s*:\s*["'](https?:\/\/[^"']+)["']/gi;
+  while ((m = re2.exec(html))) {
+    if (urls.indexOf(m[1]) === -1) urls.push(m[1]);
+  }
+  return urls;
+}
+
+async function resolveVidhideEmbed(embedUrl, origin) {
+  var got = await fetchEmbedHtmlCandidates(
+    embedUrl,
+    VIDHIDE_MIRRORS,
+    ['/v/{id}', '/f/{id}', '/e/{id}', '/embed-{id}.html'],
+    'https://vidhidepro.com/'
+  );
+  var urls = [];
+  try {
+    var decoded = unpackPacker(got.html);
+    urls = extractLinksFromDecoded(decoded);
+  } catch (e) {
+    urls = extractDirectFromHtml(got.html);
+  }
+  if (!urls.length) urls = extractDirectFromHtml(got.html);
+  // absolutizar paths relativos /stream/...
+  for (var i = 0; i < urls.length; i++) {
+    if (urls[i].indexOf('http') !== 0) {
+      try { urls[i] = new URL(urls[i], got.used).toString(); } catch (e2) {}
+    }
+  }
+  urls = urls.filter(function (u) { return /\.m3u8|master\.txt|\.mp4/i.test(u); });
+  if (!urls.length) throw new Error('Vidhide: no se encontró HLS');
+  var master = pickMasterUrl(urls);
+  var out = {
+    success: true,
+    provider: 'vidhide',
+    source: embedUrl,
+    resolved_embed: got.used,
+    type: 'hls',
+    url: master,
+    master: master,
+    all_sources: urls
+  };
+  if (origin) {
+    out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(master) + '&ref=' + encodeURIComponent(got.used);
+  }
+  return out;
+}
+
+async function resolveGoodstreamEmbed(embedUrl, origin) {
+  var headers = {
+    'User-Agent': HEADERS['User-Agent'],
+    'Referer': 'https://goodstream.one/',
+    'Accept': HEADERS['Accept']
+  };
+  // normalizar a /embed-ID.html
+  var id = extractIdGeneric(embedUrl, [/embed-([a-zA-Z0-9]+)/, /\/([a-zA-Z0-9]{8,})(?:\.html)?(?:\?|$)/]);
+  var candidates = [embedUrl];
+  if (id) {
+    candidates.push('https://goodstream.one/embed-' + id + '.html');
+    candidates.push('https://goodstream.one/' + id);
+  }
+  var html = null, used = embedUrl;
+  var lastErr = null;
+  for (var i = 0; i < candidates.length; i++) {
+    try {
+      var res = await fetch(candidates[i], { headers: headers, redirect: 'follow' });
+      var t = await res.text();
+      if (res.ok && t.length > 400) {
+        html = t; used = candidates[i];
+        if (/\.m3u8|sources|jwplayer/.test(t)) break;
+      }
+      lastErr = 'HTTP ' + res.status;
+    } catch (e) { lastErr = e.message || e; }
+  }
+  if (!html) throw new Error('Goodstream: ' + (lastErr || 'sin HTML'));
+  var urls = extractDirectFromHtml(html);
+  try {
+    if (html.indexOf('eval(function(p,a,c,k,e,d)') !== -1) {
+      var decoded = unpackPacker(html);
+      var more = extractLinksFromDecoded(decoded);
+      for (var j = 0; j < more.length; j++) if (urls.indexOf(more[j]) === -1) urls.push(more[j]);
+    }
+  } catch (e2) {}
+  urls = urls.filter(function (u) { return /\.m3u8|\.mp4/i.test(u); });
+  if (!urls.length) throw new Error('Goodstream: no se encontró stream');
+  var master = pickMasterUrl(urls);
+  var out = {
+    success: true,
+    provider: 'goodstream',
+    source: embedUrl,
+    resolved_embed: used,
+    type: 'hls',
+    url: master,
+    master: master,
+    all_sources: urls
+  };
+  if (origin) {
+    out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(master) + '&ref=' + encodeURIComponent(used);
+  }
+  return out;
+}
+
+async function resolveVoeEmbed(embedUrl, origin) {
+  // VOE suele tener DDoS-Guard; intentamos mirrors
+  var got;
+  try {
+    got = await fetchEmbedHtmlCandidates(
+      embedUrl,
+      VOE_MIRRORS,
+      ['/e/{id}', '/{id}'],
+      'https://voe.sx/'
+    );
+  } catch (e) {
+    throw new Error('Voe: bloqueado o no accesible desde el worker (' + (e.message || e) + '). Prueba otro mirror o más tarde.');
+  }
+  var urls = extractDirectFromHtml(got.html);
+  try {
+    if (got.html.indexOf('eval(function(p,a,c,k,e,d)') !== -1) {
+      var decoded = unpackPacker(got.html);
+      var more = extractLinksFromDecoded(decoded);
+      for (var i = 0; i < more.length; i++) if (urls.indexOf(more[i]) === -1) urls.push(more[i]);
+    }
+  } catch (e2) {}
+  // VOE a veces mete base64 de fuentes
+  var b64 = got.html.match(/var\s+sources\s*=\s*JSON\.parse\(atob\(["']([A-Za-z0-9+/=]+)["']\)\)/);
+  if (b64) {
+    try {
+      var jsonStr = atob(b64[1]);
+      var obj = JSON.parse(jsonStr);
+      var walk = function (o) {
+        if (!o) return;
+        if (typeof o === 'string' && /^https?:/.test(o)) {
+          if (urls.indexOf(o) === -1) urls.push(o);
+        } else if (Array.isArray(o)) o.forEach(walk);
+        else if (typeof o === 'object') Object.keys(o).forEach(function (k) { walk(o[k]); });
+      };
+      walk(obj);
+    } catch (e3) {}
+  }
+  urls = urls.filter(function (u) { return /\.m3u8|\.mp4|hls/i.test(u); });
+  if (!urls.length) throw new Error('Voe: HTML obtenido pero sin fuentes HLS (posible challenge JS)');
+  var master = pickMasterUrl(urls);
+  var out = {
+    success: true,
+    provider: 'voe',
+    source: embedUrl,
+    resolved_embed: got.used,
+    type: 'hls',
+    url: master,
+    master: master,
+    all_sources: urls
+  };
+  if (origin) {
+    out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(master) + '&ref=' + encodeURIComponent(got.used);
+  }
+  return out;
+}
+
+function detectarProviderEmbedFull(u) {
+  u = String(u || '').toLowerCase();
+  if (u.indexOf('vimeos') !== -1) return 'vimeos';
+  if (u.indexOf('streamwish') !== -1 || u.indexOf('flaswish') !== -1 ||
+      u.indexOf('strwish') !== -1 || u.indexOf('ahvsh') !== -1 || u.indexOf('streamhg') !== -1) return 'streamwish';
+  if (u.indexOf('vidhide') !== -1 || u.indexOf('earnvids') !== -1 ||
+      u.indexOf('callistanise') !== -1 || u.indexOf('smoothpre') !== -1 || u.indexOf('filelions') !== -1) return 'vidhide';
+  if (u.indexOf('voe') !== -1 || u.indexOf('jilliandescribe') !== -1) return 'voe';
+  if (u.indexOf('goodstream') !== -1) return 'goodstream';
+  return '';
+}
+
+async function resolveByProvider(embedUrl, provider, origin) {
+  provider = provider || detectarProviderEmbedFull(embedUrl);
+  if (provider === 'streamwish') return resolveStreamwishEmbed(embedUrl, origin);
+  if (provider === 'vidhide') return resolveVidhideEmbed(embedUrl, origin);
+  if (provider === 'goodstream') return resolveGoodstreamEmbed(embedUrl, origin);
+  if (provider === 'voe') return resolveVoeEmbed(embedUrl, origin);
+  if (provider === 'vimeos') return resolveVimeosEmbed(embedUrl, origin);
+  throw new Error('Provider no soportado: ' + (provider || 'desconocido'));
+}
+
+async function buildProviderRichResponse(embedUrl, origin, forceProvider) {
+  var provider = forceProvider || detectarProviderEmbedFull(embedUrl);
+  if (provider === 'streamwish' || !provider) {
+    // streamwish path existente
+    if (!provider || provider === 'streamwish') {
+      if (detectarProviderEmbedFull(embedUrl) === 'streamwish' || forceProvider === 'streamwish' || !forceProvider && detectarProviderEmbed(embedUrl) === 'streamwish') {
+        return buildStreamwishRichResponse(embedUrl, origin);
+      }
+    }
+  }
+  var base = await resolveByProvider(embedUrl, provider || detectarProviderEmbedFull(embedUrl), null);
+  var referer = base.resolved_embed || embedUrl;
+  var hlsList = (base.all_sources || []).slice();
+  if (base.master && hlsList.indexOf(base.master) === -1) hlsList.unshift(base.master);
+  if (base.url && hlsList.indexOf(base.url) === -1) hlsList.unshift(base.url);
+  hlsList.sort(function (a, b) {
+    var sa = /\.txt(\?|$)/.test(String(a)) || String(a).indexOf('master.txt') !== -1 ? 0 : 1;
+    var sb = /\.txt(\?|$)/.test(String(b)) || String(b).indexOf('master.txt') !== -1 ? 0 : 1;
+    var pa = String(a).indexOf('premilkyway') !== -1 ? 1 : 0;
+    var pb = String(b).indexOf('premilkyway') !== -1 ? 1 : 0;
+    return sa - sb || pa - pb;
+  });
+  var hlsStatus = [];
+  var activePlaylist = null;
+  var activeMaster = null;
+  for (var j = 0; j < hlsList.length; j++) {
+    var st = await checkHlsStatus(hlsList[j], referer);
+    hlsStatus.push({ url: st.url, status: st.status });
+    if (!activePlaylist && st.status === 'activo' && st.body && st.body.indexOf('#EXT') !== -1) {
+      activePlaylist = st.body;
+      activeMaster = st.url;
+    }
+  }
+  var qualities = [];
+  if (activePlaylist && activeMaster) {
+    var variants = parseHlsVariants(activePlaylist, activeMaster);
+    if (!variants.length) {
+      qualities.push({
+        quality: 'auto',
+        resolution: null,
+        bandwidth: null,
+        url: activeMaster,
+        proxy_url: proxyUrlFor(origin, activeMaster, referer)
+      });
+    } else {
+      variants.sort(function (a, b) { return (a.height || 0) - (b.height || 0); });
+      for (var k = 0; k < variants.length; k++) {
+        var v = variants[k];
+        qualities.push({
+          quality: v.height ? (v.height + 'p (' + v.width + 'x' + v.height + ')') : 'auto',
+          resolution: v.height ? (v.width + 'x' + v.height) : null,
+          bandwidth: v.bandwidth || null,
+          url: v.url,
+          proxy_url: proxyUrlFor(origin, v.url, referer)
+        });
+      }
+    }
+  }
+  var best = qualities.length ? qualities[qualities.length - 1] : null;
+  for (var q = 0; q < qualities.length; q++) {
+    if (String(qualities[q].quality).indexOf('720') !== -1) { best = qualities[q]; break; }
+  }
+  return {
+    success: true,
+    provider: base.provider || provider,
+    source: embedUrl,
+    resolved_embed: referer,
+    videos: { hls: hlsList, hls_status: hlsStatus },
+    qualities: qualities,
+    play_url: best ? best.proxy_url : (activeMaster ? proxyUrlFor(origin, activeMaster, referer) : null),
+    play_direct: best ? best.url : activeMaster,
+    proxy_url: best ? best.proxy_url : (activeMaster ? proxyUrlFor(origin, activeMaster, referer) : null)
+  };
+}
+
+
 async function buildStreamwishRichResponse(embedUrl, origin) {
   var base = await resolveStreamwishEmbed(embedUrl, null);
   var referer = base.resolved_embed || embedUrl;
@@ -1079,11 +1440,16 @@ function attachStreamUrl(origin, rep) {
   if (!rep || !rep.url) return rep;
   var s = String(rep.servidor || '').toLowerCase();
   var u = String(rep.url || '').toLowerCase();
-  if (s.indexOf('streamwish') !== -1 || u.indexOf('streamwish') !== -1 ||
-      u.indexOf('flaswish') !== -1 || u.indexOf('strwish') !== -1 ||
-      u.indexOf('ahvsh') !== -1 || u.indexOf('streamhg') !== -1) {
+  var prov = detectarProviderEmbedFull(rep.url);
+  if (prov === 'streamwish' || s.indexOf('streamwish') !== -1) {
     rep.stream_url = origin + '/wish/streamurl?url=' + encodeURIComponent(rep.url);
-  } else if (s.indexOf('vimeos') !== -1 || u.indexOf('vimeos') !== -1) {
+  } else if (prov === 'vidhide' || s.indexOf('vidhide') !== -1) {
+    rep.stream_url = origin + '/vidhide/streamurl?url=' + encodeURIComponent(rep.url);
+  } else if (prov === 'voe' || s.indexOf('voe') !== -1) {
+    rep.stream_url = origin + '/voe/streamurl?url=' + encodeURIComponent(rep.url);
+  } else if (prov === 'goodstream' || s.indexOf('goodstream') !== -1) {
+    rep.stream_url = origin + '/goodstream/streamurl?url=' + encodeURIComponent(rep.url);
+  } else if (prov === 'vimeos' || s.indexOf('vimeos') !== -1) {
     rep.stream_url = origin + '/resolve/vimeos?url=' + encodeURIComponent(rep.url) + '&proxy=1';
   }
   return rep;
