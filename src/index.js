@@ -1,3 +1,4 @@
+var __LAST_ORIGIN__ = "";
 // src/index.js — MovieZone Worker (Lamovie + Hackstore + PelisPlusHD)
 // Compatible con Workers clásico y module workers
 addEventListener('fetch', event => {
@@ -65,6 +66,7 @@ async function handleRequest(request, env) {
   }
 
   var origin = url.origin;
+  try { __LAST_ORIGIN__ = origin; } catch (eO) {}
   var seasonQ = url.searchParams.get('season');
   var episodeQ = url.searchParams.get('episode');
   var playersQ = url.searchParams.get('players') === '1';
@@ -145,6 +147,28 @@ async function handleRequest(request, env) {
   }
 
 
+
+  // ---------- Streamwish streamurl (JSON rico: hls, status, qualities + proxy) ----------
+  // /wish/streamurl?url=https://streamwish.to/e/xxx
+  // /streamurl?url=... (alias)
+  if ((parts[0] === 'wish' && parts[1] === 'streamurl') || parts[0] === 'streamurl') {
+    var swUrl = url.searchParams.get('url') || '';
+    if (!swUrl) {
+      return json({
+        success: false,
+        error: 'Falta url del embed Streamwish',
+        uso: origin + '/wish/streamurl?url=https://streamwish.to/e/XXXX'
+      }, 400);
+    }
+    try { swUrl = decodeURIComponent(swUrl); } catch (eSw) {}
+    try {
+      var rich = await buildStreamwishRichResponse(swUrl, origin);
+      return json(rich);
+    } catch (errSw) {
+      return json({ success: false, error: errSw.message || 'Error streamurl' }, 500);
+    }
+  }
+
   // ---------- Health ----------
   if (path === '/' && !url.searchParams.has('url') && !url.searchParams.has('q') && !url.searchParams.has('episodePostId')) {
     return json({
@@ -169,7 +193,8 @@ async function handleRequest(request, env) {
         resolve_vimeos: origin + '/resolve/vimeos?url={embed}&proxy=1',
         resolve_streamwish: origin + '/resolve/streamwish?url={embed}&proxy=1',
         resolve_auto: origin + '/resolve?url={embed}&proxy=1',
-        proxy_hls: origin + '/proxy?url={m3u8}'
+        proxy_hls: origin + '/proxy?url={m3u8}',
+        streamwish_streamurl: origin + '/wish/streamurl?url={embed_streamwish}'
       },
       ejemplos: {
         buscar: origin + '/search?q=acaramelados',
@@ -886,9 +911,15 @@ async function handleProxy(request, targetUrl) {
     'Accept': '*/*'
   };
   try {
+    var reqUrl = new URL(request.url);
+    var refParam = reqUrl.searchParams.get('ref') || '';
     var host = new URL(targetUrl).hostname || '';
-    if (host.indexOf('vimeos') !== -1) headers['Referer'] = 'https://vimeos.net/';
-    else if (host) {
+    if (refParam) {
+      headers['Referer'] = refParam;
+      try { headers['Origin'] = new URL(refParam).origin; } catch (eR) {}
+    } else if (host.indexOf('vimeos') !== -1) {
+      headers['Referer'] = 'https://vimeos.net/';
+    } else if (host) {
       headers['Referer'] = 'https://' + host + '/';
       headers['Origin'] = 'https://' + host;
     }
@@ -902,6 +933,10 @@ async function handleProxy(request, targetUrl) {
 
   var origin = new URL(request.url).origin;
   var proxyBase = origin + '/proxy?url=';
+  try {
+    var refKeep = new URL(request.url).searchParams.get('ref');
+    if (refKeep) proxyBase = origin + '/proxy?ref=' + encodeURIComponent(refKeep) + '&url=';
+  } catch (eRef) {}
 
   if (isM3u8) {
     var text = new TextDecoder().decode(buf);
@@ -925,6 +960,141 @@ async function handleProxy(request, targetUrl) {
 }
 
 
+
+/** HEAD/GET rápido para saber si una URL HLS está activa o 403 */
+async function checkHlsStatus(streamUrl, referer) {
+  var headers = {
+    'User-Agent': HEADERS['User-Agent'],
+    'Accept': '*/*'
+  };
+  if (referer) {
+    headers['Referer'] = referer;
+    try { headers['Origin'] = new URL(referer).origin; } catch (e) {}
+  }
+  try {
+    var res = await fetch(streamUrl, { method: 'GET', headers: headers, redirect: 'follow' });
+    var status = res.status;
+    var body = '';
+    try { body = await res.text(); } catch (e2) {}
+    if (status === 403) return { url: streamUrl, status: 'bloqueado 403' };
+    if (status >= 400) return { url: streamUrl, status: 'error ' + status };
+    if (body && body.indexOf('#EXT') !== -1) return { url: streamUrl, status: 'activo', body: body };
+    if (status >= 200 && status < 300) return { url: streamUrl, status: 'activo', body: body };
+    return { url: streamUrl, status: 'desconocido ' + status };
+  } catch (e) {
+    return { url: streamUrl, status: 'error: ' + (e.message || e) };
+  }
+}
+
+function proxyUrlFor(origin, target, ref) {
+  var u = origin + '/proxy?url=' + encodeURIComponent(target);
+  if (ref) u += '&ref=' + encodeURIComponent(ref);
+  return u;
+}
+
+/** Respuesta rica: hls + status + qualities con proxy_url listos para player */
+async function buildStreamwishRichResponse(embedUrl, origin) {
+  var base = await resolveStreamwishEmbed(embedUrl, null);
+  var referer = base.resolved_embed || embedUrl;
+  var hlsList = [];
+  if (Array.isArray(base.all_sources)) {
+    for (var i = 0; i < base.all_sources.length; i++) {
+      if (hlsList.indexOf(base.all_sources[i]) === -1) hlsList.push(base.all_sources[i]);
+    }
+  }
+  if (base.master && hlsList.indexOf(base.master) === -1) hlsList.unshift(base.master);
+  if (base.url && hlsList.indexOf(base.url) === -1) hlsList.unshift(base.url);
+
+  hlsList.sort(function (a, b) {
+    var sa = (String(a).indexOf('master.txt') !== -1 || /\.txt(\?|$)/.test(String(a))) ? 0 : 1;
+    var sb = (String(b).indexOf('master.txt') !== -1 || /\.txt(\?|$)/.test(String(b))) ? 0 : 1;
+    var pa = String(a).indexOf('premilkyway') !== -1 ? 1 : 0;
+    var pb = String(b).indexOf('premilkyway') !== -1 ? 1 : 0;
+    return sa - sb || pa - pb;
+  });
+
+  var hlsStatus = [];
+  var activePlaylist = null;
+  var activeMaster = null;
+  for (var j = 0; j < hlsList.length; j++) {
+    var st = await checkHlsStatus(hlsList[j], referer);
+    hlsStatus.push({ url: st.url, status: st.status });
+    if (!activePlaylist && st.status === 'activo' && st.body && st.body.indexOf('#EXT') !== -1) {
+      activePlaylist = st.body;
+      activeMaster = st.url;
+    }
+  }
+
+  var qualities = [];
+  if (activePlaylist && activeMaster) {
+    var variants = parseHlsVariants(activePlaylist, activeMaster);
+    if (!variants.length) {
+      qualities.push({
+        quality: base.quality || 'auto',
+        resolution: base.resolution || null,
+        bandwidth: null,
+        url: activeMaster,
+        proxy_url: proxyUrlFor(origin, activeMaster, referer)
+      });
+    } else {
+      variants.sort(function (a, b) { return (a.height || 0) - (b.height || 0); });
+      for (var k = 0; k < variants.length; k++) {
+        var v = variants[k];
+        qualities.push({
+          quality: v.height ? (v.height + 'p (' + v.width + 'x' + v.height + ')') : 'auto',
+          resolution: v.height ? (v.width + 'x' + v.height) : null,
+          bandwidth: v.bandwidth || null,
+          url: v.url,
+          proxy_url: proxyUrlFor(origin, v.url, referer)
+        });
+      }
+    }
+  }
+
+  var best = null;
+  if (qualities.length) {
+    best = qualities[qualities.length - 1];
+    for (var q = 0; q < qualities.length; q++) {
+      if (String(qualities[q].quality).indexOf('720') !== -1) { best = qualities[q]; break; }
+    }
+  }
+
+  return {
+    success: true,
+    provider: 'streamwish',
+    source: embedUrl,
+    resolved_embed: referer,
+    videos: {
+      hls: hlsList,
+      hls_status: hlsStatus
+    },
+    qualities: qualities,
+    play_url: best ? best.proxy_url : (activeMaster ? proxyUrlFor(origin, activeMaster, referer) : null),
+    play_direct: best ? best.url : activeMaster,
+    proxy_url: best ? best.proxy_url : (activeMaster ? proxyUrlFor(origin, activeMaster, referer) : null)
+  };
+}
+
+function attachStreamUrl(origin, rep) {
+  if (!rep || !rep.url) return rep;
+  var s = String(rep.servidor || '').toLowerCase();
+  var u = String(rep.url || '').toLowerCase();
+  if (s.indexOf('streamwish') !== -1 || u.indexOf('streamwish') !== -1 ||
+      u.indexOf('flaswish') !== -1 || u.indexOf('strwish') !== -1 ||
+      u.indexOf('ahvsh') !== -1 || u.indexOf('streamhg') !== -1) {
+    rep.stream_url = origin + '/wish/streamurl?url=' + encodeURIComponent(rep.url);
+  } else if (s.indexOf('vimeos') !== -1 || u.indexOf('vimeos') !== -1) {
+    rep.stream_url = origin + '/resolve/vimeos?url=' + encodeURIComponent(rep.url) + '&proxy=1';
+  }
+  return rep;
+}
+
+function attachStreamUrlList(origin, list) {
+  if (!Array.isArray(list)) return list;
+  for (var i = 0; i < list.length; i++) attachStreamUrl(origin, list[i]);
+  return list;
+}
+
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
@@ -935,6 +1105,35 @@ function corsHeaders() {
 
 function json(data, status) {
   status = status || 200;
+  try {
+    if (data && typeof data === 'object' && __LAST_ORIGIN__) {
+      if (Array.isArray(data.reproductores)) attachStreamUrlList(__LAST_ORIGIN__, data.reproductores);
+      if (Array.isArray(data.embeds) && data.embeds[0] && data.embeds[0].url) {
+        attachStreamUrlList(__LAST_ORIGIN__, data.embeds);
+      }
+      // episodios con reproductores
+      if (Array.isArray(data.temporadas)) {
+        for (var t = 0; t < data.temporadas.length; t++) {
+          var caps = data.temporadas[t] && data.temporadas[t].capitulos;
+          if (!Array.isArray(caps)) caps = data.temporadas[t] && data.temporadas[t].episodios;
+          if (Array.isArray(caps)) {
+            for (var c = 0; c < caps.length; c++) {
+              if (caps[c] && Array.isArray(caps[c].reproductores)) {
+                attachStreamUrlList(__LAST_ORIGIN__, caps[c].reproductores);
+              }
+            }
+          }
+        }
+      }
+      if (Array.isArray(data.episodios)) {
+        for (var e = 0; e < data.episodios.length; e++) {
+          if (data.episodios[e] && Array.isArray(data.episodios[e].reproductores)) {
+            attachStreamUrlList(__LAST_ORIGIN__, data.episodios[e].reproductores);
+          }
+        }
+      }
+    }
+  } catch (eAttach) {}
   var h = Object.assign({ 'Content-Type': 'application/json; charset=utf-8' }, corsHeaders());
   return new Response(JSON.stringify(data, null, 2), { status: status, headers: h });
 }
