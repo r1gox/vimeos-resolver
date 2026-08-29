@@ -1,7 +1,15 @@
 // src/index.js — MovieZone Worker (Lamovie + Hackstore + PelisPlusHD)
+// Compatible con Workers clásico y module workers
 addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request));
+  event.respondWith(handleRequest(event.request, event.env || self || {}));
 });
+
+// Module worker export (Wrangler moderno)
+export default {
+  async fetch(request, env, ctx) {
+    return handleRequest(request, env || {});
+  }
+};
 
 var HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -39,7 +47,12 @@ var PALABRAS_BLOQUEADAS_BUSQUEDA = ['estrenos', 'populares', 'genero', 'categori
 // ======================================================
 // ROUTER
 // ======================================================
-async function handleRequest(request) {
+async function handleRequest(request, env) {
+  // API key TMDB opcional (Cloudflare Worker secret / var)
+  try {
+    if (env && env.TMDB_API_KEY) __TMDB_KEY__ = env.TMDB_API_KEY;
+  } catch (eEnv) { /* ok */ }
+
   var url = new URL(request.url);
   var path = url.pathname.replace(/\/+$/, '') || '/';
   var parts = path.split('/').filter(Boolean);
@@ -810,44 +823,195 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   return item;
 }
 
-/** Busca meta TMDB para un título concreto */
-async function metaTmdbParaTitulo(titulo) {
-  var q = String(titulo || '')
+/** Variantes de query para maximizar hits en APIs de meta */
+function variantesTitulo(titulo) {
+  var base = String(titulo || '')
     .replace(/\(\d{4}\)/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+  if (!base) return [];
+  var out = [base];
+  var sinPuntos = base.replace(/\./g, '');
+  if (sinPuntos !== base) out.push(sinPuntos);
+  var sinVs = base.replace(/\bvs\.?\b/gi, ' ').replace(/\s+/g, ' ').trim();
+  if (sinVs !== base) out.push(sinVs);
+  var sinDosPuntos = base.split(':')[0].trim();
+  if (sinDosPuntos && sinDosPuntos !== base) out.push(sinDosPuntos);
+  // quitar artículos iniciales
+  var sinArt = base.replace(/^(el|la|los|las|the|a|an)\s+/i, '').trim();
+  if (sinArt && sinArt !== base) out.push(sinArt);
+  return out;
+}
+
+function elegirMejorMeta(metas, titulo) {
+  if (!metas || !metas.length) return null;
+  var key = normalizarTituloKey(titulo);
+  var best = null;
+  var bestScore = -1;
+  for (var i = 0; i < metas.length; i++) {
+    var k = normalizarTituloKey(metas[i].title || metas[i].titulo || metas[i].Title || '');
+    var score = 0;
+    if (k === key) score = 100;
+    else if (k.indexOf(key) !== -1 || key.indexOf(k) !== -1) score = 50;
+    else {
+      var a = key.split(' ');
+      var b = k.split(' ');
+      var common = 0;
+      for (var ti = 0; ti < a.length; ti++) {
+        if (a[ti].length > 2 && b.indexOf(a[ti]) !== -1) common++;
+      }
+      score = common * 10;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = metas[i];
+    }
+  }
+  if (!best || bestScore < 10) return null;
+  return best;
+}
+
+/** OMDb (fallback gratuito cuando tvymas no tiene el título) */
+async function buscarMetaOmdb(titulo) {
+  var q = String(titulo || '').replace(/\(\d{4}\)/g, '').trim();
   if (!q) return null;
   try {
-    var metas = await buscarMetaTmdb(q);
-    if (!metas.length) return null;
-    var key = normalizarTituloKey(q);
-    var best = null;
-    var bestScore = -1;
-    for (var i = 0; i < metas.length; i++) {
-      var k = normalizarTituloKey(metas[i].title || metas[i].titulo || '');
-      var score = 0;
-      if (k === key) score = 100;
-      else if (k.indexOf(key) !== -1 || key.indexOf(k) !== -1) score = 50;
-      else {
-        // tokens en común
-        var a = key.split(' ');
-        var b = k.split(' ');
-        var common = 0;
-        for (var ti = 0; ti < a.length; ti++) {
-          if (a[ti].length > 2 && b.indexOf(a[ti]) !== -1) common++;
-        }
-        score = common * 10;
-      }
-      if (score > bestScore) {
-        bestScore = score;
-        best = metas[i];
-      }
+    var url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) + '&apikey=trilogy&plot=full';
+    var res = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!res.ok) return null;
+    var d = await res.json();
+    if (!d || d.Response === 'False') return null;
+    var genres = d.Genre ? d.Genre.split(',').map(function (g) { return g.trim(); }) : [];
+    var year = d.Year ? String(d.Year).slice(0, 4) : null;
+    var released = d.Released && d.Released !== 'N/A' ? d.Released : null;
+    // Convertir fecha tipo "28 Aug 2026" a ISO aproximado
+    var fecha = null;
+    if (released) {
+      var dt = new Date(released);
+      if (!isNaN(dt.getTime())) fecha = dt.toISOString().slice(0, 10);
     }
-    if (!best || bestScore < 10) return null;
-    return mapMetaFromSearchItem(best);
+    return {
+      tmdb_id: null,
+      imdb_id: d.imdbID || null,
+      titulo_tmdb: d.Title || q,
+      portada_tmdb: d.Poster && d.Poster !== 'N/A' ? d.Poster : null,
+      backdrop: null,
+      calificacion: d.imdbRating && d.imdbRating !== 'N/A' ? Number(d.imdbRating) : null,
+      descripcion: d.Plot && d.Plot !== 'N/A' ? d.Plot : null,
+      generos: genres,
+      fecha_estreno: fecha,
+      year: year,
+      titulo_original: d.Title || null,
+      votos: d.imdbVotes && d.imdbVotes !== 'N/A' ? d.imdbVotes : null,
+      duracion: d.Runtime && d.Runtime !== 'N/A' ? parseInt(d.Runtime, 10) || null : null,
+      status: null,
+      tagline: null,
+      slug_tmdb: null
+    };
   } catch (e) {
     return null;
   }
+}
+
+/** TMDB oficial si hay TMDB_API_KEY en el Worker */
+async function buscarMetaTmdbApi(titulo, tipoHint) {
+  var key = __TMDB_KEY__ || null;
+  if (!key) return null;
+  var q = String(titulo || '').replace(/\(\d{4}\)/g, '').trim();
+  if (!q) return null;
+  try {
+    var isTv = /serie|anime|tv/i.test(String(tipoHint || ''));
+    var path = isTv ? 'search/tv' : 'search/movie';
+    var url = 'https://api.themoviedb.org/3/' + path +
+      '?api_key=' + encodeURIComponent(key) +
+      '&language=es-ES&query=' + encodeURIComponent(q);
+    var res = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!res.ok) return null;
+    var data = await res.json();
+    var results = data.results || [];
+    if (!results.length && !isTv) {
+      // reintentar como TV
+      url = 'https://api.themoviedb.org/3/search/tv?api_key=' + encodeURIComponent(key) +
+        '&language=es-ES&query=' + encodeURIComponent(q);
+      res = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (res.ok) {
+        data = await res.json();
+        results = data.results || [];
+        isTv = true;
+      }
+    }
+    if (!results.length) return null;
+    var best = results[0];
+    var title = best.title || best.name || q;
+    var overview = best.overview || null;
+    var poster = best.poster_path ? imgTmdb(best.poster_path, 'w500') : null;
+    var backdrop = best.backdrop_path ? imgTmdb(best.backdrop_path, 'w780') : null;
+    var release = best.release_date || best.first_air_date || null;
+    // géneros por id (mapa básico)
+    var GENRE_MAP = {
+      28: 'Acción', 12: 'Aventura', 16: 'Animación', 35: 'Comedia', 80: 'Crimen',
+      99: 'Documental', 18: 'Drama', 10751: 'Familia', 14: 'Fantasía', 36: 'Historia',
+      27: 'Terror', 10402: 'Música', 9648: 'Misterio', 10749: 'Romance', 878: 'Ciencia ficción',
+      10770: 'Película de TV', 53: 'Suspenso', 10752: 'Bélica', 37: 'Western',
+      10759: 'Action & Adventure', 10765: 'Sci-Fi & Fantasy'
+    };
+    var gens = (best.genre_ids || []).map(function (id) { return GENRE_MAP[id] || null; }).filter(Boolean);
+    return {
+      tmdb_id: best.id || null,
+      imdb_id: null,
+      titulo_tmdb: title,
+      portada_tmdb: poster,
+      backdrop: backdrop,
+      calificacion: best.vote_average != null ? Number(best.vote_average) : null,
+      descripcion: overview,
+      generos: gens,
+      fecha_estreno: release,
+      year: release ? String(release).slice(0, 4) : null,
+      titulo_original: best.original_title || best.original_name || null,
+      votos: best.vote_count || null,
+      duracion: null,
+      status: null,
+      tagline: null,
+      slug_tmdb: null
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+var __TMDB_KEY__ = null; // se asigna en handleRequest desde env
+
+/** Busca meta para un título: tvymas → TMDB API → OMDb */
+async function metaTmdbParaTitulo(titulo, tipoHint) {
+  var variantes = variantesTitulo(titulo);
+  if (!variantes.length) return null;
+
+  // 1) tvymas (varias queries)
+  for (var v = 0; v < variantes.length; v++) {
+    try {
+      var metas = await buscarMetaTmdb(variantes[v]);
+      var best = elegirMejorMeta(metas, titulo);
+      if (best) return mapMetaFromSearchItem(best);
+    } catch (e) { /* next */ }
+  }
+
+  // 2) TMDB oficial (si hay API key)
+  for (var t = 0; t < Math.min(variantes.length, 3); t++) {
+    try {
+      var mTmdb = await buscarMetaTmdbApi(variantes[t], tipoHint);
+      if (mTmdb && (mTmdb.descripcion || mTmdb.portada_tmdb || mTmdb.calificacion)) return mTmdb;
+    } catch (e) { /* next */ }
+  }
+
+  // 3) OMDb fallback
+  for (var o = 0; o < Math.min(variantes.length, 3); o++) {
+    try {
+      var mOmdb = await buscarMetaOmdb(variantes[o]);
+      if (mOmdb && (mOmdb.descripcion || mOmdb.portada_tmdb || mOmdb.calificacion)) return mOmdb;
+    } catch (e) { /* next */ }
+  }
+
+  return null;
 }
 
 /**
@@ -868,7 +1032,7 @@ async function enriquecerListaConTmdb(lista, query) {
       // Si ya tiene tmdb_id y descripcion, no repetir
       if (item.tmdb_id && item.descripcion && item.genero) continue;
       try {
-        var meta = await metaTmdbParaTitulo(item.titulo);
+        var meta = await metaTmdbParaTitulo(item.titulo, item.tipo);
         if (meta) aplicarMetaAResultadoBusqueda(item, meta);
       } catch (e) { /* siguiente */ }
     }
