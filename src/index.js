@@ -80,7 +80,10 @@ async function handleRequest(request) {
         serie_episodio: origin + '/{id}/serie/{slug}/{temporada}/{episodio}',
         pelicula: origin + '/{id}/pelicula/{slug}',
         anime: origin + '/{id}/anime/{slug}',
-        auto_serie: origin + '/serie/{slug}',
+        estrenos_peliculas: origin + '/3/peliculas/estrenos',
+        estrenos_series: origin + '/3/series/estrenos',
+        estrenos_animes: origin + '/3/animes/estrenos',
+        populares_peliculas: origin + '/3/peliculas/populares',
         por_url: origin + '/?url={url_completa}'
       },
       ejemplos: {
@@ -90,7 +93,8 @@ async function handleRequest(request) {
         hackstore_serie: origin + '/2/serie/asi-aprenderas-2026',
         hackstore_cap: origin + '/2/serie/asi-aprenderas-2026/1/1',
         pelisplus_serie: origin + '/3/serie/acaramelados',
-        pelisplus_cap: origin + '/3/serie/acaramelados/1/1'
+        pelisplus_cap: origin + '/3/serie/acaramelados/1/1',
+        estrenos: origin + '/3/peliculas/estrenos'
       },
       nota: 'IDs de fuente: 1=lamovie, 2=hackstore, 3=pelisplushd. Van en la ruta: /{id}/serie/{slug}'
     });
@@ -143,6 +147,41 @@ async function handleRequest(request) {
         reproductores: pd.embeds,
         descargas: pd.downloads
       });
+    } catch (err) {
+      return json({ success: false, error: err.message }, 500);
+    }
+  }
+
+  // ---------- Catálogos PelisPlus: /3/peliculas/estrenos, /3/series/estrenos, etc. ----------
+  // parts: [3, peliculas, estrenos] o [pelisplushd, peliculas, estrenos]
+  var catSource = normalizarSourceId(parts[0] || '');
+  var catTipoIdx = catSource ? 1 : 0;
+  var catSeccion = (parts[catTipoIdx] || '').toLowerCase(); // peliculas|series|animes
+  var catFiltro = (parts[catTipoIdx + 1] || '').toLowerCase(); // estrenos|populares|''
+
+  if ((catSeccion === 'peliculas' || catSeccion === 'series' || catSeccion === 'animes') &&
+      (catFiltro === 'estrenos' || catFiltro === 'populares' || catFiltro === '' || catFiltro === 'page')) {
+    var pageNum = parseInt(url.searchParams.get('page') || '1', 10);
+    if (catFiltro === 'page' && parts[catTipoIdx + 2]) {
+      pageNum = parseInt(parts[catTipoIdx + 2], 10) || 1;
+      catFiltro = '';
+    }
+    // Solo PelisPlus tiene estas listas públicas; id 3 o sin id con source=3
+    var srcCat = catSource || sourceParam || 'pelisplushd';
+    if (srcCat !== 'pelisplushd' && srcCat !== '3') {
+      // permitir /3/... forzado
+      if (String(parts[0]) !== '3' && parts[0] !== 'pelisplushd' && parts[0] !== 'pp') {
+        return json({
+          success: false,
+          error: 'Los catalogos estrenos/populares solo estan disponibles para PelisPlus (id 3)',
+          ejemplo: origin + '/3/peliculas/estrenos'
+        }, 400);
+      }
+      srcCat = 'pelisplushd';
+    }
+    try {
+      var catalogo = await listarPelisplusCatalogo(catSeccion, catFiltro || null, pageNum, origin);
+      return json(catalogo);
     } catch (err) {
       return json({ success: false, error: err.message }, 500);
     }
@@ -1087,6 +1126,93 @@ function extraerPlayurlsPelisplus(html) {
   while ((m = r5.exec(html)) !== null) add(m[1], 'Desconocido');
 
   return reproductores;
+}
+
+async function listarPelisplusCatalogo(seccion, filtro, page, origin) {
+  seccion = (seccion || 'peliculas').toLowerCase(); // peliculas|series|animes
+  filtro = (filtro || '').toLowerCase(); // estrenos|populares|''
+  page = page || 1;
+
+  var pathCat = '/' + seccion;
+  if (filtro === 'estrenos' || filtro === 'populares') {
+    pathCat += '/' + filtro;
+  }
+  if (page > 1) {
+    pathCat += (pathCat.indexOf('?') === -1 ? '' : '') ;
+    // pelisplus suele usar ?page=N
+  }
+  var listUrl = PELISPLUS_BASE + pathCat + (page > 1 ? '?page=' + page : '');
+
+  var res = await fetch(listUrl, {
+    headers: Object.assign({}, HEADERS, { 'Referer': PELISPLUS_BASE + '/' })
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status + ' en catalogo PelisPlus');
+  var html = await res.text();
+
+  var tipoItem = 'Pelicula';
+  var tipoPath = 'pelicula';
+  if (seccion === 'series') { tipoItem = 'Serie'; tipoPath = 'serie'; }
+  if (seccion === 'animes') { tipoItem = 'Anime'; tipoPath = 'anime'; }
+
+  var re = seccion === 'series'
+    ? /href=["']((?:https?:\/\/[^"']+)?\/serie\/([^"'\/\?]+))\/?["']/gi
+    : seccion === 'animes'
+      ? /href=["']((?:https?:\/\/[^"']+)?\/anime\/([^"'\/\?]+))\/?["']/gi
+      : /href=["']((?:https?:\/\/[^"']+)?\/pelicula\/([^"'\/\?]+))\/?["']/gi;
+
+  var items = [];
+  var vistos = {};
+  var m;
+  while ((m = re.exec(html)) !== null) {
+    var slug = m[2];
+    if (!slug || vistos[slug]) continue;
+    // filtrar basura de navegacion
+    if (PALABRAS_BLOQUEADAS_BUSQUEDA.some(function (w) { return slug.indexOf(w) !== -1; })) continue;
+    vistos[slug] = true;
+
+    // Buscar titulo/portada cerca del match
+    var start = Math.max(0, m.index - 400);
+    var chunk = html.substring(start, m.index + m[0].length + 150);
+    var titulo = '';
+    var tm = chunk.match(/data-title=["']([^"']+)["']/i)
+      || chunk.match(/alt=["']([^"']+)["']/i)
+      || chunk.match(/title=["']([^"']+)["']/i);
+    if (tm) titulo = limpiarTitulo(tm[1].replace(/^VER\s+/i, '').replace(/\s+Online.*$/i, ''));
+    if (!titulo) titulo = limpiarTitulo(slug.replace(/-/g, ' '));
+
+    var portada = '';
+    var pm = chunk.match(/(?:src|data-src|srcset)=["'](\/?poster\/[^"'\\s]+)/i)
+      || chunk.match(/(?:src|data-src)=["'](https?:\/\/[^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/i);
+    if (pm) {
+      portada = pm[1];
+      // srcset may have multiple - take first
+      if (portada.indexOf(',') !== -1) portada = portada.split(',')[0].trim().split(/\\s+/)[0];
+      if (portada.indexOf('http') !== 0) {
+        portada = PELISPLUS_BASE + (portada.charAt(0) === '/' ? portada : '/' + portada);
+      }
+    }
+
+    items.push({
+      titulo: titulo,
+      tipo: tipoItem,
+      fuente: 'pelisplushd',
+      source_id: '3',
+      slug: slug,
+      portada: portada,
+      url_extract: origin + '/3/' + tipoPath + '/' + slug
+    });
+  }
+
+  return {
+    success: true,
+    fuente: 'pelisplushd',
+    source_id: '3',
+    seccion: seccion,
+    filtro: filtro || 'todas',
+    page: page,
+    total: items.length,
+    resultados: items
+  };
 }
 
 async function scrapearPelisplus(pageUrl, opts) {
