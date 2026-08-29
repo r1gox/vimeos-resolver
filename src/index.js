@@ -54,7 +54,7 @@ async function handleRequest(request) {
   var episodeQ = url.searchParams.get('episode');
   var playersQ = url.searchParams.get('players') === '1';
   var maxCapsQ = parseInt(url.searchParams.get('maxCaps') || '5', 10);
-  var sourceParam = (url.searchParams.get('source') || '').toLowerCase();
+  var sourceParam = normalizarSourceId(url.searchParams.get('source') || '');
 
   var commonOpts = {
     season: seasonQ ? parseInt(seasonQ, 10) : null,
@@ -69,26 +69,30 @@ async function handleRequest(request) {
     return json({
       status: 'ok',
       service: 'MovieZone Worker',
-      sources: ['lamovie', 'hackstore', 'pelisplushd'],
+      sources: {
+        '1': 'lamovie',
+        '2': 'hackstore',
+        '3': 'pelisplushd'
+      },
       endpoints: {
         search: origin + '/search?q={texto}',
-        pelicula: origin + '/pelicula/{slug}',
-        serie: origin + '/serie/{slug}',
-        serie_episodio: origin + '/serie/{slug}/{temporada}/{episodio}',
-        anime: origin + '/anime/{slug}',
-        anime_episodio: origin + '/anime/{slug}/{temporada}/{episodio}',
-        por_url: origin + '/?url={url_completa}',
-        episodePostId: origin + '/?episodePostId={id}',
-        source: 'Añade ?source=lamovie|hackstore|pelisplushd para forzar fuente'
+        serie: origin + '/{id}/serie/{slug}',
+        serie_episodio: origin + '/{id}/serie/{slug}/{temporada}/{episodio}',
+        pelicula: origin + '/{id}/pelicula/{slug}',
+        anime: origin + '/{id}/anime/{slug}',
+        auto_serie: origin + '/serie/{slug}',
+        por_url: origin + '/?url={url_completa}'
       },
       ejemplos: {
         buscar: origin + '/search?q=acaramelados',
-        serie: origin + '/serie/acaramelados-2026',
-        capitulo: origin + '/serie/acaramelados-2026/1/1',
-        pelicula: origin + '/pelicula/matrix-resurrecciones-2021',
-        url_completa: origin + '/?url=https://lamovie.org/series/acaramelados-2026/'
+        lamovie_serie: origin + '/1/serie/acaramelados-2026',
+        lamovie_cap: origin + '/1/serie/acaramelados-2026/1/1',
+        hackstore_serie: origin + '/2/serie/asi-aprenderas-2026',
+        hackstore_cap: origin + '/2/serie/asi-aprenderas-2026/1/1',
+        pelisplus_serie: origin + '/3/serie/acaramelados',
+        pelisplus_cap: origin + '/3/serie/acaramelados/1/1'
       },
-      nota: 'Rutas cortas estilo /serie/slug (sin pegar URL completa). Las 3 fuentes comparten el mismo flujo.'
+      nota: 'IDs de fuente: 1=lamovie, 2=hackstore, 3=pelisplushd. Van en la ruta: /{id}/serie/{slug}'
     });
   }
 
@@ -103,9 +107,13 @@ async function handleRequest(request) {
       if (resultados.resultados) {
         for (var ri = 0; ri < resultados.resultados.length; ri++) {
           var r = resultados.resultados[ri];
-          var tipoPath = (r.tipo === 'Serie' || r.tipo === 'Anime') ? (r.tipo === 'Anime' ? 'anime' : 'serie') : 'pelicula';
+          var tipoPath = (r.tipo === 'Serie' || r.tipo === 'Anime')
+            ? (r.tipo === 'Anime' ? 'anime' : 'serie')
+            : 'pelicula';
+          var sid = sourceIdFromName(r.fuente);
           if (r.slug) {
-            r.url = origin + '/' + tipoPath + '/' + r.slug + (r.fuente && r.fuente !== 'lamovie' ? '?source=' + r.fuente : '');
+            r.url = origin + '/' + sid + '/' + tipoPath + '/' + r.slug;
+            r.source_id = sid;
           }
         }
       }
@@ -123,6 +131,7 @@ async function handleRequest(request) {
       return json({
         success: true,
         fuente: 'lamovie',
+        source_id: '1',
         tipo: 'Capitulo',
         postId: Number(episodePostId) || episodePostId,
         titulo: null,
@@ -136,27 +145,35 @@ async function handleRequest(request) {
     }
   }
 
-  // ---------- Rutas cortas: /pelicula|serie|anime/{slug}[/{season}/{episode}] ----------
-  if (parts[0] === 'pelicula' || parts[0] === 'serie' || parts[0] === 'anime') {
-    var tipoRuta = parts[0];
-    var slug = parts[1];
+  // ---------- Rutas con ID: /{id}/serie|pelicula|anime/{slug}[/{s}/{e}] ----------
+  // parts[0] puede ser 1|2|3|lamovie|hackstore|pelisplushd
+  var pathSource = normalizarSourceId(parts[0] || '');
+  var tipoIdx = pathSource ? 1 : 0;
+  var tipoRuta = parts[tipoIdx];
+
+  if (tipoRuta === 'pelicula' || tipoRuta === 'serie' || tipoRuta === 'anime') {
+    var slug = parts[tipoIdx + 1];
     if (!slug) {
-      return json({ error: 'Falta el slug. Ej: /' + tipoRuta + '/nombre-del-titulo' }, 400);
+      return json({ error: 'Falta el slug. Ej: /2/serie/nombre-titulo' }, 400);
     }
-    if (parts[2] && parts[3]) {
-      commonOpts.season = parseInt(parts[2], 10);
-      commonOpts.episode = parseInt(parts[3], 10);
+    // /2/serie/slug/1/2
+    if (parts[tipoIdx + 2] && parts[tipoIdx + 3]) {
+      commonOpts.season = parseInt(parts[tipoIdx + 2], 10);
+      commonOpts.episode = parseInt(parts[tipoIdx + 3], 10);
     }
 
+    var forcedSource = pathSource || sourceParam || '';
+
     try {
-      var resultadoPath = await scrapearPorSlug(tipoRuta, slug, sourceParam, commonOpts, origin);
+      var resultadoPath = await scrapearPorSlug(tipoRuta, slug, forcedSource, commonOpts, origin);
       return json(resultadoPath);
     } catch (err) {
       return json({
         success: false,
         error: err.message || 'No se encontro el titulo',
         slug: slug,
-        tipo: tipoRuta
+        tipo: tipoRuta,
+        source_id: forcedSource || null
       }, 404);
     }
   }
@@ -165,13 +182,14 @@ async function handleRequest(request) {
   var targetUrl = url.searchParams.get('url');
   if (!targetUrl) {
     return json({
-      error: 'Usa rutas cortas o query params',
+      error: 'Usa rutas con id de fuente',
       ejemplos: {
-        serie: origin + '/serie/acaramelados-2026',
-        capitulo: origin + '/serie/acaramelados-2026/1/1',
-        search: origin + '/search?q=matrix',
-        url: origin + '/?url=https://...'
-      }
+        serie: origin + '/1/serie/acaramelados-2026',
+        capitulo: origin + '/1/serie/acaramelados-2026/1/1',
+        hackstore: origin + '/2/serie/asi-aprenderas-2026/1/1',
+        search: origin + '/search?q=matrix'
+      },
+      sources: { '1': 'lamovie', '2': 'hackstore', '3': 'pelisplushd' }
     }, 400);
   }
 
@@ -187,7 +205,7 @@ async function handleRequest(request) {
     } else {
       resultado = await scrapearLamovie(targetUrl, commonOpts);
     }
-    resultado = reescribirLinksCortos(resultado, origin);
+    resultado = reescribirLinksCortos(resultado, origin, null, null, source);
     return json(resultado);
   } catch (err) {
     return json({
@@ -198,10 +216,35 @@ async function handleRequest(request) {
   }
 }
 
+/** 1=lamovie, 2=hackstore, 3=pelisplushd (también acepta nombres) */
+function normalizarSourceId(s) {
+  s = String(s || '').toLowerCase().trim();
+  if (s === '1' || s === 'lamovie' || s === 'lm') return 'lamovie';
+  if (s === '2' || s === 'hackstore' || s === 'hs') return 'hackstore';
+  if (s === '3' || s === 'pelisplushd' || s === 'pelisplus' || s === 'pp') return 'pelisplushd';
+  return '';
+}
+
+function sourceIdFromName(name) {
+  name = String(name || '').toLowerCase();
+  if (name === 'hackstore') return '2';
+  if (name === 'pelisplushd') return '3';
+  return '1'; // lamovie default
+}
+
+function sourceNameFromId(id) {
+  id = String(id || '').toLowerCase();
+  if (id === '2' || id === 'hackstore' || id === 'hs') return 'hackstore';
+  if (id === '3' || id === 'pelisplushd' || id === 'pp') return 'pelisplushd';
+  if (id === '1' || id === 'lamovie' || id === 'lm') return 'lamovie';
+  return id || '';
+}
+
 /** Construye URLs candidatas por fuente y scrapea la primera que funcione */
 async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
   opts = opts || {};
   slug = decodeURIComponent(slug).replace(/\/$/, '');
+  sourceParam = normalizarSourceId(sourceParam) || sourceParam;
 
   var candidatos = [];
 
@@ -234,7 +277,13 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
       else r = await scrapearLamovie(c.url, opts);
 
       if (r && r.success !== false) {
-        r = reescribirLinksCortos(r, origin, slug, tipoRuta);
+        // Si es capítulo vacío y hay más fuentes, seguir intentando
+        if (r.tipo === 'Capitulo' && (!r.reproductores || r.reproductores.length === 0) && candidatos.length > 1) {
+          lastErr = new Error('Sin players en ' + c.fuente);
+          continue;
+        }
+        r.source_id = sourceIdFromName(c.fuente);
+        r = reescribirLinksCortos(r, origin, slug, tipoRuta, c.fuente);
         return r;
       }
     } catch (e) {
@@ -242,11 +291,13 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     }
   }
 
+  // Fallback búsqueda
   var q = slug.replace(/-\d{4}$/, '').replace(/-/g, ' ');
   var busqueda = await buscarUniversal(q, sourceParam || 'all', 10);
   var hits = (busqueda && busqueda.resultados) || [];
   for (var h = 0; h < hits.length; h++) {
     var hit = hits[h];
+    if (sourceParam && sourceParam !== 'all' && hit.fuente !== sourceParam) continue;
     var tipoOk =
       (tipoRuta === 'pelicula' && hit.tipo === 'Pelicula') ||
       (tipoRuta === 'serie' && hit.tipo === 'Serie') ||
@@ -260,7 +311,9 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
       else if (hit.fuente === 'hackstore') r2 = await scrapearHackstore(hit.link, opts2);
       else r2 = await scrapearLamovie(hit.link, opts2);
       if (r2 && r2.success !== false) {
-        r2 = reescribirLinksCortos(r2, origin, hit.slug || slug, tipoRuta);
+        if (r2.tipo === 'Capitulo' && (!r2.reproductores || r2.reproductores.length === 0)) continue;
+        r2.source_id = sourceIdFromName(hit.fuente);
+        r2 = reescribirLinksCortos(r2, origin, hit.slug || slug, tipoRuta, hit.fuente);
         return r2;
       }
     } catch (e2) {
@@ -271,8 +324,8 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
   throw lastErr || new Error('No se encontro "' + slug + '" en ninguna fuente');
 }
 
-/** Convierte links de episodios a /serie/slug/T/E */
-function reescribirLinksCortos(resultado, origin, slugHint, tipoHint) {
+/** Links de episodios con ID de fuente: /{id}/serie/slug/T/E */
+function reescribirLinksCortos(resultado, origin, slugHint, tipoHint, fuenteHint) {
   if (!resultado || !origin) return resultado;
 
   var slug = slugHint || '';
@@ -280,9 +333,14 @@ function reescribirLinksCortos(resultado, origin, slugHint, tipoHint) {
     var m = String(resultado.link).match(/\/(?:series|serie|animes|anime|peliculas|pelicula)\/([^\/\?]+)/i);
     if (m) slug = m[1];
   }
+
   var tipoPath = tipoHint || 'serie';
   if (resultado.tipo === 'Anime' || /\/animes?\//i.test(resultado.link || '')) tipoPath = 'anime';
   if (resultado.tipo === 'Pelicula') tipoPath = 'pelicula';
+
+  var fuente = fuenteHint || resultado.fuente || 'lamovie';
+  var sid = sourceIdFromName(fuente);
+  resultado.source_id = sid;
 
   if (resultado.temporadas && Array.isArray(resultado.temporadas)) {
     for (var t = 0; t < resultado.temporadas.length; t++) {
@@ -292,15 +350,16 @@ function reescribirLinksCortos(resultado, origin, slugHint, tipoHint) {
         var s = ep.temporada || resultado.temporadas[t].temporada || 1;
         var n = ep.episodio || (e + 1);
         if (slug) {
-          ep.link = origin + '/' + tipoPath + '/' + slug + '/' + s + '/' + n;
+          ep.link = origin + '/' + sid + '/' + tipoPath + '/' + slug + '/' + s + '/' + n;
           ep.url = ep.link;
+          ep.source_id = sid;
         }
       }
     }
   }
 
   if (resultado.tipo === 'Capitulo' && slug && resultado.temporada && resultado.episodio) {
-    resultado.url = origin + '/' + tipoPath + '/' + slug + '/' + resultado.temporada + '/' + resultado.episodio;
+    resultado.url = origin + '/' + sid + '/' + tipoPath + '/' + slug + '/' + resultado.temporada + '/' + resultado.episodio;
   }
 
   return resultado;
