@@ -129,6 +129,25 @@ async function handleRequest(request) {
         // Enriquecer con TMDB (géneros, sinopsis, rating, poster, backdrop…) sin tocar fuentes
         try {
           resultados.resultados = await enriquecerListaConTmdb(resultados.resultados, query);
+          // Quitar aliases duplicados en cada resultado
+          for (var cj = 0; cj < resultados.resultados.length; cj++) {
+            var itc = resultados.resultados[cj];
+            delete itc.tmdb_overview;
+            delete itc.overview_tmdb;
+            delete itc.description;
+            delete itc.tmdb_genres;
+            delete itc.genres_tmdb;
+            delete itc.genres;
+            delete itc.tmdb_poster;
+            delete itc.poster_tmdb;
+            delete itc.tmdb_rating;
+            delete itc.rating;
+            delete itc.tmdb_release_date;
+            delete itc.release_date;
+            delete itc.tmdb_title;
+            delete itc.original_title;
+            delete itc.image;
+          }
         } catch (eEnrich) { /* silencioso */ }
       }
       return json(resultados);
@@ -190,9 +209,8 @@ async function handleRequest(request) {
       var catalogo = await listarPelisplusCatalogo(catSeccion, catFiltro || null, pageNum, origin);
       if (catalogo && catalogo.resultados && catalogo.resultados.length) {
         try {
-          // enriquecer primeros items del catálogo con TMDB (limitado para no saturar)
-          var sampleQ = (catalogo.resultados[0] && catalogo.resultados[0].titulo) || catSeccion;
-          catalogo.resultados = await enriquecerListaConTmdb(catalogo.resultados.slice(0, 24), sampleQ);
+          // Cada título se enriquece por su nombre (no solo el primero)
+          catalogo.resultados = await enriquecerListaConTmdb(catalogo.resultados, '');
         } catch (eCat) { /* ok */ }
       }
       return json(catalogo);
@@ -712,107 +730,155 @@ async function fetchDetalleTmdbMeta(slugOrTitle, tipoHint) {
   return mapMetaFromSearchItem(best);
 }
 
+/** Extrae meta limpia desde un ítem de búsqueda tvymas (sin campos duplicados) */
 function mapMetaFromSearchItem(it) {
   if (!it) return null;
+  var poster = it.tmdb_poster || it.image || it.poster_tmdb || null;
+  var overview = it.tmdb_overview || it.overview || it.description || null;
+  var genres = it.tmdb_genres || it.genres || it.genres_tmdb || null;
+  var rating = it.tmdb_rating || it.rating || null;
+  var release = it.tmdb_release_date || it.release_date || null;
   return {
-    title: it.title || it.titulo || null,
-    slug: it.slug || null,
     tmdb_id: it.tmdb_id || null,
-    tmdb_title: it.title || null,
-    tmdb_poster: it.tmdb_poster || it.image || null,
-    poster_tmdb: it.tmdb_poster || it.image || null,
-    image: it.image || it.tmdb_poster || null,
-    tmdb_rating: it.tmdb_rating || it.rating || null,
-    rating: it.tmdb_rating || it.rating || null,
-    tmdb_overview: it.tmdb_overview || it.overview || null,
-    overview_tmdb: it.tmdb_overview || it.overview || null,
-    description: it.tmdb_overview || it.overview || null,
-    tmdb_genres: it.tmdb_genres || it.genres || null,
-    genres_tmdb: it.tmdb_genres || it.genres || null,
-    genres: it.tmdb_genres || it.genres || null,
-    tmdb_release_date: it.tmdb_release_date || it.release_date || null,
-    release_date: it.tmdb_release_date || it.release_date || null,
-    year: (it.tmdb_release_date || it.release_date || '').slice(0, 4) || null,
+    titulo_tmdb: it.title || it.titulo || null,
+    portada_tmdb: poster,
     backdrop: it.backdrop || null,
-    original_title: it.original_title || null
+    calificacion: rating != null ? Number(rating) : null,
+    descripcion: overview,
+    generos: Array.isArray(genres) ? genres : (genres ? [genres] : []),
+    fecha_estreno: release,
+    year: release ? String(release).slice(0, 4) : null,
+    titulo_original: it.original_title || null,
+    votos: it.votes || null,
+    duracion: it.runtime || null,
+    status: it.status || null,
+    tagline: it.tagline || null,
+    imdb_id: it.imdb_id || null,
+    slug_tmdb: it.slug || null
   };
 }
 
+/**
+ * Aplica meta TMDB al ítem de tu API con campos ÚNICOS (sin repetir).
+ * Mantiene compatibilidad con MovieZone: portada, descripcion, genero, calificacion, year
+ */
 function aplicarMetaAResultadoBusqueda(item, meta) {
   if (!item || !meta) return item;
-  // Campos compatibles con tu frontend + extras tipo tvymas
+
   if (meta.tmdb_id) item.tmdb_id = meta.tmdb_id;
-  if (meta.tmdb_poster || meta.poster_tmdb || meta.image) {
-    item.tmdb_poster = meta.tmdb_poster || meta.poster_tmdb || meta.image;
-    item.poster_tmdb = item.tmdb_poster;
-    if (!item.portada) item.portada = item.tmdb_poster;
+  if (meta.imdb_id) item.imdb_id = meta.imdb_id;
+  if (meta.titulo_tmdb) item.titulo_tmdb = meta.titulo_tmdb;
+  if (meta.titulo_original) item.titulo_original = meta.titulo_original;
+
+  // Portada: preferir TMDB si no hay o es genérica
+  if (meta.portada_tmdb) {
+    item.portada_tmdb = meta.portada_tmdb;
+    if (!item.portada || /placeholder|pelisplushd\.la\/poster/i.test(item.portada)) {
+      item.portada = meta.portada_tmdb;
+    }
   }
   if (meta.backdrop) item.backdrop = meta.backdrop;
-  if (meta.tmdb_rating || meta.rating) {
-    item.tmdb_rating = meta.tmdb_rating || meta.rating;
-    item.rating = item.tmdb_rating;
-    if (!item.calificacion) item.calificacion = String(item.tmdb_rating);
+
+  if (meta.calificacion != null && !isNaN(meta.calificacion)) {
+    item.calificacion = String(meta.calificacion);
   }
-  if (meta.tmdb_overview || meta.overview_tmdb || meta.description) {
-    item.tmdb_overview = meta.tmdb_overview || meta.overview_tmdb || meta.description;
-    item.overview_tmdb = item.tmdb_overview;
-    item.descripcion = item.tmdb_overview;
-    item.description = item.tmdb_overview;
+  if (meta.votos) item.votos = meta.votos;
+
+  if (meta.descripcion) {
+    var d = item.descripcion || '';
+    if (!d || d.length < 40 || /\.\.\.$/.test(d)) {
+      item.descripcion = meta.descripcion;
+    }
   }
-  var gens = meta.tmdb_genres || meta.genres_tmdb || meta.genres;
-  if (gens && gens.length) {
-    item.tmdb_genres = gens;
-    item.genres_tmdb = gens;
-    item.genres = gens;
-    item.genero = Array.isArray(gens) ? gens.join(', ') : String(gens);
+
+  if (meta.generos && meta.generos.length) {
+    item.generos = meta.generos;
+    item.genero = meta.generos.join(', ');
   }
-  if (meta.tmdb_release_date || meta.release_date) {
-    item.tmdb_release_date = meta.tmdb_release_date || meta.release_date;
-    item.release_date = item.tmdb_release_date;
-    if (!item.year) item.year = String(item.tmdb_release_date).slice(0, 4);
+
+  if (meta.fecha_estreno) {
+    item.fecha_estreno = meta.fecha_estreno;
+    if (!item.year) item.year = String(meta.fecha_estreno).slice(0, 4);
+  } else if (meta.year && !item.year) {
+    item.year = meta.year;
   }
-  if (meta.original_title) item.original_title = meta.original_title;
-  if (meta.tmdb_title || meta.title) item.tmdb_title = meta.tmdb_title || meta.title;
-  if (meta.votes) item.votes = meta.votes;
-  if (meta.runtime) item.runtime = meta.runtime;
+
+  if (meta.duracion) item.duracion = meta.duracion;
   if (meta.status) item.status = meta.status;
   if (meta.tagline) item.tagline = meta.tagline;
-  if (meta.imdb_id) item.imdb_id = meta.imdb_id;
+
   return item;
 }
 
-async function enriquecerListaConTmdb(lista, query) {
-  if (!lista || !lista.length) return lista;
-  var metas = [];
+/** Busca meta TMDB para un título concreto */
+async function metaTmdbParaTitulo(titulo) {
+  var q = String(titulo || '')
+    .replace(/\(\d{4}\)/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!q) return null;
   try {
-    metas = await buscarMetaTmdb(query);
-  } catch (e) {
-    return lista;
-  }
-  if (!metas.length) return lista;
-
-  // indexar por título normalizado
-  var byKey = {};
-  for (var i = 0; i < metas.length; i++) {
-    var k = normalizarTituloKey(metas[i].title || metas[i].titulo || '');
-    if (k) byKey[k] = metas[i];
-  }
-
-  for (var j = 0; j < lista.length; j++) {
-    var item = lista[j];
-    var key = normalizarTituloKey(item.titulo || '');
-    var meta = byKey[key] || null;
-    if (!meta) {
-      // match parcial
-      for (var mk in byKey) {
-        if (mk.indexOf(key) !== -1 || key.indexOf(mk) !== -1) {
-          meta = byKey[mk];
-          break;
+    var metas = await buscarMetaTmdb(q);
+    if (!metas.length) return null;
+    var key = normalizarTituloKey(q);
+    var best = null;
+    var bestScore = -1;
+    for (var i = 0; i < metas.length; i++) {
+      var k = normalizarTituloKey(metas[i].title || metas[i].titulo || '');
+      var score = 0;
+      if (k === key) score = 100;
+      else if (k.indexOf(key) !== -1 || key.indexOf(k) !== -1) score = 50;
+      else {
+        // tokens en común
+        var a = key.split(' ');
+        var b = k.split(' ');
+        var common = 0;
+        for (var ti = 0; ti < a.length; ti++) {
+          if (a[ti].length > 2 && b.indexOf(a[ti]) !== -1) common++;
         }
+        score = common * 10;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = metas[i];
       }
     }
-    if (meta) aplicarMetaAResultadoBusqueda(item, mapMetaFromSearchItem(meta));
+    if (!best || bestScore < 10) return null;
+    return mapMetaFromSearchItem(best);
+  } catch (e) {
+    return null;
   }
+}
+
+/**
+ * Enriquece CADA ítem de la lista (no solo los que coinciden con una query).
+ * Concurrencia limitada para no saturar el worker de meta.
+ */
+async function enriquecerListaConTmdb(lista, query) {
+  if (!lista || !lista.length) return lista;
+
+  var CONCURRENCY = 5;
+  var i = 0;
+
+  async function worker() {
+    while (i < lista.length) {
+      var idx = i++;
+      var item = lista[idx];
+      if (!item || !item.titulo) continue;
+      // Si ya tiene tmdb_id y descripcion, no repetir
+      if (item.tmdb_id && item.descripcion && item.genero) continue;
+      try {
+        var meta = await metaTmdbParaTitulo(item.titulo);
+        if (meta) aplicarMetaAResultadoBusqueda(item, meta);
+      } catch (e) { /* siguiente */ }
+    }
+  }
+
+  var jobs = [];
+  for (var c = 0; c < Math.min(CONCURRENCY, lista.length); c++) {
+    jobs.push(worker());
+  }
+  await Promise.all(jobs);
   return lista;
 }
 
@@ -820,79 +886,69 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   if (!detalle || detalle.success === false) return detalle;
   var titulo = detalle.titulo || detalle.title || '';
   var slug = detalle.slug || '';
-  var meta = null;
+  var metaFull = null;
   try {
-    meta = await fetchDetalleTmdbMeta(titulo || slug, tipoRuta || detalle.tipo);
+    metaFull = await fetchDetalleTmdbMeta(titulo || slug, tipoRuta || detalle.tipo);
   } catch (e) {
     return detalle;
   }
-  if (!meta) return detalle;
+  if (!metaFull) return detalle;
 
-  // Descripción completa si la nuestra está vacía o truncada
-  var descTmdb = meta.overview_tmdb || meta.tmdb_overview || meta.description || '';
-  var descActual = detalle.descripcion || detalle.description || '';
-  if (descTmdb && (!descActual || descActual.length < 40 || /\.\.\.$/.test(descActual))) {
-    detalle.descripcion = descTmdb;
-    detalle.description = descTmdb;
+  // Normalizar a meta limpia
+  var meta = mapMetaFromSearchItem(metaFull);
+  // fetchDetalle puede traer más campos
+  if (metaFull.backdrop) meta.backdrop = metaFull.backdrop;
+  if (metaFull.original_title) meta.titulo_original = metaFull.original_title;
+  if (metaFull.votes) meta.votos = metaFull.votes;
+  if (metaFull.runtime) meta.duracion = metaFull.runtime;
+  if (metaFull.status) meta.status = metaFull.status;
+  if (metaFull.tagline) meta.tagline = metaFull.tagline;
+  if (metaFull.imdb_id) meta.imdb_id = metaFull.imdb_id;
+  if (metaFull.overview_tmdb || metaFull.tmdb_overview) {
+    meta.descripcion = metaFull.overview_tmdb || metaFull.tmdb_overview || meta.descripcion;
   }
-  detalle.overview_tmdb = descTmdb || detalle.overview_tmdb || null;
-  detalle.tmdb_overview = detalle.overview_tmdb;
-
-  var gens = meta.genres_tmdb || meta.tmdb_genres || meta.genres;
-  if (gens && gens.length) {
-    detalle.genres = gens;
-    detalle.genres_tmdb = gens;
-    detalle.tmdb_genres = gens;
-    detalle.genero = Array.isArray(gens) ? gens.join(', ') : String(gens);
+  if (metaFull.genres_tmdb || metaFull.genres) {
+    meta.generos = metaFull.genres_tmdb || metaFull.genres || meta.generos;
   }
-
-  if (meta.tmdb_id) detalle.tmdb_id = meta.tmdb_id;
-  if (meta.imdb_id) detalle.imdb_id = meta.imdb_id;
-  if (meta.original_title) {
-    detalle.original_title = meta.original_title;
-    detalle.titulo_original = meta.original_title;
+  if (metaFull.poster_tmdb || metaFull.tmdb_poster) {
+    meta.portada_tmdb = metaFull.poster_tmdb || metaFull.tmdb_poster || meta.portada_tmdb;
   }
-  if (meta.tmdb_title || meta.title) detalle.tmdb_title = meta.tmdb_title || meta.title;
-
-  var poster = meta.poster_tmdb || meta.tmdb_poster || meta.image;
-  if (poster) {
-    detalle.poster_tmdb = poster;
-    detalle.tmdb_poster = poster;
-    if (!detalle.portada) detalle.portada = poster;
+  if (metaFull.rating || metaFull.tmdb_rating) {
+    meta.calificacion = Number(metaFull.rating || metaFull.tmdb_rating);
   }
-  if (meta.backdrop) detalle.backdrop = meta.backdrop;
-  if (meta.image && !detalle.image) detalle.image = meta.image;
-
-  var rating = meta.rating || meta.tmdb_rating;
-  if (rating) {
-    detalle.rating = rating;
-    detalle.tmdb_rating = rating;
-    if (!detalle.calificacion) detalle.calificacion = String(rating);
-  }
-  if (meta.votes) detalle.votes = meta.votes;
-  if (meta.runtime) {
-    detalle.runtime = meta.runtime;
-    if (!detalle.duracion) detalle.duracion = meta.runtime;
-  }
-  if (meta.status) detalle.status = meta.status;
-  if (meta.tagline) detalle.tagline = meta.tagline;
-  if (meta.release_date || meta.tmdb_release_date) {
-    detalle.release_date = meta.release_date || meta.tmdb_release_date;
-    detalle.tmdb_release_date = detalle.release_date;
-    if (!detalle.year) detalle.year = String(detalle.release_date).slice(0, 4);
+  if (metaFull.release_date || metaFull.tmdb_release_date) {
+    meta.fecha_estreno = metaFull.release_date || metaFull.tmdb_release_date;
   }
 
-  // Temporadas / episodios meta (no pisa embeds; solo añade info)
-  if (Array.isArray(meta.temporadas) && meta.temporadas.length) {
-    detalle.temporadas_tmdb = meta.temporadas;
-    if (!detalle.total_temporadas) detalle.total_temporadas = meta.temporadas.length;
-    // Si no hay lista de temporadas numéricas, derivarla
+  aplicarMetaAResultadoBusqueda(detalle, meta);
+
+  // Temporadas TMDB (solo meta; no pisa embeds)
+  if (Array.isArray(metaFull.temporadas) && metaFull.temporadas.length) {
+    detalle.temporadas_tmdb = metaFull.temporadas;
+    if (!detalle.total_temporadas) detalle.total_temporadas = metaFull.temporadas.length;
     if (!detalle.temporadas || !detalle.temporadas.length) {
-      detalle.temporadas = meta.temporadas.map(function (t) {
+      detalle.temporadas = metaFull.temporadas.map(function (t) {
         return t.season_number || t.temporada || t;
       }).filter(Boolean);
     }
   }
+
+  // Limpiar aliases redundantes si alguien los había puesto antes
+  delete detalle.tmdb_overview;
+  delete detalle.overview_tmdb;
+  delete detalle.description;
+  delete detalle.tmdb_genres;
+  delete detalle.genres_tmdb;
+  delete detalle.genres;
+  delete detalle.tmdb_poster;
+  delete detalle.poster_tmdb;
+  delete detalle.tmdb_rating;
+  delete detalle.rating;
+  delete detalle.tmdb_release_date;
+  delete detalle.release_date;
+  delete detalle.tmdb_title;
+  delete detalle.original_title;
+  delete detalle.image;
 
   return detalle;
 }
