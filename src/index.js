@@ -501,7 +501,19 @@ function json(data, status) {
 
 function limpiarTexto(txt) {
   if (!txt) return '';
-  return String(txt).replace(/\s+/g, ' ').trim();
+  var s = String(txt);
+  // Corregir mojibake UTF-8 leído como Latin-1: "bÃºsqueda" → "búsqueda"
+  if (/Ã.|Â.|â.|ð./.test(s)) {
+    try {
+      var fixed = '';
+      // En Worker no hay Buffer: decodificar manualmente
+      var bytes = [];
+      for (var i = 0; i < s.length; i++) bytes.push(s.charCodeAt(i) & 0xff);
+      fixed = new TextDecoder('utf-8').decode(new Uint8Array(bytes));
+      if (fixed && !/Ã.|�/.test(fixed)) s = fixed;
+    } catch (e) { /* keep s */ }
+  }
+  return s.replace(/\s+/g, ' ').trim();
 }
 
 /** Quita basura de títulos: "Descargar serie", " - Hackstore.fo Oficial...", etc. */
@@ -521,7 +533,7 @@ function limpiarTitulo(txt) {
   return limpiarTexto(t);
 }
 
-/** Extrae titulo, descripcion y portada del HTML (og / meta / h1) */
+/** Extrae titulo, descripcion completa, portada, géneros y año del HTML de la fuente */
 function extraerMetas(html) {
   html = html || '';
   var titulo = '';
@@ -540,34 +552,100 @@ function extraerMetas(html) {
   }
   titulo = limpiarTitulo(titulo);
 
-  var descripcion = '';
-  m = html.match(/property=["']og:description["']\s+content=["']([^"']+)["']/i)
-    || html.match(/content=["']([^"']+)["']\s+property=["']og:description["']/i)
-    || html.match(/name=["']description["']\s+content=["']([^"']+)["']/i)
-    || html.match(/content=["']([^"']+)["']\s+name=["']description["']/i);
-  if (m) descripcion = limpiarTexto(m[1]);
-  descripcion = descripcion.replace(/^Serie\s+[^:]+:\s*/i, '');
+  // Año desde título "Nombre (2026)"
+  var year = null;
+  var ym = titulo.match(/\((\d{4})\)/);
+  if (ym) year = ym[1];
+  if (!year) {
+    ym = html.match(/Ver\s+[^<(]+\((\d{4})\)/i);
+    if (ym) year = ym[1];
+  }
 
+  // Sinopsis COMPLETA de la página (div.text-large tras "Sinopsis"), no el meta truncado
+  var descripcion = '';
+  m = html.match(/Sinopsis\s*:?\s*<\/(?:b|strong|span|p)[^>]*>\s*(?:<\/p>\s*)?<div[^>]*class=["'][^"']*text-large[^"']*["'][^>]*>([\s\S]*?)<\/div>/i)
+    || html.match(/class=["'][^"']*text-large[^"']*["'][^>]*>\s*([\s\S]{40,}?)\s*<\/div>/i);
+  if (m) {
+    descripcion = limpiarTexto(m[1].replace(/<[^>]+>/g, ' '));
+  }
+  if (!descripcion || descripcion.length < 40) {
+    m = html.match(/property=["']og:description["']\s+content=["']([^"']+)["']/i)
+      || html.match(/content=["']([^"']+)["']\s+property=["']og:description["']/i)
+      || html.match(/name=["']description["']\s+content=["']([^"']+)["']/i)
+      || html.match(/content=["']([^"']+)["']\s+name=["']description["']/i);
+    if (m) descripcion = limpiarTexto(m[1]);
+  }
+  // Quitar prefijos "Pelicula X:" / "Serie X:" y puntos suspensivos finales del meta
+  descripcion = descripcion
+    .replace(/^(Pel[ií]cula|Serie|Anime|Movie)\s*[^:]{0,80}:\s*/i, '')
+    .replace(/\.\.\.\s*$/, '')
+    .trim();
+  descripcion = limpiarTexto(descripcion);
+
+  // Portada: preferir poster del sitio o TMDB, NUNCA amazon media-amazon rotas
   var portada = '';
-  m = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i)
-    || html.match(/content=["']([^"']+)["']\s+property=["']og:image["']/i);
-  if (m) portada = m[1];
+  m = html.match(/src=["'](https?:\/\/[^"']*\/poster\/[^"']+)["']/i)
+    || html.match(/src=["'](\/?poster\/[^"']+)["']/i);
+  if (m) {
+    portada = m[1].indexOf('http') === 0 ? m[1] : PELISPLUS_BASE + (m[1].charAt(0) === '/' ? m[1] : '/' + m[1]);
+  }
+  if (!portada) {
+    m = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i)
+      || html.match(/content=["']([^"']+)["']\s+property=["']og:image["']/i);
+    if (m && !/media-amazon|amazon\.com/i.test(m[1])) portada = m[1];
+  }
   if (!portada) {
     m = html.match(/data-src=["'](https?:\/\/image\.tmdb\.org\/[^"']+)["']/i)
       || html.match(/src=["'](https?:\/\/image\.tmdb\.org\/t\/p\/w(?:300|500|780)\/[^"']+)["']/i);
     if (m) portada = m[1];
   }
-  if (!portada) {
-    m = html.match(/src=["'](\/?poster\/[^"']+)["']/i);
-    if (m) {
-      portada = m[1].indexOf('http') === 0 ? m[1] : PELISPLUS_BASE + (m[1].charAt(0) === '/' ? m[1] : '/' + m[1]);
-    }
-  }
   if (portada && /image\.tmdb\.org\/t\/p\/w300\//i.test(portada)) {
     portada = portada.replace('/w300/', '/w500/');
   }
 
-  return { titulo: titulo, descripcion: descripcion, portada: portada };
+  // Géneros: links /generos/ cerca de la ficha (tras Sinopsis / sectionDetail), no el menú lateral
+  var generos = [];
+  var genSeen = {};
+  var zone = '';
+  var zi = html.search(/Sinopsis/i);
+  if (zi >= 0) zone = html.slice(zi, zi + 4000);
+  else zone = html;
+  var gre = /href=["']\/generos\/([^"'\/]+)["'][^>]*>([^<]+)</gi;
+  var gm;
+  while ((gm = gre.exec(zone)) !== null) {
+    var gSlug = gm[1].toLowerCase();
+    var gName = limpiarTexto(gm[2]);
+    if (!gName || genSeen[gSlug]) continue;
+    // filtrar entradas del menú genérico si aparecen
+    if (gSlug === 'dorama' && generos.length === 0) continue;
+    genSeen[gSlug] = true;
+    generos.push(gName);
+  }
+  // fallback: keywords meta
+  if (!generos.length) {
+    m = html.match(/name=["']keywords["']\s+content=["']([^"']+)["']/i);
+    // no suele traer géneros útiles
+  }
+
+  // Actores (opcional)
+  var actores = [];
+  var are = /href=["']\/actor\/[^"']+["'][^>]*>([^<]+)</gi;
+  var am;
+  var actorZone = zi >= 0 ? html.slice(zi, zi + 5000) : html;
+  while ((am = are.exec(actorZone)) !== null && actores.length < 12) {
+    var an = limpiarTexto(am[1]);
+    if (an && actores.indexOf(an) === -1) actores.push(an);
+  }
+
+  return {
+    titulo: titulo,
+    descripcion: descripcion,
+    portada: portada,
+    year: year,
+    generos: generos,
+    genero: generos.length ? generos.join(', ') : null,
+    actores: actores
+  };
 }
 
 /** Extrae links de descarga (mega, mediafire, etc.) del HTML */
@@ -783,23 +861,34 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   if (meta.titulo_tmdb) item.titulo_tmdb = meta.titulo_tmdb;
   if (meta.titulo_original) item.titulo_original = meta.titulo_original;
 
-  // Portada: preferir TMDB si no hay o es genérica
-  if (meta.portada_tmdb) {
+  // Portada: TMDB ok; NUNCA amazon (no cargan bien)
+  var posterOk = meta.portada_tmdb && !/media-amazon|amazon\.com|m\.media-amazon/i.test(meta.portada_tmdb);
+  if (posterOk) {
     item.portada_tmdb = meta.portada_tmdb;
-    if (!item.portada || /placeholder|pelisplushd\.la\/poster/i.test(item.portada)) {
+    // Solo reemplazar portada del listado si no hay o es placeholder; no pisar poster del sitio
+    if (!item.portada || /placeholder/i.test(item.portada)) {
       item.portada = meta.portada_tmdb;
     }
   }
-  if (meta.backdrop) item.backdrop = meta.backdrop;
+  if (meta.backdrop && !/media-amazon|amazon\.com/i.test(meta.backdrop)) {
+    item.backdrop = meta.backdrop;
+  }
 
-  if (meta.calificacion != null && !isNaN(meta.calificacion)) {
+  if (meta.calificacion != null && !isNaN(meta.calificacion) && !item.calificacion) {
     item.calificacion = String(meta.calificacion);
   }
-  if (meta.votos) item.votos = meta.votos;
+  if (meta.votos && !item.votos) item.votos = meta.votos;
 
+  // Descripción: preferir la de la página fuente (español completo); no pisar con inglés
   if (meta.descripcion) {
     var d = item.descripcion || '';
-    if (!d || d.length < 40 || /\.\.\.$/.test(d)) {
+    var metaEsIngles = /\b(the|and|with|from|after|when|his|her)\b/i.test(meta.descripcion)
+      && !/[áéíóúñ¿¡]/i.test(meta.descripcion);
+    var dIncompleta = !d || d.length < 40 || /\.\.\.\s*$/.test(d) || /^(Pel[ií]cula|Serie)\s/i.test(d);
+    if (dIncompleta && !metaEsIngles) {
+      item.descripcion = meta.descripcion;
+    } else if (dIncompleta && metaEsIngles && !d) {
+      // solo si no hay nada
       item.descripcion = meta.descripcion;
     }
   }
@@ -1003,13 +1092,8 @@ async function metaTmdbParaTitulo(titulo, tipoHint) {
     } catch (e) { /* next */ }
   }
 
-  // 3) OMDb fallback
-  for (var o = 0; o < Math.min(variantes.length, 3); o++) {
-    try {
-      var mOmdb = await buscarMetaOmdb(variantes[o]);
-      if (mOmdb && (mOmdb.descripcion || mOmdb.portada_tmdb || mOmdb.calificacion)) return mOmdb;
-    } catch (e) { /* next */ }
-  }
+  // OMDb desactivado por defecto: datos en inglés y posters de Amazon que no cargan.
+  // Usar solo TMDB (tvymas o API key) + scrape de la página fuente.
 
   return null;
 }
@@ -1083,6 +1167,15 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   if (metaFull.release_date || metaFull.tmdb_release_date) {
     meta.fecha_estreno = metaFull.release_date || metaFull.tmdb_release_date;
   }
+
+  // No pisar datos buenos ya extraídos de la página fuente
+  var descFuente = detalle.descripcion || '';
+  var descFuenteOk = descFuente.length > 60 && !/\.\.\.\s*$/.test(descFuente);
+  var portadaFuenteOk = detalle.portada && /pelisplushd|tmdb\.org|lamovie/i.test(detalle.portada);
+
+  if (descFuenteOk) meta.descripcion = null; // conservar scrape
+  if (portadaFuenteOk) meta.portada_tmdb = null;
+  if (detalle.genero) meta.generos = null;
 
   aplicarMetaAResultadoBusqueda(detalle, meta);
 
@@ -1751,6 +1844,10 @@ async function scrapearPelisplus(pageUrl, opts) {
   var titulo = metas.titulo;
   var portada = metas.portada;
   var descripcion = metas.descripcion;
+  var yearMeta = metas.year || null;
+  var generosMeta = metas.generos || [];
+  var generoMeta = metas.genero || null;
+  var actoresMeta = metas.actores || [];
 
   // Serie raíz → listar capítulos
   if (esSerie && !esCapitulo) {
@@ -1834,7 +1931,10 @@ async function scrapearPelisplus(pageUrl, opts) {
       titulo: titulo,
       portada: portada,
       descripcion: descripcion,
-      year: null,
+      year: yearMeta,
+      genero: generoMeta,
+      generos: generosMeta,
+      actores: actoresMeta,
       calificacion: null,
       total_temporadas: temporadas.length,
       total_episodios: caps.length,
@@ -1861,7 +1961,10 @@ async function scrapearPelisplus(pageUrl, opts) {
     titulo: titulo,
     portada: portada,
     descripcion: descripcion,
-    year: null,
+    year: yearMeta,
+    genero: generoMeta,
+    generos: generosMeta,
+    actores: actoresMeta,
     calificacion: null,
     temporada: capMatch ? parseInt(capMatch[1], 10) : null,
     episodio: capMatch ? parseInt(capMatch[2], 10) : null,
