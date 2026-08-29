@@ -79,6 +79,72 @@ async function handleRequest(request, env) {
     requestUrl: request.url
   };
 
+
+  // ---------- PROXY HLS (reproduce m3u8 / segmentos con CORS) ----------
+  // Solo /proxy?...  (NO confundir con &proxy=1 del endpoint /resolve)
+  if (parts[0] === 'proxy') {
+    var proxyTarget = url.searchParams.get('url') || '';
+    if (!proxyTarget) {
+      return json({ success: false, error: 'Falta url. Uso: /proxy?url={m3u8_o_segmento}' }, 400);
+    }
+    try {
+      proxyTarget = decodeURIComponent(proxyTarget);
+    } catch (eDec) {}
+    if (!/^https?:\/\//i.test(proxyTarget)) {
+      return json({ success: false, error: 'url debe ser http(s)' }, 400);
+    }
+    try {
+      return await handleProxy(request, proxyTarget);
+    } catch (errP) {
+      return json({ success: false, error: errP.message || 'Error en proxy' }, 502);
+    }
+  }
+
+  // ---------- RESOLVE embed → m3u8 (vimeos / streamwish) ----------
+  // /resolve?url=...  |  /resolve/vimeos?url=...  |  /resolve/streamwish?url=...
+  // &proxy=1 añade proxy_url listo para el player
+  if (parts[0] === 'resolve' || url.searchParams.has('resolve')) {
+    var resolveUrl = url.searchParams.get('url') || url.searchParams.get('resolve') || '';
+    var provider = (parts[1] || url.searchParams.get('provider') || '').toLowerCase();
+    var wantProxy = url.searchParams.get('proxy') === '1' || url.searchParams.get('proxy') === 'true';
+    if (!resolveUrl) {
+      return json({
+        success: false,
+        error: 'Falta url del embed',
+        uso: {
+          auto: origin + '/resolve?url={embed}&proxy=1',
+          vimeos: origin + '/resolve/vimeos?url={embed}&proxy=1',
+          streamwish: origin + '/resolve/streamwish?url={embed}&proxy=1'
+        }
+      }, 400);
+    }
+    try {
+      resolveUrl = decodeURIComponent(resolveUrl);
+    } catch (eR) {}
+    if (!provider) provider = detectarProviderEmbed(resolveUrl) || 'vimeos';
+    try {
+      var resolved;
+      if (provider === 'streamwish') {
+        resolved = await resolveStreamwishEmbed(resolveUrl, wantProxy ? origin : null);
+      } else if (provider === 'vimeos') {
+        resolved = await resolveVimeosEmbed(resolveUrl, wantProxy ? origin : null);
+      } else {
+        return json({ success: false, error: 'Provider no soportado: ' + provider + ' (usa vimeos|streamwish)' }, 400);
+      }
+      // Si pidieron proxy=1 y aún no hay proxy_url
+      if (wantProxy && resolved && resolved.url && !resolved.proxy_url) {
+        resolved.proxy_url = origin + '/proxy?url=' + encodeURIComponent(resolved.url);
+        if (resolved.master) {
+          resolved.proxy_master = origin + '/proxy?url=' + encodeURIComponent(resolved.master);
+        }
+      }
+      return json(resolved);
+    } catch (errR) {
+      return json({ success: false, provider: provider || null, error: errR.message || 'Error resolviendo embed' }, 500);
+    }
+  }
+
+
   // ---------- Health ----------
   if (path === '/' && !url.searchParams.has('url') && !url.searchParams.has('q') && !url.searchParams.has('episodePostId')) {
     return json({
@@ -99,7 +165,11 @@ async function handleRequest(request, env) {
         estrenos_series: origin + '/3/series/estrenos',
         estrenos_animes: origin + '/3/animes/estrenos',
         populares_peliculas: origin + '/3/peliculas/populares',
-        por_url: origin + '/?url={url_completa}'
+        por_url: origin + '/?url={url_completa}',
+        resolve_vimeos: origin + '/resolve/vimeos?url={embed}&proxy=1',
+        resolve_streamwish: origin + '/resolve/streamwish?url={embed}&proxy=1',
+        resolve_auto: origin + '/resolve?url={embed}&proxy=1',
+        proxy_hls: origin + '/proxy?url={m3u8}'
       },
       ejemplos: {
         buscar: origin + '/search?q=acaramelados',
@@ -484,6 +554,376 @@ function detectarFuente(u) {
   if (/\/(pelicula|serie|anime)\//i.test(u)) return 'pelisplushd';
   return 'lamovie';
 }
+
+
+// ======================================================
+// RESOLVERS HLS (Vimeos + Streamwish) + PROXY
+// No modifican el flujo de catálogo / scrape existente
+// ======================================================
+
+var STREAMWISH_MIRRORS = [
+  'streamwish.to', 'flaswish.com', 'strwish.com', 'streamwish.top',
+  'ahvsh.com', 'streamwish.site', 'streamhg.com'
+];
+
+function toBaseN(n, base) {
+  if (n === 0) return '0';
+  var digits = '0123456789abcdefghijklmnopqrstuvwxyz';
+  var s = '';
+  while (n > 0) {
+    s = digits[n % base] + s;
+    n = Math.floor(n / base);
+  }
+  return s || '0';
+}
+
+/** Desofusca packer tipo Dean Edwards eval(function(p,a,c,k,e,d)...) */
+function unpackPacker(html) {
+  var start = html.indexOf('eval(function(p,a,c,k,e,d)');
+  if (start < 0) throw new Error('Packer no encontrado');
+  var end = html.indexOf('</script>', start);
+  var packer = end > start ? html.slice(start, end) : html.slice(start);
+  var idx = packer.lastIndexOf('}(');
+  if (idx < 0) throw new Error('No se encontraron argumentos del Packer');
+  var args = packer.slice(idx + 2);
+
+  // Variantes de comillas
+  var m = args.match(/^'(.*)',\s*(\d+)\s*,\s*(\d+)\s*,\s*'(.*)'\.split\('\|'\)/s);
+  if (!m) m = args.match(/^"(.*)",\s*(\d+)\s*,\s*(\d+)\s*,\s*"(.*)"\.split\("\|"\)/s);
+  if (!m) m = args.match(/^'(.*)',\s*(\d+)\s*,\s*(\d+)\s*,\s*'(.*)'\.split\("\|"\)/s);
+  if (!m) {
+    // fallback más flexible (vimeos)
+    m = args.match(/(['"])([\s\S]*?)\1\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(['"])([\s\S]*?)\5\.split\(['"]\|['"]\)/);
+    if (m) {
+      return unpackWithWords(m[2], parseInt(m[3], 10), m[6].split('|'));
+    }
+    throw new Error('No se encontró la estructura interna del Packer');
+  }
+  var code = m[1];
+  var radix = parseInt(m[2], 10);
+  var count = parseInt(m[3], 10);
+  var words = m[4].split('|');
+  var p = code;
+  for (var i = count - 1; i >= 0; i--) {
+    if (i < words.length && words[i]) {
+      var token = toBaseN(i, radix);
+      p = p.replace(new RegExp('\\b' + token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g'), words[i]);
+    }
+  }
+  return p;
+}
+
+function unpackWithWords(code, radix, words) {
+  // decode estilo base36 tokens → words[n]
+  return code.replace(/\b[0-9a-z]+\b/g, function (token) {
+    try {
+      var n = parseInt(token, radix || 36);
+      if (!isNaN(n) && n < words.length && words[n]) return words[n];
+    } catch (e) {}
+    return token;
+  });
+}
+
+function findStreamUrlsInDecoded(decoded) {
+  var urls = [];
+  var re1 = /"(hls\d+|file|src)"\s*:\s*"(https?:\/\/[^"]+)"/gi;
+  var mm;
+  while ((mm = re1.exec(decoded))) urls.push(mm[2]);
+  var re2 = /file\s*:\s*["'](https?:\/\/[^"']+)["']/gi;
+  while ((mm = re2.exec(decoded))) urls.push(mm[1]);
+  var re3 = /https?:\/\/[^"'\\s<>\\]+(?:\\.m3u8|master\\.txt)(?:\\?[^"'\\s<>\\]*)?/gi;
+  // fix regex - in JS string
+  re3 = /https?:\/\/[^"'\s<>\\]+(?:\.m3u8|master\.txt)(?:\?[^"'\s<>\\]*)?/gi;
+  while ((mm = re3.exec(decoded))) urls.push(mm[0]);
+  var out = [];
+  for (var i = 0; i < urls.length; i++) {
+    var u = String(urls[i]).replace(/\\\//g, '/').trim().replace(/\\+$/g, '');
+    if (u.indexOf('http') === 0 && out.indexOf(u) === -1) out.push(u);
+  }
+  return out;
+}
+
+function pickMasterUrl(urls) {
+  for (var i = 0; i < urls.length; i++) {
+    if (urls[i].indexOf('master.m3u8') !== -1 || urls[i].indexOf('.m3u8') !== -1) return urls[i];
+  }
+  for (var j = 0; j < urls.length; j++) {
+    if (urls[j].indexOf('master.txt') !== -1 || /\.txt(\?|$)/.test(urls[j])) return urls[j];
+  }
+  return urls[0];
+}
+
+function parseHlsVariants(playlist, masterUrl) {
+  var lines = playlist.split(/\r?\n/);
+  var variants = [];
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].indexOf('#EXT-X-STREAM-INF:') === -1) continue;
+    if (i + 1 >= lines.length) continue;
+    var stream = lines[i + 1].trim();
+    if (!stream || stream.charAt(0) === '#') continue;
+    if (stream.indexOf('http') !== 0) {
+      try { stream = new URL(stream, masterUrl).toString(); } catch (e) { continue; }
+    }
+    var resolution = lines[i].match(/RESOLUTION=(\d+)x(\d+)/);
+    var bandwidth = lines[i].match(/BANDWIDTH=(\d+)/);
+    variants.push({
+      width: resolution ? parseInt(resolution[1], 10) : 0,
+      height: resolution ? parseInt(resolution[2], 10) : 0,
+      bandwidth: bandwidth ? parseInt(bandwidth[1], 10) : 0,
+      url: stream
+    });
+  }
+  return variants;
+}
+
+function selectVariant(variants, preferHeight) {
+  preferHeight = preferHeight || 720;
+  if (!variants || !variants.length) return null;
+  var sel = null;
+  for (var i = 0; i < variants.length; i++) {
+    if (variants[i].height === preferHeight) { sel = variants[i]; break; }
+  }
+  if (!sel) {
+    sel = variants.slice().sort(function (a, b) {
+      return (b.height - a.height) || (b.bandwidth - a.bandwidth);
+    })[0];
+  }
+  return sel;
+}
+
+async function fetchText(url, headers) {
+  var res = await fetch(url, { headers: headers || HEADERS, redirect: 'follow' });
+  if (!res.ok) throw new Error('HTTP ' + res.status + ' en ' + url);
+  return await res.text();
+}
+
+/** Resolver embed Vimeos → m3u8 (misma lógica que tu script Python) */
+async function resolveVimeosEmbed(embedUrl, origin) {
+  var headers = {
+    'User-Agent': HEADERS['User-Agent'],
+    'Referer': 'https://vimeos.net/',
+    'Accept': HEADERS['Accept']
+  };
+  var html = await fetchText(embedUrl, headers);
+  var decoded = unpackPacker(html);
+  var urls = findStreamUrlsInDecoded(decoded);
+  if (!urls.length) {
+    // fallback: buscar m3u8 en decoded crudo
+    var m3 = decoded.match(/https?:\/\/[^"'\s<>]+\.m3u8(?:\?[^"'\s<>]*)?/gi) || [];
+    urls = m3.filter(function (u, i, a) { return a.indexOf(u) === i; });
+  }
+  if (!urls.length) throw new Error('No se encontró ninguna fuente HLS (vimeos)');
+  var master = pickMasterUrl(urls);
+  var playlist = '';
+  var variants = [];
+  try {
+    playlist = await fetchText(master, headers);
+    if (playlist.indexOf('#EXTM3U') !== -1) variants = parseHlsVariants(playlist, master);
+  } catch (e) { /* master puede ser ya la variante */ }
+
+  var selected = selectVariant(variants, 720);
+  var finalUrl = selected ? selected.url : master;
+  var quality = selected && selected.height ? selected.height + 'p' : null;
+  var resolution = selected && selected.height ? (selected.width + 'x' + selected.height) : null;
+
+  var out = {
+    success: true,
+    provider: 'vimeos',
+    source: embedUrl,
+    type: 'hls',
+    quality: quality,
+    resolution: resolution,
+    url: finalUrl,
+    master: master,
+    all_sources: urls,
+    variants: variants
+  };
+  if (origin) {
+    out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(finalUrl);
+    out.proxy_master = origin + '/proxy?url=' + encodeURIComponent(master);
+  }
+  return out;
+}
+
+function extractStreamwishId(url) {
+  var m = String(url).match(/\/(?:e|f)\/([a-zA-Z0-9]+)/);
+  if (m) return m[1];
+  return String(url).replace(/\/$/, '').split('/').pop().split('?')[0];
+}
+
+function streamwishCandidateUrls(original) {
+  var vid = extractStreamwishId(original);
+  var out = [original];
+  for (var i = 0; i < STREAMWISH_MIRRORS.length; i++) {
+    var h = STREAMWISH_MIRRORS[i];
+    var a = 'https://' + h + '/e/' + vid;
+    var b = 'https://' + h + '/' + vid;
+    if (out.indexOf(a) === -1) out.push(a);
+    if (out.indexOf(b) === -1) out.push(b);
+  }
+  return out;
+}
+
+async function fetchStreamwishHtml(url) {
+  var candidates = streamwishCandidateUrls(url);
+  var lastErr = null;
+  for (var i = 0; i < candidates.length; i++) {
+    var u = candidates[i];
+    var host = 'streamwish.to';
+    try { host = new URL(u).hostname || host; } catch (e) {}
+    var headers = {
+      'User-Agent': HEADERS['User-Agent'],
+      'Accept': HEADERS['Accept'],
+      'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
+      'Referer': 'https://' + host + '/',
+      'Origin': 'https://' + host
+    };
+    try {
+      var res = await fetch(u, { headers: headers, redirect: 'follow' });
+      var text = await res.text();
+      if (res.ok && text.length > 800 && text.indexOf('eval(function(p,a,c,k,e,d)') !== -1) {
+        return { html: text, used: u, host: host };
+      }
+      lastErr = 'HTTP ' + res.status + ' en ' + u + ' (len=' + text.length + ')';
+    } catch (e) {
+      lastErr = u + ': ' + (e.message || e);
+    }
+  }
+  throw new Error(lastErr || 'No se pudo descargar el embed Streamwish');
+}
+
+/** Resolver embed Streamwish / mirrors → m3u8 */
+async function resolveStreamwishEmbed(embedUrl, origin) {
+  var got = await fetchStreamwishHtml(embedUrl);
+  var decoded = unpackPacker(got.html);
+  var urls = findStreamUrlsInDecoded(decoded);
+  if (!urls.length) throw new Error('No se encontró ninguna fuente HLS en el packer (streamwish)');
+  var master = pickMasterUrl(urls);
+  var headers = {
+    'User-Agent': HEADERS['User-Agent'],
+    'Referer': 'https://' + got.host + '/',
+    'Origin': 'https://' + got.host,
+    'Accept': '*/*'
+  };
+  var variants = [];
+  var finalUrl = master;
+  var quality = null;
+  var resolution = null;
+  try {
+    var playlist = await fetchText(master, headers);
+    if (playlist.indexOf('#EXTM3U') !== -1) {
+      variants = parseHlsVariants(playlist, master);
+      var selected = selectVariant(variants, 720);
+      if (selected) {
+        finalUrl = selected.url;
+        quality = selected.height ? selected.height + 'p' : null;
+        resolution = selected.height ? (selected.width + 'x' + selected.height) : null;
+      }
+    }
+  } catch (e) { /* ok */ }
+
+  var out = {
+    success: true,
+    provider: 'streamwish',
+    source: embedUrl,
+    resolved_embed: got.used,
+    type: 'hls',
+    quality: quality,
+    resolution: resolution,
+    url: finalUrl,
+    master: master,
+    all_sources: urls,
+    variants: variants
+  };
+  if (origin) {
+    out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(finalUrl);
+    out.proxy_master = origin + '/proxy?url=' + encodeURIComponent(master);
+  }
+  return out;
+}
+
+function detectarProviderEmbed(u) {
+  u = String(u || '').toLowerCase();
+  if (u.indexOf('vimeos') !== -1) return 'vimeos';
+  if (u.indexOf('streamwish') !== -1 || u.indexOf('flaswish') !== -1 ||
+      u.indexOf('strwish') !== -1 || u.indexOf('ahvsh') !== -1 ||
+      u.indexOf('streamhg') !== -1) return 'streamwish';
+  return '';
+}
+
+/** Reescribe playlist m3u8 para que segmentos pasen por /proxy */
+function rewriteM3u8(body, baseUrl, proxyBase) {
+  var lines = body.split(/\r?\n/);
+  var out = [];
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    var trim = line.trim();
+    if (!trim || trim.charAt(0) === '#') {
+      // URI="..." en tags
+      out.push(line.replace(/URI="([^"]+)"/g, function (_, uri) {
+        try {
+          var abs = new URL(uri, baseUrl).toString();
+          return 'URI="' + proxyBase + encodeURIComponent(abs) + '"';
+        } catch (e) {
+          return 'URI="' + uri + '"';
+        }
+      }));
+      continue;
+    }
+    try {
+      var abs2 = new URL(trim, baseUrl).toString();
+      out.push(proxyBase + encodeURIComponent(abs2));
+    } catch (e2) {
+      out.push(line);
+    }
+  }
+  return out.join('\n');
+}
+
+async function handleProxy(request, targetUrl) {
+  var headers = {
+    'User-Agent': HEADERS['User-Agent'],
+    'Accept': '*/*'
+  };
+  try {
+    var host = new URL(targetUrl).hostname || '';
+    if (host.indexOf('vimeos') !== -1) headers['Referer'] = 'https://vimeos.net/';
+    else if (host) {
+      headers['Referer'] = 'https://' + host + '/';
+      headers['Origin'] = 'https://' + host;
+    }
+  } catch (e) {}
+
+  var upstream = await fetch(targetUrl, { headers: headers, redirect: 'follow' });
+  var ct = (upstream.headers.get('content-type') || '').toLowerCase();
+  var buf = await upstream.arrayBuffer();
+  var isM3u8 = ct.indexOf('mpegurl') !== -1 || ct.indexOf('m3u8') !== -1 ||
+    /\.m3u8(\?|$)/i.test(targetUrl) || /\.txt(\?|$)/i.test(targetUrl);
+
+  var origin = new URL(request.url).origin;
+  var proxyBase = origin + '/proxy?url=';
+
+  if (isM3u8) {
+    var text = new TextDecoder().decode(buf);
+    if (text.indexOf('#EXT') !== -1) {
+      text = rewriteM3u8(text, targetUrl, proxyBase);
+      return new Response(text, {
+        status: 200,
+        headers: Object.assign({}, corsHeaders(), {
+          'Content-Type': 'application/vnd.apple.mpegurl',
+          'Cache-Control': 'no-cache'
+        })
+      });
+    }
+  }
+
+  var h = Object.assign({}, corsHeaders(), {
+    'Content-Type': ct || 'application/octet-stream',
+    'Cache-Control': 'public, max-age=60'
+  });
+  return new Response(buf, { status: upstream.status, headers: h });
+}
+
 
 function corsHeaders() {
   return {
