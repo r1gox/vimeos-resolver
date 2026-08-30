@@ -3173,23 +3173,56 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   return item;
 }
 
-/** Variantes de query para maximizar hits en APIs de meta */
+/**
+ * Variantes de query para maximizar hits en IMDb/OMDb.
+ * Títulos JP largos: "One Piece 3D2Y: Ace no Shi wo Koete!..."
+ * → "One Piece 3D2Y", "3D2Y", primeras palabras latinas, etc.
+ */
 function variantesTitulo(titulo) {
   var base = String(titulo || '')
     .replace(/\(\d{4}\)/g, '')
     .replace(/\s+/g, ' ')
     .trim();
   if (!base) return [];
-  var out = [base];
-  var sinPuntos = base.replace(/\./g, '');
-  if (sinPuntos !== base) out.push(sinPuntos);
-  var sinVs = base.replace(/\bvs\.?\b/gi, ' ').replace(/\s+/g, ' ').trim();
-  if (sinVs !== base) out.push(sinVs);
-  var sinDosPuntos = base.split(':')[0].trim();
-  if (sinDosPuntos && sinDosPuntos !== base) out.push(sinDosPuntos);
-  // quitar artículos iniciales
-  var sinArt = base.replace(/^(el|la|los|las|the|a|an)\s+/i, '').trim();
-  if (sinArt && sinArt !== base) out.push(sinArt);
+  var out = [];
+  function add(v) {
+    v = String(v || '').replace(/\s+/g, ' ').trim();
+    if (!v || v.length < 2) return;
+    if (out.indexOf(v) === -1) out.push(v);
+  }
+  add(base);
+  add(base.replace(/[！!？?¡¿]/g, ' '));
+  add(base.replace(/\./g, ''));
+  add(base.replace(/\bvs\.?\b/gi, ' '));
+  add(base.split(/[:：]/)[0].trim());
+  add(base.replace(/^(el|la|los|las|the|a|an)\s+/i, ''));
+
+  // Códigos / subtítulos conocidos de franquicia
+  var codeM = base.match(/\b(3[Dd]2[Yy]|Film\s*:?\s*Red|Film\s*:?\s*Gold|Film\s*:?\s*Z|Stampede|Strong World|Heart of Gold|Episode of [A-Za-z]+|Fan Letter|Heroines|Estampida)\b/i);
+  if (codeM) {
+    add('One Piece ' + codeM[1]);
+    add(codeM[1]);
+    if (/3[Dd]2[Yy]/i.test(codeM[1])) {
+      add('One Piece 3D2Y');
+      add('One Piece: 3D2Y');
+    }
+  }
+
+  var words = base.split(/\s+/).filter(Boolean);
+  var latinWords = words.filter(function (w) {
+    return /[A-Za-z0-9]/.test(w) && !/^(no|wo|to|ni|ga|wa|de|o|e|na|mo)$/i.test(w);
+  });
+  if (latinWords.length >= 2) {
+    add(latinWords.slice(0, 4).join(' '));
+    add(latinWords.slice(0, 6).join(' '));
+  }
+  if (words.length > 3) {
+    add(words.slice(0, 3).join(' '));
+    add(words.slice(0, 5).join(' '));
+  }
+  var ascii = base.replace(/[^\x00-\x7F]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (ascii && ascii !== base) add(ascii);
+
   return out;
 }
 
@@ -3732,13 +3765,13 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
     return destino;
   }
 
-  // 1) IMDb primero. Si la primera variante no coincide bien, probar las siguientes.
-  for (var i = 0; i < Math.min(variantes.length, 4); i++) {
+  // 1) IMDb primero (suggestion API). Probar más variantes (títulos JP largos).
+  for (var i = 0; i < Math.min(variantes.length, 7); i++) {
     try {
       var mImdb = await buscarMetaImdb(variantes[i], tipoHint, yearHint);
       if (mImdb) {
         meta = completar(meta, mImdb);
-        if (meta.portada_imdb || meta.descripcion || meta.imdb_id) break;
+        if (meta.portada_imdb || meta.imdb_id) break;
       }
     } catch (eImdb) { /* siguiente variante */ }
   }
@@ -3754,12 +3787,17 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
     } catch (eTmdb) { /* siguiente */ }
   }
 
-  // 3) OMDb como último recurso.
+  // 3) OMDb como último recurso — probar varias variantes, no solo la primera
   if (!meta || !meta.portada_imdb || !meta.descripcion || !meta.calificacion) {
-    try {
-      var mOmdb = await buscarMetaOmdb(variantes[0]);
-      meta = completar(meta, mOmdb);
-    } catch (eOmdb) { /* ignorar */ }
+    for (var oi = 0; oi < Math.min(variantes.length, 5); oi++) {
+      try {
+        var mOmdb = await buscarMetaOmdb(variantes[oi]);
+        if (mOmdb) {
+          meta = completar(meta, mOmdb);
+          if (meta.portada_imdb || meta.portada_tmdb) break;
+        }
+      } catch (eOmdb) { /* siguiente */ }
+    }
   }
 
   if (meta) metaCacheSet(cacheKey, meta);
