@@ -1644,13 +1644,18 @@ function limpiarTitulo(txt) {
   t = t.replace(/\s*[-|–—]\s*Hackstore\.fo Oficial.*$/i, '');
   t = t.replace(/\s*[-|–—]\s*Peliculas,?\s*Series y animes.*$/i, '');
   t = t.replace(/\s*[-|–—]\s*Pelisplus.*$/i, '');
-  t = t.replace(/\s*Online Latino HD.*$/i, '');
-  t = t.replace(/\s*Gratis\s*$/i, '');
+  // Prefijos SEO: "VER Acaramelados Online Gratis HD"
+  t = t.replace(/^(ver|watch)\s+/i, '');
+  t = t.replace(/^(descargar|download)\s+(serie|pel[ií]cula|anime|movie)?\s*/i, '');
   t = t.replace(/^Ver\s+Serie:\s*/i, '');
   t = t.replace(/^Ver\s+Pel[ií]cula:\s*/i, '');
-  t = t.replace(/^Descargar\s+(serie|pel[ií]cula|anime)\s+/i, '');
   t = t.replace(/^Serie\s+/i, '');
-  t = t.replace(/\s*:\s*\d+x\d+(\s*[-–].*)?$/i, '');
+  t = t.replace(/^Pel[ií]cula\s+/i, '');
+  t = t.replace(/\s*Online(\s+Gratis)?(\s+HD)?.*$/i, '');
+  t = t.replace(/\s*Gratis(\s+HD)?\s*$/i, '');
+  t = t.replace(/\s*Online Latino HD.*$/i, '');
+  t = t.replace(/\s+HD\s*$/i, '');
+  t = t.replace(/\s*:?\s*\d+x\d+(\s*[-–].*)?$/i, '');
   return limpiarTexto(t);
 }
 
@@ -2106,6 +2111,91 @@ function fusionarResultadosBusqueda(items) {
       out.push(best);
     }
   }
+
+  // Segunda pasada: unir por slug base o título contenido (cubre ruido residual)
+  if (out.length > 1) {
+    var merged = [];
+    var used = Object.create(null);
+    for (var a = 0; a < out.length; a++) {
+      if (used[a]) continue;
+      var base = out[a];
+      var baseTitle = normalizarTituloKey(base.titulo || '');
+      var baseSlug = normalizarSlugKey(base.slug || '');
+      var baseTipo = normalizarTipoKey(base.tipo);
+      var baseYear = extraerYearItem(base);
+      var group2 = [base];
+      used[a] = true;
+      for (var b = a + 1; b < out.length; b++) {
+        if (used[b]) continue;
+        var other = out[b];
+        if (normalizarTipoKey(other.tipo) !== baseTipo) continue;
+        var oYear = extraerYearItem(other);
+        if (baseYear && oYear && baseYear !== oYear) continue;
+        var oTitle = normalizarTituloKey(other.titulo || '');
+        var oSlug = normalizarSlugKey(other.slug || '');
+        var sameSlug = baseSlug && oSlug && baseSlug === oSlug;
+        var titleClose = baseTitle && oTitle && (
+          baseTitle === oTitle ||
+          (baseTitle.length >= 4 && oTitle.indexOf(baseTitle) !== -1) ||
+          (oTitle.length >= 4 && baseTitle.indexOf(oTitle) !== -1)
+        );
+        if (sameSlug || titleClose) {
+          group2.push(other);
+          used[b] = true;
+        }
+      }
+      if (group2.length === 1) {
+        merged.push(base);
+      } else {
+        // Re-fusionar el subgrupo
+        group2.sort(function (x, y) { return scoreItemBusqueda(y) - scoreItemBusqueda(x); });
+        var best2 = {};
+        var s0 = group2[0];
+        for (var kk in s0) {
+          if (Object.prototype.hasOwnProperty.call(s0, kk)) best2[kk] = s0[kk];
+        }
+        var fuentes2 = [];
+        var seenF2 = Object.create(null);
+        var alts2 = [];
+        for (var g2 = 0; g2 < group2.length; g2++) {
+          var cur2 = group2[g2];
+          var f2 = String(cur2.fuente || '').toLowerCase();
+          if (f2 && !seenF2[f2]) { seenF2[f2] = true; fuentes2.push(f2); }
+          if ((!best2.portada || /placeholder/i.test(String(best2.portada))) && cur2.portada) best2.portada = cur2.portada;
+          if ((!best2.descripcion || String(best2.descripcion).length < 40) && cur2.descripcion) best2.descripcion = cur2.descripcion;
+          if (!best2.year && cur2.year) best2.year = cur2.year;
+          if (!best2.calificacion && cur2.calificacion) best2.calificacion = cur2.calificacion;
+          if (!best2.tmdb_id && cur2.tmdb_id) best2.tmdb_id = cur2.tmdb_id;
+          if (!best2.slug && cur2.slug) best2.slug = cur2.slug;
+          // alternativas de fuentes secundarias
+          if (g2 > 0 || (cur2.alternativas && cur2.alternativas.length)) {
+            if (g2 > 0) {
+              alts2.push({
+                fuente: cur2.fuente,
+                source_id: cur2.source_id || null,
+                slug: cur2.slug || null,
+                link: cur2.link || null,
+                portada: cur2.portada || null
+              });
+            }
+            if (Array.isArray(cur2.alternativas)) {
+              for (var ax = 0; ax < cur2.alternativas.length; ax++) alts2.push(cur2.alternativas[ax]);
+            }
+          }
+        }
+        best2.fuentes = fuentes2;
+        if (fuentes2.length) best2.fuente = fuentes2[0];
+        if (alts2.length) best2.alternativas = alts2;
+        if (!best2.year) {
+          var ey2 = extraerYearItem(best2);
+          if (ey2) best2.year = ey2;
+        }
+        merged.push(best2);
+      }
+    }
+    out = merged;
+  }
+
   return out;
 }
 
@@ -2531,6 +2621,13 @@ async function buscarUniversal(query, sourceFilter, limit) {
   var arrays = await Promise.all(promesas);
   var todos = [];
   for (var i = 0; i < arrays.length; i++) todos = todos.concat(arrays[i]);
+
+  // Limpiar títulos ANTES de fusionar (ej. "VER X Online Gratis HD" → "X")
+  for (var ti = 0; ti < todos.length; ti++) {
+    if (todos[ti] && todos[ti].titulo) {
+      todos[ti].titulo = limpiarTitulo(todos[ti].titulo);
+    }
+  }
 
   // Deduplicación / fusión entre fuentes (TMDB → título+tipo → slug)
   // Antes solo deduplicaba dentro de la misma fuente, por eso salían duplicados
