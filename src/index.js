@@ -476,10 +476,15 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
   sourceParam = normalizarSourceId(sourceParam) || sourceParam;
 
   var candidatos = [];
+  var seenCand = Object.create(null);
 
   function add(src, fullUrl) {
-    if (sourceParam && sourceParam !== 'all' && sourceParam !== src) return;
-    candidatos.push({ fuente: src, url: fullUrl });
+    var key = src + '|' + fullUrl;
+    if (seenCand[key]) return;
+    // Si hay source forzado, igual añadimos otras fuentes para FUSIONAR episodios/players
+    // (la primaria será la forzada si existe)
+    seenCand[key] = true;
+    candidatos.push({ fuente: src, url: fullUrl, preferred: !!(sourceParam && sourceParam === src) });
   }
 
   if (tipoRuta === 'pelicula') {
@@ -497,7 +502,7 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     add('hackstore', HACKSTORE_BASE + '/series/' + slug + '/');
   }
 
-  // Variantes de slug (año / season) para maximizar hits
+  // Variantes de slug (año)
   var slugBase = slug.replace(/-\d{4}$/, '');
   if (slugBase !== slug) {
     if (tipoRuta === 'pelicula') {
@@ -508,6 +513,7 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
       add('lamovie', LAMOVIE_BASE + '/animes/' + slugBase + '/');
       add('pelisplushd', PELISPLUS_BASE + '/anime/' + slugBase + '/');
       add('animeav1', ANIMEAV1_BASE + '/media/' + slugBase);
+      add('hackstore', HACKSTORE_BASE + '/animes/' + slugBase + '/');
     } else {
       add('lamovie', LAMOVIE_BASE + '/series/' + slugBase + '/');
       add('pelisplushd', PELISPLUS_BASE + '/serie/' + slugBase + '/');
@@ -515,9 +521,28 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     }
   }
 
+  // AnimeAV1 suele usar título JP: buscar slug real
+  if (tipoRuta === 'anime' || tipoRuta === 'serie') {
+    try {
+      var qAv1 = slugBase.replace(/-/g, ' ');
+      var hitsAv1 = await buscarAnimeAv1(qAv1, 5);
+      for (var ha = 0; ha < (hitsAv1 || []).length; ha++) {
+        if (hitsAv1[ha] && hitsAv1[ha].slug) {
+          add('animeav1', ANIMEAV1_BASE + '/media/' + hitsAv1[ha].slug);
+        }
+      }
+    } catch (eAv1) { /* ok */ }
+  }
+
+  // Preferidos primero
+  candidatos.sort(function (a, b) {
+    return (b.preferred ? 1 : 0) - (a.preferred ? 1 : 0);
+  });
+
   var lastErr = null;
   var resultadosOk = [];
   var esCapOPel = !!(opts.season && opts.episode) || tipoRuta === 'pelicula';
+  var esSerieListado = !esCapOPel && (tipoRuta === 'serie' || tipoRuta === 'anime');
 
   for (var i = 0; i < candidatos.length; i++) {
     var c = candidatos[i];
@@ -529,127 +554,349 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
       else r = await scrapearLamovie(c.url, opts);
 
       if (r && r.success !== false) {
-        // Capítulo sin players → seguir buscando en otras fuentes
         if (r.tipo === 'Capitulo' && (!r.reproductores || r.reproductores.length === 0) && candidatos.length > 1) {
           lastErr = new Error('Sin players en ' + c.fuente);
           continue;
         }
         r.source_id = sourceIdFromName(c.fuente);
         r._fuente_scrape = c.fuente;
+        r._slug_scrape = slug;
         resultadosOk.push(r);
 
-        // Si no es cap/película concreta, devolver el primero bueno (listado de serie)
-        if (!esCapOPel && r.tipo !== 'Capitulo' && r.tipo !== 'Pelicula') {
-          r = reescribirLinksCortos(r, origin, slug, tipoRuta, c.fuente);
-          return r;
-        }
-        // Si ya tenemos players y no queremos fusionar todo, podemos cortar tras 2-3 fuentes
-        if (esCapOPel && resultadosOk.length >= 3) break;
+        // Cap/peli: recoger varias fuentes para fusionar players (máx 4)
+        if (esCapOPel && resultadosOk.length >= 4) break;
+        // Serie/anime listado: recoger varias fuentes para fusionar temporadas/episodios
+        if (esSerieListado && resultadosOk.length >= 4) break;
       }
     } catch (e) {
       lastErr = e;
     }
   }
 
-  // Fusionar reproductores de varias fuentes (Capítulo / Película)
+  // --- Fusión capítulo / película: sumar reproductores ---
   if (resultadosOk.length > 0 && esCapOPel) {
-    var base = resultadosOk[0];
-    var seenUrls = Object.create(null);
-    var allReps = [];
-    var allEmbeds = [];
-    var allDesc = [];
-    var fuentesUsadas = [];
-
-    for (var ri = 0; ri < resultadosOk.length; ri++) {
-      var rr = resultadosOk[ri];
-      var fName = rr._fuente_scrape || rr.fuente || '';
-      if (fName && fuentesUsadas.indexOf(fName) === -1) fuentesUsadas.push(fName);
-
-      // Rellenar meta faltante
-      if ((!base.portada || /placeholder/i.test(String(base.portada))) && rr.portada) base.portada = rr.portada;
-      if ((!base.descripcion || String(base.descripcion).length < 40) && rr.descripcion) base.descripcion = rr.descripcion;
-      if (!base.titulo && rr.titulo) base.titulo = rr.titulo;
-      if (!base.year && rr.year) base.year = rr.year;
-      if (!base.calificacion && rr.calificacion) base.calificacion = rr.calificacion;
-
-      var reps = rr.reproductores || [];
-      for (var pi = 0; pi < reps.length; pi++) {
-        var pu = reps[pi] && reps[pi].url ? String(reps[pi].url) : '';
-        if (!pu || seenUrls[pu]) continue;
-        seenUrls[pu] = true;
-        var repCopy = {};
-        for (var pk in reps[pi]) {
-          if (Object.prototype.hasOwnProperty.call(reps[pi], pk)) repCopy[pk] = reps[pi][pk];
-        }
-        if (!repCopy.fuente) repCopy.fuente = fName;
-        allReps.push(repCopy);
-        allEmbeds.push(pu);
-      }
-      var dls = rr.descargas || [];
-      for (var di = 0; di < dls.length; di++) {
-        var du = dls[di] && dls[di].url ? String(dls[di].url) : '';
-        if (!du || seenUrls['dl:' + du]) continue;
-        seenUrls['dl:' + du] = true;
-        allDesc.push(dls[di]);
-      }
-    }
-
-    if (allReps.length) {
-      base.reproductores = allReps;
-      base.embeds = allEmbeds;
-      base.total = allReps.length;
-    }
-    if (allDesc.length) base.descargas = allDesc;
-    if (fuentesUsadas.length > 1) {
-      base.fuentes = fuentesUsadas;
-      base.nota_fusion = 'Reproductores fusionados de: ' + fuentesUsadas.join(', ');
-    }
-    delete base._fuente_scrape;
-    base.source_id = sourceIdFromName(base.fuente || fuentesUsadas[0] || '');
+    var base = fusionarReproductoresFuentes(resultadosOk);
     base = reescribirLinksCortos(base, origin, slug, tipoRuta, base.fuente);
     return base;
+  }
+
+  // --- Fusión serie/anime: unir temporadas + episodios + players ---
+  if (resultadosOk.length > 0 && esSerieListado) {
+    var fused = fusionarDetalleSerie(resultadosOk, tipoRuta);
+    fused = reescribirLinksCortos(fused, origin, slug, tipoRuta, fused.fuente);
+    return fused;
   }
 
   if (resultadosOk.length > 0) {
     var r0 = resultadosOk[0];
     delete r0._fuente_scrape;
+    delete r0._slug_scrape;
     r0 = reescribirLinksCortos(r0, origin, slug, tipoRuta, r0.fuente);
     return r0;
   }
 
   // Fallback búsqueda
   var q = slug.replace(/-\d{4}$/, '').replace(/-/g, ' ');
-  var busqueda = await buscarUniversal(q, sourceParam || 'all', 10);
+  var busqueda = await buscarUniversal(q, 'all', 10);
   var hits = (busqueda && busqueda.resultados) || [];
   for (var h = 0; h < hits.length; h++) {
     var hit = hits[h];
-    if (sourceParam && sourceParam !== 'all' && hit.fuente !== sourceParam) continue;
     var tipoOk =
       (tipoRuta === 'pelicula' && hit.tipo === 'Pelicula') ||
-      (tipoRuta === 'serie' && hit.tipo === 'Serie') ||
-      (tipoRuta === 'anime' && hit.tipo === 'Anime') ||
+      (tipoRuta === 'serie' && (hit.tipo === 'Serie' || hit.tipo === 'Anime')) ||
+      (tipoRuta === 'anime' && (hit.tipo === 'Anime' || hit.tipo === 'Serie')) ||
       (hit.slug === slug) ||
       (normalizarSlugKey(hit.slug) === normalizarSlugKey(slug));
-    if (!tipoOk || !hit.link) continue;
-    try {
-      var opts2 = Object.assign({}, opts);
-      var r2;
-      if (hit.fuente === 'pelisplushd') r2 = await scrapearPelisplus(hit.link, opts2);
-      else if (hit.fuente === 'hackstore') r2 = await scrapearHackstore(hit.link, opts2);
-      else if (hit.fuente === 'animeav1') r2 = await scrapearAnimeAv1(hit.link, opts2);
-      else r2 = await scrapearLamovie(hit.link, opts2);
-      if (r2 && r2.success !== false) {
-        if (r2.tipo === 'Capitulo' && (!r2.reproductores || r2.reproductores.length === 0)) continue;
-        r2.source_id = sourceIdFromName(hit.fuente);
-        r2 = reescribirLinksCortos(r2, origin, hit.slug || slug, tipoRuta, hit.fuente);
-        return r2;
+    if (!tipoOk) continue;
+
+    // Probar link del hit + alternativas
+    var tryLinks = [];
+    if (hit.link) tryLinks.push({ fuente: hit.fuente, link: hit.link });
+    if (Array.isArray(hit.alternativas)) {
+      for (var al = 0; al < hit.alternativas.length; al++) {
+        if (hit.alternativas[al].link) {
+          tryLinks.push({ fuente: hit.alternativas[al].fuente, link: hit.alternativas[al].link });
+        }
       }
-    } catch (e2) {
-      lastErr = e2;
+    }
+
+    var batch = [];
+    for (var tl = 0; tl < tryLinks.length; tl++) {
+      try {
+        var opts2 = Object.assign({}, opts);
+        var r2;
+        var hf = tryLinks[tl].fuente;
+        var hl = tryLinks[tl].link;
+        if (hf === 'pelisplushd') r2 = await scrapearPelisplus(hl, opts2);
+        else if (hf === 'hackstore') r2 = await scrapearHackstore(hl, opts2);
+        else if (hf === 'animeav1') r2 = await scrapearAnimeAv1(hl, opts2);
+        else r2 = await scrapearLamovie(hl, opts2);
+        if (r2 && r2.success !== false) {
+          if (r2.tipo === 'Capitulo' && (!r2.reproductores || r2.reproductores.length === 0)) continue;
+          r2.source_id = sourceIdFromName(hf);
+          r2._fuente_scrape = hf;
+          batch.push(r2);
+        }
+      } catch (e2) {
+        lastErr = e2;
+      }
+    }
+    if (batch.length) {
+      if (esCapOPel || (batch[0].tipo === 'Capitulo' || batch[0].tipo === 'Pelicula')) {
+        var bf = fusionarReproductoresFuentes(batch);
+        return reescribirLinksCortos(bf, origin, hit.slug || slug, tipoRuta, bf.fuente);
+      }
+      var bs = fusionarDetalleSerie(batch, tipoRuta);
+      return reescribirLinksCortos(bs, origin, hit.slug || slug, tipoRuta, bs.fuente);
     }
   }
 
   throw lastErr || new Error('No se encontro "' + slug + '" en ninguna fuente');
+}
+
+/** Une reproductores de varias fuentes (capítulo o película) */
+function fusionarReproductoresFuentes(resultadosOk) {
+  var base = {};
+  var src0 = resultadosOk[0];
+  for (var k in src0) {
+    if (Object.prototype.hasOwnProperty.call(src0, k)) base[k] = src0[k];
+  }
+  var seenUrls = Object.create(null);
+  var allReps = [];
+  var allEmbeds = [];
+  var allDesc = [];
+  var fuentesUsadas = [];
+
+  for (var ri = 0; ri < resultadosOk.length; ri++) {
+    var rr = resultadosOk[ri];
+    var fName = rr._fuente_scrape || rr.fuente || '';
+    if (fName && fuentesUsadas.indexOf(fName) === -1) fuentesUsadas.push(fName);
+
+    if ((!base.portada || /placeholder/i.test(String(base.portada))) && rr.portada) base.portada = rr.portada;
+    if ((!base.descripcion || String(base.descripcion).length < 40) && rr.descripcion) base.descripcion = rr.descripcion;
+    if (!base.titulo && rr.titulo) base.titulo = rr.titulo;
+    if (!base.year && rr.year) base.year = rr.year;
+    if (!base.calificacion && rr.calificacion) base.calificacion = rr.calificacion;
+
+    var reps = rr.reproductores || [];
+    for (var pi = 0; pi < reps.length; pi++) {
+      var pu = reps[pi] && reps[pi].url ? String(reps[pi].url) : '';
+      if (!pu || seenUrls[pu]) continue;
+      seenUrls[pu] = true;
+      var repCopy = {};
+      for (var pk in reps[pi]) {
+        if (Object.prototype.hasOwnProperty.call(reps[pi], pk)) repCopy[pk] = reps[pi][pk];
+      }
+      if (!repCopy.fuente) repCopy.fuente = fName;
+      allReps.push(repCopy);
+      allEmbeds.push(pu);
+    }
+    var dls = rr.descargas || [];
+    for (var di = 0; di < dls.length; di++) {
+      var du = dls[di] && dls[di].url ? String(dls[di].url) : '';
+      if (!du || seenUrls['dl:' + du]) continue;
+      seenUrls['dl:' + du] = true;
+      allDesc.push(dls[di]);
+    }
+  }
+
+  if (allReps.length) {
+    base.reproductores = allReps;
+    base.embeds = allEmbeds;
+    base.total = allReps.length;
+  }
+  if (allDesc.length) base.descargas = allDesc;
+  if (fuentesUsadas.length > 1) {
+    base.fuentes = fuentesUsadas;
+    base.nota_fusion = 'Reproductores fusionados de: ' + fuentesUsadas.join(', ');
+  }
+  delete base._fuente_scrape;
+  delete base._slug_scrape;
+  base.fuente = fuentesUsadas[0] || base.fuente;
+  base.source_id = sourceIdFromName(base.fuente || '');
+  return base;
+}
+
+/**
+ * Fusiona listados de serie/anime de varias fuentes:
+ * - Une temporadas por número
+ * - Une episodios por T+E
+ * - Suma reproductores sin duplicar URL
+ * - Conserva total_episodios / total_temporadas máximos
+ */
+function fusionarDetalleSerie(resultadosOk, tipoRuta) {
+  // Elegir base con más episodios / mejor meta
+  var scored = resultadosOk.slice().sort(function (a, b) {
+    var ea = a.total_episodios || countEpsInResult(a);
+    var eb = b.total_episodios || countEpsInResult(b);
+    if (eb !== ea) return eb - ea;
+    return scoreItemBusqueda(b) - scoreItemBusqueda(a);
+  });
+
+  var base = {};
+  var s0 = scored[0];
+  for (var k in s0) {
+    if (Object.prototype.hasOwnProperty.call(s0, k)) base[k] = s0[k];
+  }
+
+  var fuentesUsadas = [];
+  var bySeason = Object.create(null); // seasonNum -> { epNum -> epObj }
+
+  function ensureSeason(n) {
+    if (!bySeason[n]) bySeason[n] = Object.create(null);
+    return bySeason[n];
+  }
+
+  function mergeEp(target, src, fName) {
+    if (!target.titulo && src.titulo) target.titulo = src.titulo;
+    if (!target.overview && src.overview) target.overview = src.overview;
+    if (!target.still && src.still) target.still = src.still;
+    if (!target.url_video && src.url_video) target.url_video = src.url_video;
+    if (!target.link && src.link) target.link = src.link;
+    if (!target.slug_media && src.slug_media) target.slug_media = src.slug_media;
+
+    var seen = Object.create(null);
+    var reps = (target.reproductores || []).slice();
+    for (var i = 0; i < reps.length; i++) {
+      if (reps[i] && reps[i].url) seen[reps[i].url] = true;
+    }
+    var add = src.reproductores || [];
+    for (var j = 0; j < add.length; j++) {
+      var u = add[j] && add[j].url ? String(add[j].url) : '';
+      if (!u || seen[u]) continue;
+      seen[u] = true;
+      var copy = {};
+      for (var pk in add[j]) {
+        if (Object.prototype.hasOwnProperty.call(add[j], pk)) copy[pk] = add[j][pk];
+      }
+      if (!copy.fuente) copy.fuente = fName;
+      reps.push(copy);
+    }
+    target.reproductores = reps;
+    target.embeds = reps.map(function (x) { return x.url; });
+    if (reps[0]) target.reproductor = reps[0].url;
+  }
+
+  for (var ri = 0; ri < scored.length; ri++) {
+    var rr = scored[ri];
+    var fName = rr._fuente_scrape || rr.fuente || '';
+    if (fName && fuentesUsadas.indexOf(fName) === -1) fuentesUsadas.push(fName);
+
+    // Meta
+    if ((!base.portada || /placeholder/i.test(String(base.portada))) && rr.portada) base.portada = rr.portada;
+    if ((!base.descripcion || String(base.descripcion).length < 40) && rr.descripcion) base.descripcion = rr.descripcion;
+    if (!base.year && rr.year) base.year = rr.year;
+    if (!base.calificacion && rr.calificacion) base.calificacion = rr.calificacion;
+    if (rr.titulo && (!base.titulo || String(rr.titulo).length > String(base.titulo).length)) {
+      // Preferir título no-JP si el actual parece más corto/EN... keep base title from best score
+    }
+
+    var temps = rr.temporadas || [];
+    for (var ti = 0; ti < temps.length; ti++) {
+      var t = temps[ti];
+      var sn = parseInt(t.temporada || t.season || (ti + 1), 10) || 1;
+      var eps = t.episodios || t.capitulos || [];
+      var seasonMap = ensureSeason(sn);
+      if (t.slug_media && !seasonMap._slug_media) seasonMap._slug_media = t.slug_media;
+      if (t.titulo && !seasonMap._titulo) seasonMap._titulo = t.titulo;
+
+      for (var ei = 0; ei < eps.length; ei++) {
+        var ep = eps[ei];
+        var en = parseInt(ep.episodio || ep.episode || (ei + 1), 10) || (ei + 1);
+        if (!seasonMap[en]) {
+          seasonMap[en] = {
+            temporada: sn,
+            episodio: en,
+            titulo: ep.titulo || ('Episodio ' + en),
+            overview: ep.overview || '',
+            still: ep.still || null,
+            link: ep.link || ep.url_video || null,
+            url_video: ep.url_video || ep.link || null,
+            slug_media: ep.slug_media || t.slug_media || null,
+            reproductores: [],
+            embeds: [],
+            reproductor: null
+          };
+        }
+        mergeEp(seasonMap[en], ep, fName);
+      }
+    }
+
+    // Algunas fuentes ponen episodios planos
+    if ((!temps || !temps.length) && Array.isArray(rr.episodios)) {
+      var seasonMap1 = ensureSeason(1);
+      for (var e2 = 0; e2 < rr.episodios.length; e2++) {
+        var ep2 = rr.episodios[e2];
+        var en2 = parseInt(ep2.episodio || (e2 + 1), 10) || (e2 + 1);
+        if (!seasonMap1[en2]) {
+          seasonMap1[en2] = {
+            temporada: 1,
+            episodio: en2,
+            titulo: ep2.titulo || ('Episodio ' + en2),
+            overview: ep2.overview || '',
+            still: ep2.still || null,
+            link: ep2.link || null,
+            url_video: ep2.url_video || null,
+            reproductores: [],
+            embeds: [],
+            reproductor: null
+          };
+        }
+        mergeEp(seasonMap1[en2], ep2, fName);
+      }
+    }
+  }
+
+  // Reconstruir temporadas ordenadas
+  var seasonNums = Object.keys(bySeason).map(Number).filter(function (n) { return !isNaN(n); }).sort(function (a, b) { return a - b; });
+  var temporadasOut = [];
+  var totalEps = 0;
+  for (var si = 0; si < seasonNums.length; si++) {
+    var sn2 = seasonNums[si];
+    var sm = bySeason[sn2];
+    var epNums = Object.keys(sm).filter(function (k) { return k.charAt(0) !== '_'; }).map(Number).sort(function (a, b) { return a - b; });
+    var epsOut = [];
+    for (var ej = 0; ej < epNums.length; ej++) {
+      epsOut.push(sm[epNums[ej]]);
+      totalEps++;
+    }
+    var tObj = {
+      temporada: sn2,
+      total_episodios: epsOut.length,
+      episodios: epsOut
+    };
+    if (sm._slug_media) tObj.slug_media = sm._slug_media;
+    if (sm._titulo) tObj.titulo = sm._titulo;
+    temporadasOut.push(tObj);
+  }
+
+  base.temporadas = temporadasOut;
+  base.total_temporadas = Math.max(temporadasOut.length, base.total_temporadas || 0);
+  base.total_episodios = Math.max(totalEps, base.total_episodios || 0);
+  base.fuentes = fuentesUsadas;
+  base.fuente = fuentesUsadas[0] || base.fuente;
+  base.source_id = sourceIdFromName(base.fuente || '');
+  if (tipoRuta === 'anime') base.tipo = 'Anime';
+  else if (base.tipo !== 'Anime') base.tipo = base.tipo || 'Serie';
+  if (fuentesUsadas.length > 1) {
+    base.nota_fusion = 'Temporadas/episodios/reproductores fusionados de: ' + fuentesUsadas.join(', ');
+  }
+  delete base._fuente_scrape;
+  delete base._slug_scrape;
+  delete base.episodios; // usar temporadas
+  return base;
+}
+
+function countEpsInResult(r) {
+  if (!r) return 0;
+  if (r.total_episodios) return parseInt(r.total_episodios, 10) || 0;
+  var n = 0;
+  var temps = r.temporadas || [];
+  for (var i = 0; i < temps.length; i++) {
+    var eps = temps[i].episodios || temps[i].capitulos || [];
+    n += eps.length;
+  }
+  return n;
 }
 
 
