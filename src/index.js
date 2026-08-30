@@ -267,6 +267,11 @@ async function handleRequest(request, env) {
         // Enriquecer con TMDB (géneros, sinopsis, rating, poster, backdrop…) sin tocar fuentes
         try {
           resultados.resultados = await enriquecerListaConTmdb(resultados.resultados, query);
+          // Re-fusionar tras TMDB (mismo tmdb_id une título EN + JP, etc.)
+          try {
+            resultados.resultados = fusionarResultadosBusqueda(resultados.resultados);
+            resultados.total = resultados.resultados.length;
+          } catch (eFuse) { /* ok */ }
           // Quitar aliases duplicados en cada resultado
           for (var cj = 0; cj < resultados.resultados.length; cj++) {
             var itc = resultados.resultados[cj];
@@ -1948,6 +1953,30 @@ function normalizarTipoKey(tipo) {
   return t || 'otro';
 }
 
+/** Anime y Serie se consideran compatibles al deduplicar (misma obra en distintas fuentes) */
+function tiposCompatibles(a, b) {
+  var ta = normalizarTipoKey(a);
+  var tb = normalizarTipoKey(b);
+  if (ta === tb) return true;
+  if ((ta === 'anime' && tb === 'serie') || (ta === 'serie' && tb === 'anime')) return true;
+  return false;
+}
+
+/** Preferir tipo Anime si alguna fuente lo marca así */
+function preferirTipo(tipos) {
+  var list = tipos || [];
+  for (var i = 0; i < list.length; i++) {
+    if (normalizarTipoKey(list[i]) === 'anime') return 'Anime';
+  }
+  for (var j = 0; j < list.length; j++) {
+    if (normalizarTipoKey(list[j]) === 'serie') return 'Serie';
+  }
+  for (var k = 0; k < list.length; k++) {
+    if (normalizarTipoKey(list[k]) === 'pelicula') return 'Pelicula';
+  }
+  return list[0] || 'Serie';
+}
+
 /** Extrae año de título, slug o campo year */
 function extraerYearItem(item) {
   if (item && item.year) {
@@ -1973,10 +2002,12 @@ function claveDeduplicacion(item) {
   if (!item) return null;
   if (item.tmdb_id) return 'tmdb:' + String(item.tmdb_id);
   var tipo = normalizarTipoKey(item.tipo);
+  // Anime y Serie comparten bucket "show" para no duplicar la misma obra
+  var bucket = (tipo === 'anime' || tipo === 'serie') ? 'show' : tipo;
   var titulo = normalizarTituloKey(item.titulo || '');
-  if (titulo && titulo.length >= 2) return 'tt:' + titulo + '|' + tipo;
+  if (titulo && titulo.length >= 2) return 'tt:' + titulo + '|' + bucket;
   var slug = normalizarSlugKey(item.slug || '');
-  if (slug) return 'sl:' + slug + '|' + tipo;
+  if (slug) return 'sl:' + slug + '|' + bucket;
   return null;
 }
 
@@ -2094,13 +2125,18 @@ function fusionarResultadosBusqueda(items) {
         if (j > 0) {
           alternativas.push({
             fuente: cur.fuente,
-            source_id: cur.source_id || null,
+            source_id: cur.source_id || (typeof sourceIdFromName === 'function' ? sourceIdFromName(cur.fuente) : null),
             slug: cur.slug || null,
             link: cur.link || null,
             portada: cur.portada || null
           });
         }
       }
+      var tiposFirst = [];
+      for (var tf = 0; tf < sg.length; tf++) {
+        if (sg[tf].tipo) tiposFirst.push(sg[tf].tipo);
+      }
+      best.tipo = preferirTipo(tiposFirst);
       best.fuentes = fuentes;
       if (fuentes.length) best.fuente = fuentes[0];
       if (alternativas.length) best.alternativas = alternativas;
@@ -2128,7 +2164,7 @@ function fusionarResultadosBusqueda(items) {
       for (var b = a + 1; b < out.length; b++) {
         if (used[b]) continue;
         var other = out[b];
-        if (normalizarTipoKey(other.tipo) !== baseTipo) continue;
+        if (!tiposCompatibles(other.tipo, base.tipo)) continue;
         var oYear = extraerYearItem(other);
         if (baseYear && oYear && baseYear !== oYear) continue;
         var oTitle = normalizarTituloKey(other.titulo || '');
@@ -2139,7 +2175,29 @@ function fusionarResultadosBusqueda(items) {
           (baseTitle.length >= 4 && oTitle.indexOf(baseTitle) !== -1) ||
           (oTitle.length >= 4 && baseTitle.indexOf(oTitle) !== -1)
         );
-        if (sameSlug || titleClose) {
+        // Token distintivo largo compartido (ej. "wistoria" en título EN y JP)
+        var tokenHit = false;
+        if (!sameSlug && !titleClose && baseTitle && oTitle) {
+          var stop = { the:1, and:1, for:1, with:1, from:1, that:1, this:1, los:1, las:1, del:1, una:1, one:1, no:1, to:1, of:1 };
+          var wordsA = baseTitle.split(' ');
+          for (var wi = 0; wi < wordsA.length; wi++) {
+            var w = wordsA[wi];
+            if (w.length < 6 || stop[w]) continue;
+            if (oTitle.indexOf(w) !== -1) {
+              // Confirmar también en slug si existe (reduce falsos positivos)
+              var inSlug = (!baseSlug && !oSlug) ||
+                (baseSlug && baseSlug.indexOf(w) !== -1) ||
+                (oSlug && oSlug.indexOf(w) !== -1);
+              if (inSlug) { tokenHit = true; break; }
+            }
+          }
+        }
+        // Slug parcial: wistoria-wand-and-sword vs wistoria-wand-and-sword-2024
+        var slugPartial = false;
+        if (baseSlug && oSlug && baseSlug.length >= 8 && oSlug.length >= 8) {
+          if (baseSlug.indexOf(oSlug) !== -1 || oSlug.indexOf(baseSlug) !== -1) slugPartial = true;
+        }
+        if (sameSlug || titleClose || tokenHit || slugPartial) {
           group2.push(other);
           used[b] = true;
         }
@@ -2172,7 +2230,7 @@ function fusionarResultadosBusqueda(items) {
             if (g2 > 0) {
               alts2.push({
                 fuente: cur2.fuente,
-                source_id: cur2.source_id || null,
+                source_id: cur2.source_id || (typeof sourceIdFromName === 'function' ? sourceIdFromName(cur2.fuente) : null),
                 slug: cur2.slug || null,
                 link: cur2.link || null,
                 portada: cur2.portada || null
@@ -2183,6 +2241,12 @@ function fusionarResultadosBusqueda(items) {
             }
           }
         }
+        // Preferir tipo Anime si alguna fuente lo dice
+        var tiposG = [];
+        for (var tg = 0; tg < group2.length; tg++) {
+          if (group2[tg].tipo) tiposG.push(group2[tg].tipo);
+        }
+        best2.tipo = preferirTipo(tiposG);
         best2.fuentes = fuentes2;
         if (fuentes2.length) best2.fuente = fuentes2[0];
         if (alts2.length) best2.alternativas = alts2;
