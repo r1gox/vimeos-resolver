@@ -2252,12 +2252,28 @@ function esDescargaValida(url) {
 // ======================================================
 // TMDB META (vía tvymas worker) — no altera embeds ni fuentes
 // ======================================================
+/**
+ * FIX DUPLICACIÓN: antes solo quitaba el año "(2026)". Ahora también quita
+ * notación de episodio/temporada, para que "Acaramelados S01E01",
+ * "Acaramelados 1x01", "Acaramelados Capítulo 1" y "Acaramelados Episodio 1"
+ * normalicen todos a "acaramelados" y se fusionen en un solo resultado en
+ * vez de aparecer como obras distintas en /search.
+ */
 function normalizarTituloKey(t) {
-  return String(t || '')
+  var s = String(t || '')
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-    .replace(/\(\d{4}\)/g, '')
+    .replace(/\(\d{4}\)/g, ''); // año entre paréntesis
+
+  // Notación de episodio/temporada (en cualquier orden de aparición)
+  s = s.replace(/\bs\d{1,2}\s*e\d{1,3}\b/g, '');                    // S01E01, s1e1
+  s = s.replace(/\b\d{1,2}\s*x\s*\d{1,3}\b/g, '');                   // 1x01
+  s = s.replace(/\b(cap(?:i?tulo)?|chapter)\.?\s*\d{1,4}\b/g, '');   // Cap 1, Capitulo 1
+  s = s.replace(/\b(episodio|episode|ep)\.?\s*\d{1,4}\b/g, '');      // Episodio 1, Ep 1
+  s = s.replace(/\b(temporada|season)\.?\s*\d{1,2}\b/g, '');         // Temporada 1
+
+  return s
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
     .replace(/\s+/g, ' ');
@@ -2850,6 +2866,92 @@ async function buscarMetaOmdb(titulo) {
   }
 }
 
+/** IMDb (es) — refuerzo ligero cuando TMDB y OMDb no traen portada o sinopsis */
+async function buscarMetaImdb(titulo, tipoHint) {
+  var q = String(titulo || '').replace(/\(\d{4}\)/g, '').trim();
+  if (!q) return null;
+
+  var headersImdb = {
+    'User-Agent': HEADERS['User-Agent'],
+    'Accept-Language': 'es-ES,es;q=0.9',
+    'Accept': 'text/html,application/xhtml+xml'
+  };
+
+  try {
+    // 1) Buscar el título en IMDb (interfaz en español)
+    var findUrl = 'https://www.imdb.com/es/find/?q=' + encodeURIComponent(q) + '&s=tt';
+    var resFind = await fetchWithTimeout(findUrl, { headers: headersImdb, redirect: 'follow' }, 10000);
+    if (!resFind.ok) return null;
+    var htmlFind = await resFind.text();
+
+    // Primer resultado de título (el más relevante) como /title/ttXXXXXXX/
+    var mId = htmlFind.match(/\/title\/(tt\d+)\//);
+    if (!mId) return null;
+    var imdbId = mId[1];
+
+    // 2) Cargar la ficha en español
+    var titleUrl = 'https://www.imdb.com/es/title/' + imdbId + '/';
+    var resTitle = await fetchWithTimeout(titleUrl, { headers: headersImdb, redirect: 'follow' }, 10000);
+    if (!resTitle.ok) return null;
+    var htmlTitle = await resTitle.text();
+
+    // 3) JSON-LD: la forma más limpia de sacar poster, sinopsis, rating y género
+    var jsonLd = null;
+    var mLd = htmlTitle.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);
+    if (mLd) {
+      try { jsonLd = JSON.parse(mLd[1]); } catch (eLd) { jsonLd = null; }
+    }
+
+    var poster = null, descripcion = null, calificacion = null,
+        tituloImdb = null, year = null, generos = [], votos = null;
+
+    if (jsonLd) {
+      tituloImdb = jsonLd.name || null;
+      poster = jsonLd.image || null;
+      descripcion = jsonLd.description || null;
+      if (jsonLd.aggregateRating && jsonLd.aggregateRating.ratingValue) {
+        calificacion = Number(jsonLd.aggregateRating.ratingValue);
+        votos = jsonLd.aggregateRating.ratingCount || null;
+      }
+      if (jsonLd.datePublished) year = String(jsonLd.datePublished).slice(0, 4);
+      if (Array.isArray(jsonLd.genre)) generos = jsonLd.genre;
+    }
+
+    // Fallbacks por si el JSON-LD no trajo todo
+    if (!poster) {
+      var mPoster = htmlTitle.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i);
+      if (mPoster) poster = mPoster[1];
+    }
+    if (!descripcion) {
+      var mDesc = htmlTitle.match(/name=["']description["']\s+content=["']([^"']+)["']/i);
+      if (mDesc) descripcion = mDesc[1];
+    }
+
+    if (!poster && !descripcion) return null; // no aportó nada útil
+
+    return {
+      tmdb_id: null,
+      imdb_id: imdbId,
+      titulo_tmdb: tituloImdb || q,
+      portada_tmdb: poster,
+      backdrop: null,
+      calificacion: calificacion,
+      descripcion: descripcion ? limpiarTexto(descripcion) : null,
+      generos: generos,
+      fecha_estreno: null,
+      year: year,
+      titulo_original: tituloImdb || null,
+      votos: votos,
+      duracion: null,
+      status: null,
+      tagline: null,
+      slug_tmdb: null
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 /** TMDB oficial si hay TMDB_API_KEY en el Worker */
 async function buscarMetaTmdbApi(titulo, tipoHint) {
   var key = __TMDB_KEY__ || null;
@@ -2923,15 +3025,50 @@ async function metaTmdbParaTitulo(titulo, tipoHint) {
   var variantes = variantesTitulo(titulo);
   if (!variantes.length) return null;
 
-  // Solo TMDB oficial (si hay API key en env)
+  var meta = null;
+
+  // 1) TMDB oficial (necesita TMDB_API_KEY en el Worker)
   for (var t = 0; t < Math.min(variantes.length, 3); t++) {
     try {
       var mTmdb = await buscarMetaTmdbApi(variantes[t], tipoHint);
-      if (mTmdb && (mTmdb.descripcion || mTmdb.portada_tmdb || mTmdb.calificacion)) return mTmdb;
+      if (mTmdb && (mTmdb.descripcion || mTmdb.portada_tmdb || mTmdb.calificacion)) {
+        meta = mTmdb;
+        break;
+      }
     } catch (e) { /* next */ }
   }
 
-  return null;
+  function completar(destino, origenMeta) {
+    if (!origenMeta) return destino;
+    if (!destino) return origenMeta;
+    if (!destino.portada_tmdb && origenMeta.portada_tmdb) destino.portada_tmdb = origenMeta.portada_tmdb;
+    if (!destino.descripcion && origenMeta.descripcion) destino.descripcion = origenMeta.descripcion;
+    if (!destino.calificacion && origenMeta.calificacion) destino.calificacion = origenMeta.calificacion;
+    if (!destino.imdb_id && origenMeta.imdb_id) destino.imdb_id = origenMeta.imdb_id;
+    if ((!destino.generos || !destino.generos.length) && origenMeta.generos && origenMeta.generos.length) {
+      destino.generos = origenMeta.generos;
+    }
+    if (!destino.year && origenMeta.year) destino.year = origenMeta.year;
+    return destino;
+  }
+
+  // 2) OMDb (gratuito) si TMDB no dio portada o descripción
+  if (!meta || !meta.portada_tmdb || !meta.descripcion) {
+    try {
+      var mOmdb = await buscarMetaOmdb(variantes[0]);
+      meta = completar(meta, mOmdb);
+    } catch (e) { /* next */ }
+  }
+
+  // 3) IMDb (es) como último refuerzo si sigue faltando portada o descripción
+  if (!meta || !meta.portada_tmdb || !meta.descripcion) {
+    try {
+      var mImdb = await buscarMetaImdb(variantes[0], tipoHint);
+      meta = completar(meta, mImdb);
+    } catch (e) { /* next */ }
+  }
+
+  return meta;
 }
 
 /**
