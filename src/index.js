@@ -305,6 +305,20 @@ async function handleRequest(request, env) {
             if (Array.isArray(itc.alternativas)) {
               itc.alternativas = dedupeAlternativas(itc.alternativas);
             }
+            // Reconstruir url_extract / source_id según fuente prioritaria (animeav1 primero)
+            if (itc.slug) {
+              var sidFinal = sourceIdFromName(itc.fuente);
+              var tipoPathFinal = (itc.tipo === 'Serie' || itc.tipo === 'Anime')
+                ? (itc.tipo === 'Anime' ? 'anime' : 'serie')
+                : 'pelicula';
+              itc.source_id = sidFinal;
+              itc.url_extract = origin + '/' + sidFinal + '/' + tipoPathFinal + '/' + itc.slug;
+            }
+            // Ordenar fuentes por prioridad
+            if (Array.isArray(itc.fuentes)) {
+              itc.fuentes = ordenarFuentesLista(itc.fuentes);
+              if (itc.fuentes.length) itc.fuente = itc.fuentes[0];
+            }
           }
         } catch (eEnrich) { /* silencioso */ }
       }
@@ -2314,12 +2328,20 @@ function normalizarTipoKey(tipo) {
   return t || 'otro';
 }
 
-/** Anime y Serie se consideran compatibles al deduplicar (misma obra en distintas fuentes) */
+/**
+ * Tipos compatibles al deduplicar entre fuentes.
+ * - Anime ↔ Serie: misma obra (catálogo distinto)
+ * - Anime ↔ Pelicula: solo se permite en esMismaObra si el título es idéntico
+ *   (algunas fuentes marcan especiales/OVA/films como Pelicula y otras como Anime)
+ */
 function tiposCompatibles(a, b) {
   var ta = normalizarTipoKey(a);
   var tb = normalizarTipoKey(b);
   if (ta === tb) return true;
   if ((ta === 'anime' && tb === 'serie') || (ta === 'serie' && tb === 'anime')) return true;
+  // Anime/Serie vs Pelicula: se valida título exacto en esMismaObra
+  if ((ta === 'anime' || ta === 'serie') && tb === 'pelicula') return true;
+  if ((tb === 'anime' || tb === 'serie') && ta === 'pelicula') return true;
   return false;
 }
 
@@ -2376,10 +2398,38 @@ function claveDeduplicacion(item) {
   return null;
 }
 
+/**
+ * Prioridad de fuentes para búsqueda/fusión:
+ * 1) animeav1 (4)  2) pelisplushd (3)  3) lamovie (1)  4) hackstore (2)
+ * Si animeav1 tiene la obra, es la fuente principal; el resto va a alternativas.
+ */
+function prioridadFuente(nombre) {
+  var f = String(nombre || '').toLowerCase();
+  if (f === 'animeav1' || f === '4') return 0;
+  if (f === 'pelisplushd' || f === 'pelisplus' || f === '3') return 1;
+  if (f === 'lamovie' || f === '1') return 2;
+  if (f === 'hackstore' || f === '2') return 3;
+  return 9;
+}
+
+function ordenarFuentesLista(fuentes) {
+  if (!fuentes || !fuentes.length) return [];
+  return fuentes.slice().sort(function (a, b) {
+    return prioridadFuente(a) - prioridadFuente(b);
+  });
+}
+
 /** Puntuación para elegir el mejor resultado base al fusionar */
 function scoreItemBusqueda(item) {
   if (!item) return 0;
   var s = 0;
+  // PRIORIDAD #1: animeav1 siempre gana como base si está presente
+  var f = String(item.fuente || '').toLowerCase();
+  if (f === 'animeav1') s += 200;
+  else if (f === 'pelisplushd') s += 30;
+  else if (f === 'lamovie') s += 20;
+  else if (f === 'hackstore') s += 10;
+
   if (item.portada && !esPortadaSospechosa(item.portada)) s += 25;
   if (item.portada_imdb && esPortadaImdb(item.portada_imdb)) s += 12;
   if (item.portada_tmdb && !esPortadaSospechosa(item.portada_tmdb)) s += 8;
@@ -2389,11 +2439,6 @@ function scoreItemBusqueda(item) {
   if (item.year) s += 5;
   if (item.slug) s += 5;
   if (item.backdrop) s += 5;
-  var f = String(item.fuente || '').toLowerCase();
-  if (f === 'pelisplushd') s += 3;
-  else if (f === 'lamovie') s += 2;
-  else if (f === 'animeav1') s += 2;
-  else if (f === 'hackstore') s += 1;
   return s;
 }
 
@@ -2633,8 +2678,23 @@ function fusionarResultadosBusqueda(items) {
         if (sg[tf].tipo) tiposFirst.push(sg[tf].tipo);
       }
       best.tipo = preferirTipo(tiposFirst);
-      best.fuentes = fuentes;
-      if (fuentes.length) best.fuente = fuentes[0];
+      // Orden prioritario: animeav1 → pelisplushd → lamovie → hackstore
+      best.fuentes = ordenarFuentesLista(fuentes);
+      if (best.fuentes.length) best.fuente = best.fuentes[0];
+      // Si animeav1 está en el grupo, forzar fuente principal a animeav1
+      // y sincronizar slug/source_id de esa entrada
+      for (var ja = 0; ja < sg.length; ja++) {
+        if (String(sg[ja].fuente || '').toLowerCase() === 'animeav1') {
+          best.fuente = 'animeav1';
+          if (sg[ja].slug) best.slug = sg[ja].slug;
+          if (sg[ja].descripcion && (!best.descripcion || String(best.descripcion).length < 40)) {
+            best.descripcion = sg[ja].descripcion;
+          }
+          best.portada = mejorPortada(sg[ja].portada, best.portada);
+          if (typeof sourceIdFromName === 'function') best.source_id = sourceIdFromName('animeav1');
+          break;
+        }
+      }
       if (alternativas.length) best.alternativas = dedupeAlternativas(alternativas);
       delete best.success;
       if (!best.year) {
@@ -2722,8 +2782,20 @@ function fusionarResultadosBusqueda(items) {
           if (group2[tg].tipo) tiposG.push(group2[tg].tipo);
         }
         best2.tipo = preferirTipo(tiposG);
-        best2.fuentes = fuentes2;
-        if (fuentes2.length) best2.fuente = fuentes2[0];
+        best2.fuentes = ordenarFuentesLista(fuentes2);
+        if (best2.fuentes.length) best2.fuente = best2.fuentes[0];
+        for (var ja2 = 0; ja2 < group2.length; ja2++) {
+          if (String(group2[ja2].fuente || '').toLowerCase() === 'animeav1') {
+            best2.fuente = 'animeav1';
+            if (group2[ja2].slug) best2.slug = group2[ja2].slug;
+            if (group2[ja2].descripcion && (!best2.descripcion || String(best2.descripcion).length < 40)) {
+              best2.descripcion = group2[ja2].descripcion;
+            }
+            best2.portada = mejorPortada(group2[ja2].portada, best2.portada);
+            if (typeof sourceIdFromName === 'function') best2.source_id = sourceIdFromName('animeav1');
+            break;
+          }
+        }
         if (alts2.length) best2.alternativas = dedupeAlternativas(alts2);
         delete best2.success;
         if (!best2.year) {
@@ -3614,18 +3686,25 @@ async function buscarUniversal(query, sourceFilter, limit) {
   var q = String(query || '').trim();
   if (!q) throw new Error('Falta el termino de busqueda');
 
+  // Orden de búsqueda prioritario: animeav1 → pelisplushd → lamovie → hackstore
+  // (Promise.all sigue en paralelo; el orden solo afecta concatenación / desempate)
   var promesas = [];
-  if (sourceFilter === 'all' || sourceFilter === 'lamovie') {
-    promesas.push(buscarLamovie(q, limit).catch(function () { return []; }));
-  }
-  if (sourceFilter === 'all' || sourceFilter === 'hackstore') {
-    promesas.push(buscarHackstore(q, limit).catch(function () { return []; }));
+  var labels = [];
+  if (sourceFilter === 'all' || sourceFilter === 'animeav1' || sourceFilter === '4') {
+    promesas.push(buscarAnimeAv1(q, limit).catch(function () { return []; }));
+    labels.push('animeav1');
   }
   if (sourceFilter === 'all' || sourceFilter === 'pelisplushd') {
     promesas.push(buscarPelisplus(q, limit).catch(function () { return []; }));
+    labels.push('pelisplushd');
   }
-  if (sourceFilter === 'all' || sourceFilter === 'animeav1' || sourceFilter === '4') {
-    promesas.push(buscarAnimeAv1(q, limit).catch(function () { return []; }));
+  if (sourceFilter === 'all' || sourceFilter === 'lamovie') {
+    promesas.push(buscarLamovie(q, limit).catch(function () { return []; }));
+    labels.push('lamovie');
+  }
+  if (sourceFilter === 'all' || sourceFilter === 'hackstore') {
+    promesas.push(buscarHackstore(q, limit).catch(function () { return []; }));
+    labels.push('hackstore');
   }
 
   var arrays = await Promise.all(promesas);
@@ -3639,12 +3718,16 @@ async function buscarUniversal(query, sourceFilter, limit) {
     }
   }
 
-  // Deduplicación / fusión entre fuentes (TMDB → título+tipo → slug)
-  // Antes solo deduplicaba dentro de la misma fuente, por eso salían duplicados
+  // Deduplicación / fusión entre fuentes.
+  // Prioridad: si animeav1 tiene la obra, se queda como principal;
+  // pelisplushd / lamovie / hackstore pasan a alternativas (misma obra = nombre/año).
   var unicos = fusionarResultadosBusqueda(todos);
 
-  // Ordenar: más completos / relevantes primero
+  // Ordenar: animeav1 primero, luego score de completitud
   unicos.sort(function (a, b) {
+    var pa = prioridadFuente(a && a.fuente);
+    var pb = prioridadFuente(b && b.fuente);
+    if (pa !== pb) return pa - pb;
     return scoreItemBusqueda(b) - scoreItemBusqueda(a);
   });
 
