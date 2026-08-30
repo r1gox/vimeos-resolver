@@ -22,6 +22,7 @@ var LAMOVIE_API = 'https://lamovie.org/wp-api/v1';
 var LAMOVIE_BASE = 'https://lamovie.org';
 var HACKSTORE_BASE = 'https://www.hackstore.fo';
 var PELISPLUS_BASE = 'https://www.pelisplushd.la';
+var ANIMEAV1_BASE = 'https://animeav1.com';
 // Metadatos TMDB vía worker público (no cambia el flujo de embeds/fuentes)
 var TMDB_META_API = 'https://pelisplushd.tvymas.workers.dev';
 
@@ -195,7 +196,8 @@ async function handleRequest(request, env) {
       sources: {
         '1': 'lamovie',
         '2': 'hackstore',
-        '3': 'pelisplushd'
+        '3': 'pelisplushd',
+        '4': 'animeav1'
       },
       endpoints: {
         search: origin + '/search?q={texto}',
@@ -224,7 +226,7 @@ async function handleRequest(request, env) {
         pelisplus_cap: origin + '/3/serie/acaramelados/1/1',
         estrenos: origin + '/3/peliculas/estrenos'
       },
-      nota: 'IDs de fuente: 1=lamovie, 2=hackstore, 3=pelisplushd. Van en la ruta: /{id}/serie/{slug}',
+      nota: 'IDs de fuente: 1=lamovie, 2=hackstore, 3=pelisplushd, 4=animeav1. Van en la ruta: /{id}/anime/{slug}',
       meta: 'Búsqueda y detalle se enriquecen con TMDB (géneros, sinopsis, rating, poster, backdrop, temporadas)'
     });
   }
@@ -393,7 +395,7 @@ async function handleRequest(request, env) {
         hackstore: origin + '/2/serie/asi-aprenderas-2026/1/1',
         search: origin + '/search?q=matrix'
       },
-      sources: { '1': 'lamovie', '2': 'hackstore', '3': 'pelisplushd' }
+      sources: { '1': 'lamovie', '2': 'hackstore', '3': 'pelisplushd', '4': 'animeav1' }
     }, 400);
   }
 
@@ -406,6 +408,8 @@ async function handleRequest(request, env) {
       resultado = await scrapearPelisplus(targetUrl, commonOpts);
     } else if (source === 'hackstore') {
       resultado = await scrapearHackstore(targetUrl, commonOpts);
+    } else if (source === 'animeav1') {
+      resultado = await scrapearAnimeAv1(targetUrl, commonOpts);
     } else {
       resultado = await scrapearLamovie(targetUrl, commonOpts);
     }
@@ -429,6 +433,7 @@ function normalizarSourceId(s) {
   if (s === '1' || s === 'lamovie' || s === 'lm') return 'lamovie';
   if (s === '2' || s === 'hackstore' || s === 'hs') return 'hackstore';
   if (s === '3' || s === 'pelisplushd' || s === 'pelisplus' || s === 'pp') return 'pelisplushd';
+  if (s === '4' || s === 'animeav1' || s === 'av1' || s === 'aa1') return 'animeav1';
   return '';
 }
 
@@ -436,6 +441,7 @@ function sourceIdFromName(name) {
   name = String(name || '').toLowerCase();
   if (name === 'hackstore') return '2';
   if (name === 'pelisplushd') return '3';
+  if (name === 'animeav1') return '4';
   return '1'; // lamovie default
 }
 
@@ -443,6 +449,7 @@ function sourceNameFromId(id) {
   id = String(id || '').toLowerCase();
   if (id === '2' || id === 'hackstore' || id === 'hs') return 'hackstore';
   if (id === '3' || id === 'pelisplushd' || id === 'pp') return 'pelisplushd';
+  if (id === '4' || id === 'animeav1' || id === 'av1') return 'animeav1';
   if (id === '1' || id === 'lamovie' || id === 'lm') return 'lamovie';
   return id || '';
 }
@@ -467,6 +474,7 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
   } else if (tipoRuta === 'anime') {
     add('lamovie', LAMOVIE_BASE + '/animes/' + slug + '/');
     add('pelisplushd', PELISPLUS_BASE + '/anime/' + slug + '/');
+    add('animeav1', ANIMEAV1_BASE + '/media/' + slug);
     add('hackstore', HACKSTORE_BASE + '/animes/' + slug + '/');
   } else {
     add('lamovie', LAMOVIE_BASE + '/series/' + slug + '/');
@@ -480,6 +488,7 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     try {
       var r;
       if (c.fuente === 'pelisplushd') r = await scrapearPelisplus(c.url, opts);
+      else if (c.fuente === 'animeav1') r = await scrapearAnimeAv1(c.url, opts);
       else if (c.fuente === 'hackstore') r = await scrapearHackstore(c.url, opts);
       else r = await scrapearLamovie(c.url, opts);
 
@@ -516,6 +525,7 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
       var r2;
       if (hit.fuente === 'pelisplushd') r2 = await scrapearPelisplus(hit.link, opts2);
       else if (hit.fuente === 'hackstore') r2 = await scrapearHackstore(hit.link, opts2);
+      else if (hit.fuente === 'animeav1') r2 = await scrapearAnimeAv1(hit.link, opts2);
       else r2 = await scrapearLamovie(hit.link, opts2);
       if (r2 && r2.success !== false) {
         if (r2.tipo === 'Capitulo' && (!r2.reproductores || r2.reproductores.length === 0)) continue;
@@ -591,10 +601,12 @@ function normalizarUrlEntrada(u) {
 
 function detectarFuente(u) {
   u = (u || '').toLowerCase();
+  if (u.indexOf('animeav1') !== -1) return 'animeav1';
   if (u.indexOf('pelisplushd') !== -1) return 'pelisplushd';
   if (u.indexOf('hackstore') !== -1) return 'hackstore';
   if (u.indexOf('lamovie') !== -1) return 'lamovie';
   if (/\/(pelicula|serie|anime)\//i.test(u)) return 'pelisplushd';
+  if (/\/media\//i.test(u)) return 'animeav1';
   return 'lamovie';
 }
 
@@ -2281,6 +2293,9 @@ async function buscarUniversal(query, sourceFilter, limit) {
   if (sourceFilter === 'all' || sourceFilter === 'pelisplushd') {
     promesas.push(buscarPelisplus(q, limit).catch(function () { return []; }));
   }
+  if (sourceFilter === 'all' || sourceFilter === 'animeav1' || sourceFilter === '4') {
+    promesas.push(buscarAnimeAv1(q, limit).catch(function () { return []; }));
+  }
 
   var arrays = await Promise.all(promesas);
   var todos = [];
@@ -3381,5 +3396,297 @@ async function scrapearHackstore(pageUrl, opts) {
     embeds: reproductores.map(function (r) { return r.url; }),
     reproductores: reproductores,
     descargas: descargas
+  };
+}
+
+
+// ======================================================
+// ANIMEAV1 (https://animeav1.com) — SvelteKit __data.json
+// source_id = 4
+// ======================================================
+
+async function fetchAnimeAv1Data(pathAndQuery) {
+  var p = String(pathAndQuery || '');
+  if (p.charAt(0) !== '/') p = '/' + p;
+  var url = ANIMEAV1_BASE + p;
+  if (url.indexOf('__data.json') === -1) {
+    // /catalogo/__data.json?search=x  vs  /media/slug/1/__data.json
+    if (url.indexOf('?') !== -1) {
+      url = url.replace('?', '/__data.json?');
+      url = url.replace('/__data.json/__data.json', '/__data.json');
+    } else {
+      if (url.charAt(url.length - 1) === '/') url = url.slice(0, -1);
+      url += '/__data.json';
+    }
+  }
+  var res = await fetch(url, {
+    headers: {
+      'User-Agent': HEADERS['User-Agent'],
+      'Accept': 'application/json',
+      'Referer': ANIMEAV1_BASE + '/'
+    },
+    redirect: 'follow'
+  });
+  if (!res.ok) throw new Error('AnimeAV1 HTTP ' + res.status + ' en ' + url);
+  return await res.json();
+}
+
+/** Decodifica el formato SvelteKit nodes[].data (referencias por índice) */
+function decodeSvelteKitData(payload) {
+  var nodes = (payload && payload.nodes) || [];
+  var arr = null;
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    if (n && n.data && Array.isArray(n.data) && n.data.length > 2) {
+      arr = n.data;
+      break;
+    }
+  }
+  if (!arr) return null;
+  var memo = {};
+  function resolve(idx, stack) {
+    stack = stack || {};
+    if (typeof idx !== 'number') return idx;
+    if (stack[idx]) return null;
+    if (memo[idx] !== undefined) return memo[idx];
+    if (idx < 0 || idx >= arr.length) return null;
+    stack[idx] = true;
+    var val = arr[idx];
+    if (val === null || typeof val === 'boolean' || typeof val === 'string' || typeof val === 'number') {
+      memo[idx] = val;
+      delete stack[idx];
+      return val;
+    }
+    if (Array.isArray(val)) {
+      var outA = [];
+      for (var j = 0; j < val.length; j++) {
+        outA.push(typeof val[j] === 'number' ? resolve(val[j], stack) : val[j]);
+      }
+      memo[idx] = outA;
+      delete stack[idx];
+      return outA;
+    }
+    if (typeof val === 'object') {
+      var outO = {};
+      var keys = Object.keys(val);
+      for (var k = 0; k < keys.length; k++) {
+        var key = keys[k];
+        var v = val[key];
+        outO[key] = typeof v === 'number' ? resolve(v, stack) : v;
+      }
+      memo[idx] = outO;
+      delete stack[idx];
+      return outO;
+    }
+    memo[idx] = val;
+    delete stack[idx];
+    return val;
+  }
+  var root = arr[0];
+  if (!root || typeof root !== 'object') return null;
+  var result = {};
+  var rkeys = Object.keys(root);
+  for (var r = 0; r < rkeys.length; r++) {
+    var rk = rkeys[r];
+    var rv = root[rk];
+    result[rk] = typeof rv === 'number' ? resolve(rv) : rv;
+  }
+  return result;
+}
+
+function animeAv1Poster(slug, malId) {
+  if (malId) return 'https://cdn.myanimelist.net/images/anime/' + String(malId).replace(/[^0-9]/g, '') + '.jpg';
+  // fallback genérico (puede 404)
+  return null;
+}
+
+function mapAnimeAv1Embeds(embedsObj) {
+  var reproductores = [];
+  var descargas = [];
+  if (!embedsObj || typeof embedsObj !== 'object') return { reproductores: reproductores, descargas: descargas };
+  var langs = Object.keys(embedsObj);
+  for (var i = 0; i < langs.length; i++) {
+    var lang = langs[i];
+    var list = embedsObj[lang];
+    if (!Array.isArray(list)) continue;
+    for (var j = 0; j < list.length; j++) {
+      var e = list[j];
+      if (!e || !e.url) continue;
+      var url = e.url;
+      var server = e.server || extraerServidor(url);
+      // downloads vs players: mega file links etc.
+      var isDl = /mega\.nz\/file|1fichier|mediafire|download/i.test(url) && !/embed/i.test(url);
+      var row = {
+        url: url,
+        idioma: lang === 'SUB' ? 'Subtitulado' : (lang === 'DUB' || lang === 'LAT' ? 'Latino' : lang),
+        servidor: server,
+        tipo: isDl ? 'descarga' : 'reproductor'
+      };
+      if (isDl) descargas.push(row);
+      else if (esReproductorValido(url) || /zilla-networks|uns\.bio|mp4upload|mega\.nz\/embed/i.test(url)) {
+        reproductores.push(row);
+      }
+    }
+  }
+  return { reproductores: reproductores, descargas: descargas };
+}
+
+async function buscarAnimeAv1(query, limit) {
+  limit = limit || 15;
+  var path = '/catalogo/__data.json?search=' + encodeURIComponent(query);
+  var raw = await fetchAnimeAv1Data(path);
+  var data = decodeSvelteKitData(raw);
+  if (!data || !Array.isArray(data.results)) return [];
+  var out = [];
+  for (var i = 0; i < data.results.length && out.length < limit; i++) {
+    var it = data.results[i];
+    if (!it || !it.slug) continue;
+    var catName = (it.category && it.category.name) || '';
+    var tipo = 'Anime';
+    if (/movie|pel[ií]cula/i.test(catName)) tipo = 'Pelicula';
+    out.push({
+      success: true,
+      fuente: 'animeav1',
+      tipo: tipo,
+      titulo: it.title || it.slug,
+      slug: it.slug,
+      descripcion: it.synopsis || null,
+      portada: null,
+      link: ANIMEAV1_BASE + '/media/' + it.slug,
+      year: null
+    });
+  }
+  return out;
+}
+
+async function scrapearAnimeAv1(pageUrl, opts) {
+  opts = opts || {};
+  var u = String(pageUrl || '');
+  // extraer slug y episodio
+  var m = u.match(/\/media\/([^\/\?#]+)(?:\/(\d+))?/i);
+  if (!m) {
+    // permitir solo slug
+    m = u.match(/animeav1\.com\/(?:media\/)?([^\/\?#]+)/i);
+  }
+  if (!m) throw new Error('AnimeAV1: no se pudo extraer slug de ' + pageUrl);
+  var slug = decodeURIComponent(m[1]);
+  var epNum = m[2] ? parseInt(m[2], 10) : null;
+  if (opts.episode && !epNum) epNum = parseInt(opts.episode, 10);
+  // season ignored (animeav1 usa número de episodio global)
+  if (opts.season && opts.episode && !m[2]) {
+    epNum = parseInt(opts.episode, 10);
+  }
+
+  // Datos del media
+  var mediaRaw = await fetchAnimeAv1Data('/media/' + encodeURIComponent(slug) + '/__data.json');
+  var mediaData = decodeSvelteKitData(mediaRaw);
+  var media = (mediaData && mediaData.media) || {};
+  var titulo = media.title || slug;
+  var sinopsis = media.synopsis || null;
+  var epsCount = media.episodesCount || 0;
+  var score = media.score || null;
+  var malId = media.malId || null;
+  var portada = media.poster || null;
+  if (!portada && malId) {
+    // MAL id a veces no es path directo; dejar null y TMDB enriquecerá
+    portada = null;
+  }
+  var catName = (media.category && media.category.name) || 'TV Anime';
+  var tipo = /movie|pel[ií]cula/i.test(catName) ? 'Pelicula' : 'Anime';
+
+  // Si piden episodio concreto → embeds
+  if (epNum && epNum > 0) {
+    var epRaw = await fetchAnimeAv1Data('/media/' + encodeURIComponent(slug) + '/' + epNum + '/__data.json');
+    var epData = decodeSvelteKitData(epRaw);
+    var mapped = mapAnimeAv1Embeds(epData && epData.embeds);
+    var dlMapped = mapAnimeAv1Embeds(epData && epData.downloads);
+    // downloads object is separate
+    var descargas = [];
+    if (epData && epData.downloads && typeof epData.downloads === 'object') {
+      var dlangs = Object.keys(epData.downloads);
+      for (var di = 0; di < dlangs.length; di++) {
+        var dlist = epData.downloads[dlangs[di]];
+        if (!Array.isArray(dlist)) continue;
+        for (var dj = 0; dj < dlist.length; dj++) {
+          if (dlist[dj] && dlist[dj].url) {
+            descargas.push({
+              url: dlist[dj].url,
+              idioma: dlangs[di] === 'SUB' ? 'Subtitulado' : dlangs[di],
+              servidor: dlist[dj].server || extraerServidor(dlist[dj].url),
+              tipo: 'descarga'
+            });
+          }
+        }
+      }
+    }
+    var epMeta = (epData && epData.episode) || {};
+    return {
+      success: true,
+      fuente: 'animeav1',
+      source_id: '4',
+      tipo: 'Capitulo',
+      link: ANIMEAV1_BASE + '/media/' + slug + '/' + epNum,
+      slug: slug,
+      titulo: titulo + ' — Episodio ' + epNum,
+      titulo_serie: titulo,
+      temporada: epMeta.season || opts.season || 1,
+      episodio: epNum,
+      portada: portada,
+      descripcion: sinopsis,
+      calificacion: score,
+      total: mapped.reproductores.length,
+      embeds: mapped.reproductores.map(function (r) { return r.url; }),
+      reproductores: mapped.reproductores,
+      descargas: descargas
+    };
+  }
+
+  // Listado de episodios (sin cargar embeds de todos)
+  var temporadas = [{ temporada: 1, episodios: [] }];
+  var maxList = Math.min(epsCount || 0, 500);
+  // Si no hay count, intentar leer hasta fallar no es viable; usar count
+  for (var e = 1; e <= maxList; e++) {
+    temporadas[0].episodios.push({
+      temporada: 1,
+      episodio: e,
+      titulo: 'Episodio ' + e,
+      url_video: null,
+      // el cliente pide /4/anime/slug/1/e
+    });
+  }
+
+  // Si pidieron players=1 y maxCaps, cargar algunos
+  if (opts.players && maxList > 0) {
+    var maxCaps = opts.maxCaps || 5;
+    for (var p = 0; p < Math.min(maxCaps, maxList); p++) {
+      try {
+        var er = await fetchAnimeAv1Data('/media/' + encodeURIComponent(slug) + '/' + (p + 1) + '/__data.json');
+        var ed = decodeSvelteKitData(er);
+        var mp = mapAnimeAv1Embeds(ed && ed.embeds);
+        temporadas[0].episodios[p].reproductores = mp.reproductores;
+        temporadas[0].episodios[p].embeds = mp.reproductores.map(function (r) { return r.url; });
+      } catch (eCap) { /* skip */ }
+    }
+  }
+
+  return {
+    success: true,
+    fuente: 'animeav1',
+    source_id: '4',
+    tipo: tipo,
+    link: ANIMEAV1_BASE + '/media/' + slug,
+    slug: slug,
+    titulo: titulo,
+    portada: portada,
+    descripcion: sinopsis,
+    calificacion: score,
+    year: media.startDate ? String(media.startDate).slice(0, 4) : null,
+    total_episodios: epsCount || temporadas[0].episodios.length,
+    total: 0,
+    embeds: [],
+    reproductores: [],
+    descargas: [],
+    temporadas: temporadas,
+    nota: 'Usa /4/anime/' + slug + '/1/{episodio} para obtener reproductores del capítulo'
   };
 }
