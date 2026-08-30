@@ -739,35 +739,111 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
   throw lastErr || new Error('No se encontro "' + slug + '" en ninguna fuente');
 }
 
-/** Une reproductores de varias fuentes (capítulo o película) — SIN descartar ninguno */
+/** Normaliza URL de embed para deduplicar entre fuentes (misma URL = mismo player) */
+function normalizarUrlEmbed(url) {
+  if (!url) return '';
+  var u = String(url).trim();
+  try {
+    u = u.replace(/^http:\/\//i, 'https://');
+    u = u.replace(/\/+$/, '');
+    // quitar tracking común
+    u = u.replace(/([?&])(utm_[^=]+|ref|referrer)=[^&]*/gi, '');
+    u = u.replace(/[?&]$/, '');
+  } catch (e) { /* ok */ }
+  return u.toLowerCase();
+}
+
+/**
+ * Prioridad de un reproductor individual:
+ * 1) fuente animeav1
+ * 2) servidores preferidos (vimeos, streamwish, …)
+ * 3) resto de fuentes
+ */
+function scoreReproductor(rep) {
+  if (!rep) return 0;
+  var s = 0;
+  var f = String(rep.fuente || '').toLowerCase();
+  if (f === 'animeav1') s += 100;
+  else if (f === 'pelisplushd') s += 40;
+  else if (f === 'lamovie') s += 30;
+  else if (f === 'hackstore') s += 20;
+  var srv = String(rep.servidor || '').toLowerCase();
+  var url = String(rep.url || '').toLowerCase();
+  if (srv.indexOf('vimeos') !== -1 || url.indexOf('vimeos') !== -1) s += 50;
+  else if (srv.indexOf('streamwish') !== -1 || url.indexOf('streamwish') !== -1) s += 40;
+  else if (srv.indexOf('vidhide') !== -1 || url.indexOf('vidhide') !== -1) s += 35;
+  else if (srv.indexOf('voe') !== -1 || url.indexOf('voe') !== -1) s += 30;
+  else if (srv.indexOf('goodstream') !== -1 || url.indexOf('goodstream') !== -1) s += 28;
+  else if (srv.indexOf('filemoon') !== -1 || url.indexOf('filemoon') !== -1) s += 25;
+  else if (srv.indexOf('dood') !== -1 || url.indexOf('dood') !== -1) s += 15;
+  return s;
+}
+
+/**
+ * Une reproductores de VARIAS FUENTES distintas (capítulo o película).
+ * REGLA: dentro de una misma fuente no se “deduplican obras”; aquí solo se
+ * eliminan la misma URL de embed si aparece en más de una fuente.
+ * Prioridad de fuente base y orden de players: animeav1 → pelisplushd → lamovie → hackstore.
+ */
 function fusionarReproductoresFuentes(resultadosOk) {
+  if (!resultadosOk || !resultadosOk.length) return {};
+
+  // Ordenar resultados: animeav1 primero como base de metadatos
+  var ordered = resultadosOk.slice().sort(function (a, b) {
+    var fa = String(a._fuente_scrape || a.fuente || '');
+    var fb = String(b._fuente_scrape || b.fuente || '');
+    var pa = typeof prioridadFuente === 'function' ? prioridadFuente(fa) : 9;
+    var pb = typeof prioridadFuente === 'function' ? prioridadFuente(fb) : 9;
+    if (pa !== pb) return pa - pb;
+    return (b.reproductores || []).length - (a.reproductores || []).length;
+  });
+
   var base = {};
-  var src0 = resultadosOk[0];
+  var src0 = ordered[0];
   for (var k in src0) {
     if (Object.prototype.hasOwnProperty.call(src0, k)) base[k] = src0[k];
   }
+
+  // Deduplicar por URL normalizada (misma URL entre fuentes = mismo player)
   var seenUrls = Object.create(null);
   var allReps = [];
-  var allEmbeds = [];
   var allDesc = [];
   var fuentesUsadas = [];
+  var seenFuente = Object.create(null);
 
-  for (var ri = 0; ri < resultadosOk.length; ri++) {
-    var rr = resultadosOk[ri];
+  for (var ri = 0; ri < ordered.length; ri++) {
+    var rr = ordered[ri];
     var fName = rr._fuente_scrape || rr.fuente || '';
-    if (fName && fuentesUsadas.indexOf(fName) === -1) fuentesUsadas.push(fName);
+    if (fName && !seenFuente[fName]) {
+      seenFuente[fName] = true;
+      fuentesUsadas.push(fName);
+    }
 
-    if ((!base.portada || /placeholder/i.test(String(base.portada))) && rr.portada) base.portada = rr.portada;
+    // Metadatos: rellenar huecos desde otras fuentes (portada, etc.)
+    if (typeof mejorPortada === 'function') {
+      base.portada = mejorPortada(base.portada, rr.portada);
+    } else if ((!base.portada || /placeholder/i.test(String(base.portada))) && rr.portada) {
+      base.portada = rr.portada;
+    }
     if ((!base.descripcion || String(base.descripcion).length < 40) && rr.descripcion) base.descripcion = rr.descripcion;
     if (!base.titulo && rr.titulo) base.titulo = rr.titulo;
     if (!base.year && rr.year) base.year = rr.year;
     if (!base.calificacion && rr.calificacion) base.calificacion = rr.calificacion;
 
     var reps = rr.reproductores || [];
+    // Dentro de la misma fuente: solo saltar URL exacta repetida (error de scrape)
+    var seenInSource = Object.create(null);
     for (var pi = 0; pi < reps.length; pi++) {
       var pu = reps[pi] && reps[pi].url ? String(reps[pi].url) : '';
-      if (!pu || seenUrls[pu]) continue;
-      seenUrls[pu] = true;
+      if (!pu) continue;
+      var key = normalizarUrlEmbed(pu);
+      // Entre fuentes: misma URL = duplicado → no añadir de nuevo
+      if (seenUrls[key]) continue;
+      // Dentro de la misma fuente: URL idéntica repetida = ruido de scrape
+      if (seenInSource[key]) continue;
+      seenInSource[key] = true;
+      seenUrls[key] = true;
+
       var repCopy = {};
       for (var pk in reps[pi]) {
         if (Object.prototype.hasOwnProperty.call(reps[pi], pk)) repCopy[pk] = reps[pi][pk];
@@ -775,29 +851,52 @@ function fusionarReproductoresFuentes(resultadosOk) {
       if (!repCopy.fuente) repCopy.fuente = fName;
       if (!repCopy.servidor) repCopy.servidor = extraerServidor(pu);
       allReps.push(repCopy);
-      allEmbeds.push(pu);
     }
+
     var dls = rr.descargas || [];
     for (var di = 0; di < dls.length; di++) {
       var du = dls[di] && dls[di].url ? String(dls[di].url) : '';
-      if (!du || seenUrls['dl:' + du]) continue;
-      seenUrls['dl:' + du] = true;
-      allDesc.push(dls[di]);
+      if (!du) continue;
+      var dkey = 'dl:' + normalizarUrlEmbed(du);
+      if (seenUrls[dkey]) continue;
+      seenUrls[dkey] = true;
+      var dlCopy = {};
+      for (var dk in dls[di]) {
+        if (Object.prototype.hasOwnProperty.call(dls[di], dk)) dlCopy[dk] = dls[di][dk];
+      }
+      if (!dlCopy.fuente) dlCopy.fuente = fName;
+      allDesc.push(dlCopy);
     }
   }
 
+  // Ordenar players: animeav1 + mejores servidores primero
+  allReps.sort(function (a, b) {
+    return scoreReproductor(b) - scoreReproductor(a);
+  });
+
   base.reproductores = allReps;
-  base.embeds = allEmbeds;
+  base.embeds = allReps.map(function (r) { return r.url; });
   base.total = allReps.length;
   if (allDesc.length) base.descargas = allDesc;
-  base.fuentes = fuentesUsadas;
-  if (fuentesUsadas.length > 1) {
-    base.nota_fusion = 'Reproductores unidos de: ' + fuentesUsadas.join(', ');
+
+  // Fuentes ordenadas por prioridad
+  if (typeof ordenarFuentesLista === 'function') {
+    base.fuentes = ordenarFuentesLista(fuentesUsadas);
+  } else {
+    base.fuentes = fuentesUsadas;
+  }
+  // Fuente principal: animeav1 si aportó players o está en la lista
+  var fuentePref = base.fuentes[0] || base.fuente;
+  if (base.fuentes.indexOf('animeav1') !== -1) fuentePref = 'animeav1';
+  base.fuente = fuentePref;
+  base.source_id = sourceIdFromName(fuentePref || '');
+
+  if (base.fuentes.length > 1) {
+    base.nota_fusion = 'Reproductores unidos de: ' + base.fuentes.join(', ') +
+      ' (prioridad animeav1 → pelisplushd → lamovie → hackstore; sin duplicar misma URL)';
   }
   delete base._fuente_scrape;
   delete base._slug_scrape;
-  base.fuente = fuentesUsadas[0] || base.fuente;
-  base.source_id = sourceIdFromName(base.fuente || '');
   return base;
 }
 
@@ -850,23 +949,34 @@ function fusionarDetalleSerie(resultadosOk, tipoRuta) {
     if (!target.link && src.link) target.link = src.link;
     if (!target.slug_media && src.slug_media) target.slug_media = src.slug_media;
 
+    // Deduplicar players entre fuentes por URL normalizada (misma URL = mismo embed)
     var seen = Object.create(null);
     var reps = (target.reproductores || []).slice();
     for (var i = 0; i < reps.length; i++) {
-      if (reps[i] && reps[i].url) seen[String(reps[i].url)] = true;
+      if (reps[i] && reps[i].url) seen[normalizarUrlEmbed(reps[i].url)] = true;
     }
     var add = src.reproductores || [];
+    var seenInSrc = Object.create(null);
     for (var j = 0; j < add.length; j++) {
       var u = add[j] && add[j].url ? String(add[j].url) : '';
-      if (!u || seen[u]) continue;
-      seen[u] = true;
+      if (!u) continue;
+      var key = normalizarUrlEmbed(u);
+      // Entre fuentes: misma URL → skip
+      if (seen[key]) continue;
+      // Dentro de la misma fuente: URL repetida → ruido de scrape
+      if (seenInSrc[key]) continue;
+      seenInSrc[key] = true;
+      seen[key] = true;
       var copy = {};
       for (var pk in add[j]) {
         if (Object.prototype.hasOwnProperty.call(add[j], pk)) copy[pk] = add[j][pk];
       }
       if (!copy.fuente) copy.fuente = fName;
+      if (!copy.servidor) copy.servidor = extraerServidor(u);
       reps.push(copy);
     }
+    // Orden: animeav1 + mejores servidores primero
+    reps.sort(function (a, b) { return scoreReproductor(b) - scoreReproductor(a); });
     target.reproductores = reps;
     target.embeds = reps.map(function (x) { return x.url; });
     if (reps[0]) target.reproductor = reps[0].url;
@@ -978,21 +1088,23 @@ function fusionarDetalleSerie(resultadosOk, tipoRuta) {
     maxTotalDeclarado
   );
   if (bestRangos && bestRangos.length) base.rangos_episodios = bestRangos;
-  base.fuentes = fuentesUsadas;
-  // Fuente preferida: animeav1 si está y aporta más (o es anime)
-  var fuentePref = fuentesUsadas[0] || base.fuente;
-  if (tipoRuta === 'anime' && fuentesUsadas.indexOf('animeav1') !== -1) {
-    fuentePref = 'animeav1';
+  // Fuentes ordenadas por prioridad; animeav1 siempre primero si está
+  if (typeof ordenarFuentesLista === 'function') {
+    base.fuentes = ordenarFuentesLista(fuentesUsadas);
   } else {
-    // la de más episodios ya está primero en scored → fuentesUsadas[0]
-    fuentePref = fuentesUsadas[0] || base.fuente;
+    base.fuentes = fuentesUsadas;
+  }
+  var fuentePref = base.fuentes[0] || base.fuente;
+  if (base.fuentes.indexOf('animeav1') !== -1) {
+    fuentePref = 'animeav1';
   }
   base.fuente = fuentePref;
   base.source_id = sourceIdFromName(fuentePref || '');
   if (tipoRuta === 'anime') base.tipo = 'Anime';
   else if (base.tipo !== 'Anime') base.tipo = base.tipo || 'Serie';
-  base.nota_fusion = 'Unido de: ' + fuentesUsadas.join(', ') +
-    ' | Temporadas: ' + base.total_temporadas + ' | Episodios: ' + base.total_episodios;
+  base.nota_fusion = 'Unido de: ' + base.fuentes.join(', ') +
+    ' | Temporadas: ' + base.total_temporadas + ' | Episodios: ' + base.total_episodios +
+    ' | Players: prioridad animeav1, sin duplicar misma URL entre fuentes';
   delete base._fuente_scrape;
   delete base._slug_scrape;
   delete base.episodios;
