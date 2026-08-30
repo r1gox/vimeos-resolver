@@ -3580,7 +3580,7 @@ async function buscarAnimeAv1(query, limit) {
   var data = decodeSvelteKitData(raw);
   if (!data || !Array.isArray(data.results)) return [];
   var out = [];
-  for (var i = 0; i < data.results.length && out.length < limit; i++) {
+  for (var i = 0; i < data.results.length; i++) {
     var it = data.results[i];
     if (!it || !it.slug) continue;
     var catName = (it.category && it.category.name) || '';
@@ -3598,7 +3598,30 @@ async function buscarAnimeAv1(query, limit) {
       year: null
     });
   }
-  return out;
+  // Si existe el título base Y "… Season 2", quedarse solo con el base
+  // (el detalle del base ya une T1+T2)
+  var slugs = {};
+  for (var j = 0; j < out.length; j++) slugs[out[j].slug] = out[j];
+  out = out.filter(function (item) {
+    var m = String(item.slug || '').match(/^(.*?)-season-(\d+)$/i);
+    if (!m) return true;
+    var base = m[1];
+    if (slugs[base]) {
+      // copiar portada del base al season si hiciera falta (por si se usa en otro lado)
+      if (!item.portada && slugs[base].portada) item.portada = slugs[base].portada;
+      return false; // ocultar season suelto
+    }
+    return true;
+  });
+  // Portada: si un season quedó y no tiene portada, intentar base
+  for (var k = 0; k < out.length; k++) {
+    if (out[k].portada) continue;
+    var mm = String(out[k].slug || '').match(/^(.*?)-season-\d+$/i);
+    if (mm && slugs[mm[1]] && slugs[mm[1]].portada) {
+      out[k].portada = slugs[mm[1]].portada;
+    }
+  }
+  return out.slice(0, limit);
 }
 
 async function scrapearAnimeAv1(pageUrl, opts) {
