@@ -474,113 +474,144 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
   opts = opts || {};
   slug = decodeURIComponent(slug).replace(/\/$/, '');
   sourceParam = normalizarSourceId(sourceParam) || sourceParam;
+  var seasonOnly = opts.season ? parseInt(opts.season, 10) : null;
+  var episodeOnly = opts.episode ? parseInt(opts.episode, 10) : null;
+  var esCapitulo = !!(seasonOnly && episodeOnly);
+  var esPelicula = tipoRuta === 'pelicula';
+  var esSerieListado = !esCapitulo && !esPelicula;
 
   var candidatos = [];
   var seenCand = Object.create(null);
 
   function add(src, fullUrl) {
+    if (!fullUrl) return;
     var key = src + '|' + fullUrl;
     if (seenCand[key]) return;
-    // Si hay source forzado, igual añadimos otras fuentes para FUSIONAR episodios/players
-    // (la primaria será la forzada si existe)
     seenCand[key] = true;
-    candidatos.push({ fuente: src, url: fullUrl, preferred: !!(sourceParam && sourceParam === src) });
+    candidatos.push({
+      fuente: src,
+      url: fullUrl,
+      preferred: !!(sourceParam && sourceParam === src)
+    });
   }
 
-  if (tipoRuta === 'pelicula') {
-    add('lamovie', LAMOVIE_BASE + '/peliculas/' + slug + '/');
-    add('pelisplushd', PELISPLUS_BASE + '/pelicula/' + slug + '/');
-    add('hackstore', HACKSTORE_BASE + '/peliculas/' + slug + '/');
-  } else if (tipoRuta === 'anime') {
-    add('lamovie', LAMOVIE_BASE + '/animes/' + slug + '/');
-    add('pelisplushd', PELISPLUS_BASE + '/anime/' + slug + '/');
-    add('animeav1', ANIMEAV1_BASE + '/media/' + slug);
-    add('hackstore', HACKSTORE_BASE + '/animes/' + slug + '/');
-  } else {
-    add('lamovie', LAMOVIE_BASE + '/series/' + slug + '/');
-    add('pelisplushd', PELISPLUS_BASE + '/serie/' + slug + '/');
-    add('hackstore', HACKSTORE_BASE + '/series/' + slug + '/');
-  }
-
-  // Variantes de slug (año)
   var slugBase = slug.replace(/-\d{4}$/, '');
-  if (slugBase !== slug) {
+  var slugsTry = [slug];
+  if (slugBase !== slug) slugsTry.push(slugBase);
+
+  for (var si = 0; si < slugsTry.length; si++) {
+    var s = slugsTry[si];
     if (tipoRuta === 'pelicula') {
-      add('lamovie', LAMOVIE_BASE + '/peliculas/' + slugBase + '/');
-      add('pelisplushd', PELISPLUS_BASE + '/pelicula/' + slugBase + '/');
-      add('hackstore', HACKSTORE_BASE + '/peliculas/' + slugBase + '/');
+      add('lamovie', LAMOVIE_BASE + '/peliculas/' + s + '/');
+      add('pelisplushd', PELISPLUS_BASE + '/pelicula/' + s + '/');
+      add('hackstore', HACKSTORE_BASE + '/peliculas/' + s + '/');
     } else if (tipoRuta === 'anime') {
-      add('lamovie', LAMOVIE_BASE + '/animes/' + slugBase + '/');
-      add('pelisplushd', PELISPLUS_BASE + '/anime/' + slugBase + '/');
-      add('animeav1', ANIMEAV1_BASE + '/media/' + slugBase);
-      add('hackstore', HACKSTORE_BASE + '/animes/' + slugBase + '/');
+      add('lamovie', LAMOVIE_BASE + '/animes/' + s + '/');
+      add('pelisplushd', PELISPLUS_BASE + '/anime/' + s + '/');
+      add('pelisplushd', PELISPLUS_BASE + '/serie/' + s + '/');
+      add('animeav1', ANIMEAV1_BASE + '/media/' + s);
+      add('hackstore', HACKSTORE_BASE + '/animes/' + s + '/');
+      add('hackstore', HACKSTORE_BASE + '/series/' + s + '/');
     } else {
-      add('lamovie', LAMOVIE_BASE + '/series/' + slugBase + '/');
-      add('pelisplushd', PELISPLUS_BASE + '/serie/' + slugBase + '/');
-      add('hackstore', HACKSTORE_BASE + '/series/' + slugBase + '/');
+      add('lamovie', LAMOVIE_BASE + '/series/' + s + '/');
+      add('pelisplushd', PELISPLUS_BASE + '/serie/' + s + '/');
+      add('pelisplushd', PELISPLUS_BASE + '/anime/' + s + '/');
+      add('hackstore', HACKSTORE_BASE + '/series/' + s + '/');
+      add('hackstore', HACKSTORE_BASE + '/animes/' + s + '/');
+      add('animeav1', ANIMEAV1_BASE + '/media/' + s);
     }
   }
 
-  // AnimeAV1 suele usar título JP: buscar slug real
-  if (tipoRuta === 'anime' || tipoRuta === 'serie') {
-    try {
-      var qAv1 = slugBase.replace(/-/g, ' ');
-      var hitsAv1 = await buscarAnimeAv1(qAv1, 5);
-      for (var ha = 0; ha < (hitsAv1 || []).length; ha++) {
-        if (hitsAv1[ha] && hitsAv1[ha].slug) {
-          add('animeav1', ANIMEAV1_BASE + '/media/' + hitsAv1[ha].slug);
-        }
+  // Resolver slug real de AnimeAV1 (título JP) + temporadas extra
+  var animeAv1Slugs = [];
+  try {
+    var qAv1 = slugBase.replace(/-/g, ' ');
+    var hitsAv1 = await buscarAnimeAv1(qAv1, 8);
+    for (var ha = 0; ha < (hitsAv1 || []).length; ha++) {
+      var hs = hitsAv1[ha] && hitsAv1[ha].slug;
+      if (!hs) continue;
+      if (animeAv1Slugs.indexOf(hs) === -1) animeAv1Slugs.push(hs);
+      add('animeav1', ANIMEAV1_BASE + '/media/' + hs);
+      // Temporadas alternativas en AnimeAV1
+      for (var sn = 2; sn <= 4; sn++) {
+        add('animeav1', ANIMEAV1_BASE + '/media/' + hs + '-season-' + sn);
       }
-    } catch (eAv1) { /* ok */ }
+    }
+  } catch (eAv1) { /* ok */ }
+
+  // Si es capítulo, URLs de episodio concretas por fuente
+  if (esCapitulo) {
+    for (var sc = 0; sc < slugsTry.length; sc++) {
+      var ss = slugsTry[sc];
+      add('pelisplushd', PELISPLUS_BASE + '/serie/' + ss + '/temporada/' + seasonOnly + '/capitulo/' + episodeOnly + '/');
+      add('pelisplushd', PELISPLUS_BASE + '/anime/' + ss + '/temporada/' + seasonOnly + '/capitulo/' + episodeOnly + '/');
+    }
+    for (var as = 0; as < animeAv1Slugs.length; as++) {
+      var avs = animeAv1Slugs[as];
+      // AnimeAV1: T1 en slug base, T2+ en slug-season-N (episodio suele ser el número dentro de la temporada)
+      if (seasonOnly <= 1) {
+        add('animeav1', ANIMEAV1_BASE + '/media/' + avs + '/' + episodeOnly);
+      } else {
+        add('animeav1', ANIMEAV1_BASE + '/media/' + avs + '-season-' + seasonOnly + '/' + episodeOnly);
+        add('animeav1', ANIMEAV1_BASE + '/media/' + avs + '/' + episodeOnly);
+      }
+    }
   }
 
-  // Preferidos primero
   candidatos.sort(function (a, b) {
     return (b.preferred ? 1 : 0) - (a.preferred ? 1 : 0);
   });
 
+  // Fetch en paralelo (lotes de 4) para no timeout
   var lastErr = null;
   var resultadosOk = [];
-  var esCapOPel = !!(opts.season && opts.episode) || tipoRuta === 'pelicula';
-  var esSerieListado = !esCapOPel && (tipoRuta === 'serie' || tipoRuta === 'anime');
+  var maxNeed = esCapitulo || esPelicula ? 6 : 5;
 
-  for (var i = 0; i < candidatos.length; i++) {
-    var c = candidatos[i];
+  async function scrapeOne(c) {
     try {
       var r;
-      if (c.fuente === 'pelisplushd') r = await scrapearPelisplus(c.url, opts);
-      else if (c.fuente === 'animeav1') r = await scrapearAnimeAv1(c.url, opts);
-      else if (c.fuente === 'hackstore') r = await scrapearHackstore(c.url, opts);
-      else r = await scrapearLamovie(c.url, opts);
-
+      var o2 = Object.assign({}, opts);
+      if (c.fuente === 'pelisplushd') r = await scrapearPelisplus(c.url, o2);
+      else if (c.fuente === 'animeav1') r = await scrapearAnimeAv1(c.url, o2);
+      else if (c.fuente === 'hackstore') r = await scrapearHackstore(c.url, o2);
+      else r = await scrapearLamovie(c.url, o2);
       if (r && r.success !== false) {
-        if (r.tipo === 'Capitulo' && (!r.reproductores || r.reproductores.length === 0) && candidatos.length > 1) {
-          lastErr = new Error('Sin players en ' + c.fuente);
-          continue;
+        if (esCapitulo && r.tipo === 'Capitulo' && (!r.reproductores || !r.reproductores.length)) {
+          return null;
         }
         r.source_id = sourceIdFromName(c.fuente);
         r._fuente_scrape = c.fuente;
         r._slug_scrape = slug;
-        resultadosOk.push(r);
-
-        // Cap/peli: recoger varias fuentes para fusionar players (máx 4)
-        if (esCapOPel && resultadosOk.length >= 4) break;
-        // Serie/anime listado: recoger varias fuentes para fusionar temporadas/episodios
-        if (esSerieListado && resultadosOk.length >= 4) break;
+        return r;
       }
     } catch (e) {
       lastErr = e;
     }
+    return null;
   }
 
-  // --- Fusión capítulo / película: sumar reproductores ---
-  if (resultadosOk.length > 0 && esCapOPel) {
-    var base = fusionarReproductoresFuentes(resultadosOk);
-    base = reescribirLinksCortos(base, origin, slug, tipoRuta, base.fuente);
-    return base;
+  for (var i = 0; i < candidatos.length && resultadosOk.length < maxNeed; i += 4) {
+    var batch = candidatos.slice(i, i + 4);
+    var parts = await Promise.all(batch.map(scrapeOne));
+    for (var p = 0; p < parts.length; p++) {
+      if (parts[p]) resultadosOk.push(parts[p]);
+    }
   }
 
-  // --- Fusión serie/anime: unir temporadas + episodios + players ---
+  // --- Capítulo o película: UNIR TODOS los reproductores ---
+  if (resultadosOk.length > 0 && (esCapitulo || esPelicula)) {
+    var baseCap = fusionarReproductoresFuentes(resultadosOk);
+    // Asegurar temporada/episodio
+    if (esCapitulo) {
+      baseCap.tipo = 'Capitulo';
+      baseCap.temporada = seasonOnly;
+      baseCap.episodio = episodeOnly;
+    }
+    baseCap = reescribirLinksCortos(baseCap, origin, slug, tipoRuta, baseCap.fuente);
+    return baseCap;
+  }
+
+  // --- Serie/anime listado: UNIR temporadas + episodios ---
   if (resultadosOk.length > 0 && esSerieListado) {
     var fused = fusionarDetalleSerie(resultadosOk, tipoRuta);
     fused = reescribirLinksCortos(fused, origin, slug, tipoRuta, fused.fuente);
@@ -591,13 +622,12 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     var r0 = resultadosOk[0];
     delete r0._fuente_scrape;
     delete r0._slug_scrape;
-    r0 = reescribirLinksCortos(r0, origin, slug, tipoRuta, r0.fuente);
-    return r0;
+    return reescribirLinksCortos(r0, origin, slug, tipoRuta, r0.fuente);
   }
 
-  // Fallback búsqueda
-  var q = slug.replace(/-\d{4}$/, '').replace(/-/g, ' ');
-  var busqueda = await buscarUniversal(q, 'all', 10);
+  // Fallback búsqueda universal
+  var q = slugBase.replace(/-/g, ' ');
+  var busqueda = await buscarUniversal(q, 'all', 12);
   var hits = (busqueda && busqueda.resultados) || [];
   for (var h = 0; h < hits.length; h++) {
     var hit = hits[h];
@@ -605,48 +635,64 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
       (tipoRuta === 'pelicula' && hit.tipo === 'Pelicula') ||
       (tipoRuta === 'serie' && (hit.tipo === 'Serie' || hit.tipo === 'Anime')) ||
       (tipoRuta === 'anime' && (hit.tipo === 'Anime' || hit.tipo === 'Serie')) ||
-      (hit.slug === slug) ||
-      (normalizarSlugKey(hit.slug) === normalizarSlugKey(slug));
+      normalizarSlugKey(hit.slug) === normalizarSlugKey(slug);
     if (!tipoOk) continue;
 
-    // Probar link del hit + alternativas
     var tryLinks = [];
-    if (hit.link) tryLinks.push({ fuente: hit.fuente, link: hit.link });
+    if (hit.link) tryLinks.push({ fuente: hit.fuente, link: hit.link, slug: hit.slug });
     if (Array.isArray(hit.alternativas)) {
       for (var al = 0; al < hit.alternativas.length; al++) {
-        if (hit.alternativas[al].link) {
-          tryLinks.push({ fuente: hit.alternativas[al].fuente, link: hit.alternativas[al].link });
-        }
+        var alt = hit.alternativas[al];
+        if (alt && alt.link) tryLinks.push({ fuente: alt.fuente, link: alt.link, slug: alt.slug });
       }
     }
 
-    var batch = [];
+    var batch2 = [];
     for (var tl = 0; tl < tryLinks.length; tl++) {
       try {
-        var opts2 = Object.assign({}, opts);
-        var r2;
         var hf = tryLinks[tl].fuente;
         var hl = tryLinks[tl].link;
-        if (hf === 'pelisplushd') r2 = await scrapearPelisplus(hl, opts2);
-        else if (hf === 'hackstore') r2 = await scrapearHackstore(hl, opts2);
-        else if (hf === 'animeav1') r2 = await scrapearAnimeAv1(hl, opts2);
-        else r2 = await scrapearLamovie(hl, opts2);
+        var o3 = Object.assign({}, opts);
+        // Si es capítulo, ajustar URL de pelisplus
+        if (esCapitulo && hf === 'pelisplushd' && hl && !/\/temporada\//i.test(hl)) {
+          var mslug = (tryLinks[tl].slug || slugBase);
+          hl = PELISPLUS_BASE + (/anime/i.test(tipoRuta) ? '/anime/' : '/serie/') + mslug +
+            '/temporada/' + seasonOnly + '/capitulo/' + episodeOnly + '/';
+        }
+        if (esCapitulo && hf === 'animeav1' && tryLinks[tl].slug) {
+          var avslug = tryLinks[tl].slug;
+          if (seasonOnly > 1) {
+            hl = ANIMEAV1_BASE + '/media/' + avslug + '-season-' + seasonOnly + '/' + episodeOnly;
+          } else {
+            hl = ANIMEAV1_BASE + '/media/' + avslug + '/' + episodeOnly;
+          }
+        }
+        var r2;
+        if (hf === 'pelisplushd') r2 = await scrapearPelisplus(hl, o3);
+        else if (hf === 'hackstore') r2 = await scrapearHackstore(hl, o3);
+        else if (hf === 'animeav1') r2 = await scrapearAnimeAv1(hl, o3);
+        else r2 = await scrapearLamovie(hl, o3);
         if (r2 && r2.success !== false) {
-          if (r2.tipo === 'Capitulo' && (!r2.reproductores || r2.reproductores.length === 0)) continue;
-          r2.source_id = sourceIdFromName(hf);
+          if (esCapitulo && (!r2.reproductores || !r2.reproductores.length)) continue;
           r2._fuente_scrape = hf;
-          batch.push(r2);
+          r2.source_id = sourceIdFromName(hf);
+          batch2.push(r2);
         }
       } catch (e2) {
         lastErr = e2;
       }
     }
-    if (batch.length) {
-      if (esCapOPel || (batch[0].tipo === 'Capitulo' || batch[0].tipo === 'Pelicula')) {
-        var bf = fusionarReproductoresFuentes(batch);
+    if (batch2.length) {
+      if (esCapitulo || esPelicula) {
+        var bf = fusionarReproductoresFuentes(batch2);
+        if (esCapitulo) {
+          bf.tipo = 'Capitulo';
+          bf.temporada = seasonOnly;
+          bf.episodio = episodeOnly;
+        }
         return reescribirLinksCortos(bf, origin, hit.slug || slug, tipoRuta, bf.fuente);
       }
-      var bs = fusionarDetalleSerie(batch, tipoRuta);
+      var bs = fusionarDetalleSerie(batch2, tipoRuta);
       return reescribirLinksCortos(bs, origin, hit.slug || slug, tipoRuta, bs.fuente);
     }
   }
@@ -654,7 +700,7 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
   throw lastErr || new Error('No se encontro "' + slug + '" en ninguna fuente');
 }
 
-/** Une reproductores de varias fuentes (capítulo o película) */
+/** Une reproductores de varias fuentes (capítulo o película) — SIN descartar ninguno */
 function fusionarReproductoresFuentes(resultadosOk) {
   var base = {};
   var src0 = resultadosOk[0];
@@ -688,6 +734,7 @@ function fusionarReproductoresFuentes(resultadosOk) {
         if (Object.prototype.hasOwnProperty.call(reps[pi], pk)) repCopy[pk] = reps[pi][pk];
       }
       if (!repCopy.fuente) repCopy.fuente = fName;
+      if (!repCopy.servidor) repCopy.servidor = extraerServidor(pu);
       allReps.push(repCopy);
       allEmbeds.push(pu);
     }
@@ -700,15 +747,13 @@ function fusionarReproductoresFuentes(resultadosOk) {
     }
   }
 
-  if (allReps.length) {
-    base.reproductores = allReps;
-    base.embeds = allEmbeds;
-    base.total = allReps.length;
-  }
+  base.reproductores = allReps;
+  base.embeds = allEmbeds;
+  base.total = allReps.length;
   if (allDesc.length) base.descargas = allDesc;
+  base.fuentes = fuentesUsadas;
   if (fuentesUsadas.length > 1) {
-    base.fuentes = fuentesUsadas;
-    base.nota_fusion = 'Reproductores fusionados de: ' + fuentesUsadas.join(', ');
+    base.nota_fusion = 'Reproductores unidos de: ' + fuentesUsadas.join(', ');
   }
   delete base._fuente_scrape;
   delete base._slug_scrape;
@@ -718,14 +763,12 @@ function fusionarReproductoresFuentes(resultadosOk) {
 }
 
 /**
- * Fusiona listados de serie/anime de varias fuentes:
- * - Une temporadas por número
- * - Une episodios por T+E
- * - Suma reproductores sin duplicar URL
- * - Conserva total_episodios / total_temporadas máximos
+ * Fusiona listados de serie/anime:
+ * - Temporadas de TODAS las fuentes (si AnimeAV1 tiene T2 y otras solo T1 → quedan T1+T2)
+ * - Episodios por T+E
+ * - Reproductores sumados por episodio
  */
 function fusionarDetalleSerie(resultadosOk, tipoRuta) {
-  // Elegir base con más episodios / mejor meta
   var scored = resultadosOk.slice().sort(function (a, b) {
     var ea = a.total_episodios || countEpsInResult(a);
     var eb = b.total_episodios || countEpsInResult(b);
@@ -740,7 +783,7 @@ function fusionarDetalleSerie(resultadosOk, tipoRuta) {
   }
 
   var fuentesUsadas = [];
-  var bySeason = Object.create(null); // seasonNum -> { epNum -> epObj }
+  var bySeason = Object.create(null);
 
   function ensureSeason(n) {
     if (!bySeason[n]) bySeason[n] = Object.create(null);
@@ -758,7 +801,7 @@ function fusionarDetalleSerie(resultadosOk, tipoRuta) {
     var seen = Object.create(null);
     var reps = (target.reproductores || []).slice();
     for (var i = 0; i < reps.length; i++) {
-      if (reps[i] && reps[i].url) seen[reps[i].url] = true;
+      if (reps[i] && reps[i].url) seen[String(reps[i].url)] = true;
     }
     var add = src.reproductores || [];
     for (var j = 0; j < add.length; j++) {
@@ -782,14 +825,10 @@ function fusionarDetalleSerie(resultadosOk, tipoRuta) {
     var fName = rr._fuente_scrape || rr.fuente || '';
     if (fName && fuentesUsadas.indexOf(fName) === -1) fuentesUsadas.push(fName);
 
-    // Meta
     if ((!base.portada || /placeholder/i.test(String(base.portada))) && rr.portada) base.portada = rr.portada;
     if ((!base.descripcion || String(base.descripcion).length < 40) && rr.descripcion) base.descripcion = rr.descripcion;
     if (!base.year && rr.year) base.year = rr.year;
     if (!base.calificacion && rr.calificacion) base.calificacion = rr.calificacion;
-    if (rr.titulo && (!base.titulo || String(rr.titulo).length > String(base.titulo).length)) {
-      // Preferir título no-JP si el actual parece más corto/EN... keep base title from best score
-    }
 
     var temps = rr.temporadas || [];
     for (var ti = 0; ti < temps.length; ti++) {
@@ -822,7 +861,6 @@ function fusionarDetalleSerie(resultadosOk, tipoRuta) {
       }
     }
 
-    // Algunas fuentes ponen episodios planos
     if ((!temps || !temps.length) && Array.isArray(rr.episodios)) {
       var seasonMap1 = ensureSeason(1);
       for (var e2 = 0; e2 < rr.episodios.length; e2++) {
@@ -847,12 +885,11 @@ function fusionarDetalleSerie(resultadosOk, tipoRuta) {
     }
   }
 
-  // Reconstruir temporadas ordenadas
   var seasonNums = Object.keys(bySeason).map(Number).filter(function (n) { return !isNaN(n); }).sort(function (a, b) { return a - b; });
   var temporadasOut = [];
   var totalEps = 0;
-  for (var si = 0; si < seasonNums.length; si++) {
-    var sn2 = seasonNums[si];
+  for (var six = 0; six < seasonNums.length; six++) {
+    var sn2 = seasonNums[six];
     var sm = bySeason[sn2];
     var epNums = Object.keys(sm).filter(function (k) { return k.charAt(0) !== '_'; }).map(Number).sort(function (a, b) { return a - b; });
     var epsOut = [];
@@ -871,19 +908,18 @@ function fusionarDetalleSerie(resultadosOk, tipoRuta) {
   }
 
   base.temporadas = temporadasOut;
-  base.total_temporadas = Math.max(temporadasOut.length, base.total_temporadas || 0);
-  base.total_episodios = Math.max(totalEps, base.total_episodios || 0);
+  base.total_temporadas = Math.max(temporadasOut.length, parseInt(base.total_temporadas, 10) || 0);
+  base.total_episodios = Math.max(totalEps, parseInt(base.total_episodios, 10) || 0);
   base.fuentes = fuentesUsadas;
   base.fuente = fuentesUsadas[0] || base.fuente;
   base.source_id = sourceIdFromName(base.fuente || '');
   if (tipoRuta === 'anime') base.tipo = 'Anime';
   else if (base.tipo !== 'Anime') base.tipo = base.tipo || 'Serie';
-  if (fuentesUsadas.length > 1) {
-    base.nota_fusion = 'Temporadas/episodios/reproductores fusionados de: ' + fuentesUsadas.join(', ');
-  }
+  base.nota_fusion = 'Unido de: ' + fuentesUsadas.join(', ') +
+    ' | Temporadas: ' + base.total_temporadas + ' | Episodios: ' + base.total_episodios;
   delete base._fuente_scrape;
   delete base._slug_scrape;
-  delete base.episodios; // usar temporadas
+  delete base.episodios;
   return base;
 }
 
