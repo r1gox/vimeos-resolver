@@ -4518,7 +4518,7 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   var epTo = parseInt(opts.epTo || opts.ep_to || 0, 10) || 0;
   // Por defecto: si hay muchos caps, devolver SOLO metadatos de total + primer bloque
   // el cliente pide rangos. Si epTo=0 y total > 200, devolver lista vacía + rangos sugeridos.
-  var RANGO_DEFAULT = 100;
+  var RANGO_DEFAULT = 50; // bloques 1-50, 51-100
   if (!epTo || epTo < epFrom) {
     if (totalEps > 200) {
       epFrom = 1;
