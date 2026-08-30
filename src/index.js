@@ -24,7 +24,7 @@ var HACKSTORE_BASE = 'https://www.hackstore.fo';
 var PELISPLUS_BASE = 'https://www.pelisplushd.la';
 var ANIMEAV1_BASE = 'https://animeav1.com';
 // Metadatos TMDB vía worker público (no cambia el flujo de embeds/fuentes)
-var TMDB_META_API = 'https://pelisplushd.tvymas.workers.dev';
+var TMDB_META_API = ''; // desactivado: meta solo de la página fuente (+ TMDB key si hay)
 
 var REPRODUCTORES_PERMITIDOS = [
   'vimeos.net', 'player.vimeos',
@@ -1833,61 +1833,14 @@ function imgTmdb(path, size) {
   return 'https://image.tmdb.org/t/p/' + (size || 'w500') + path;
 }
 
-/** Busca en tvymas y devuelve mapa título→meta TMDB */
+/** tvymas desactivado — meta sale del scrape de cada página */
 async function buscarMetaTmdb(query) {
-  var url = TMDB_META_API + '/search?q=' + encodeURIComponent(query);
-  var res = await fetch(url, {
-    headers: { 'User-Agent': 'MovieZoneWorker/1.0', 'Accept': 'application/json' }
-  });
-  if (!res.ok) return [];
-  var data = await res.json();
-  var list = data.results || data.resultados || [];
-  if (!Array.isArray(list)) return [];
-  return list;
+  return [];
 }
 
-/** Detalle completo TMDB desde tvymas (serie/pelicula/anime/dorama) */
+/** tvymas desactivado */
 async function fetchDetalleTmdbMeta(slugOrTitle, tipoHint) {
-  // 1) buscar por título/slug
-  var q = String(slugOrTitle || '').replace(/-\d{4}$/, '').replace(/-/g, ' ').trim();
-  var results = await buscarMetaTmdb(q);
-  if (!results.length) return null;
-
-  var keyWanted = normalizarTituloKey(q);
-  var best = null;
-  for (var i = 0; i < results.length; i++) {
-    var it = results[i];
-    var k = normalizarTituloKey(it.title || it.titulo || '');
-    if (k === keyWanted || k.indexOf(keyWanted) !== -1 || keyWanted.indexOf(k) !== -1) {
-      best = it;
-      break;
-    }
-  }
-  if (!best) best = results[0];
-
-  // 2) si tiene slug de tvymas, pedir detalle completo
-  var tvSlug = best.slug || null;
-  if (!tvSlug) return mapMetaFromSearchItem(best);
-
-  var paths = [];
-  var t = String(tipoHint || '').toLowerCase();
-  if (t.indexOf('anime') !== -1) paths = ['anime', 'serie', 'dorama', 'pelicula'];
-  else if (t.indexOf('serie') !== -1 || t.indexOf('tv') !== -1) paths = ['serie', 'dorama', 'anime', 'pelicula'];
-  else paths = ['pelicula', 'serie', 'dorama', 'anime'];
-
-  for (var p = 0; p < paths.length; p++) {
-    try {
-      var dRes = await fetch(TMDB_META_API + '/' + paths[p] + '/' + encodeURIComponent(tvSlug), {
-        headers: { 'User-Agent': 'MovieZoneWorker/1.0', 'Accept': 'application/json' }
-      });
-      if (!dRes.ok) continue;
-      var det = await dRes.json();
-      if (det && (det.tmdb_id || det.overview_tmdb || det.description || det.genres)) {
-        return det;
-      }
-    } catch (e) { /* next */ }
-  }
-  return mapMetaFromSearchItem(best);
+  return null;
 }
 
 /** Extrae meta limpia desde un ítem de búsqueda tvymas (sin campos duplicados) */
@@ -2139,30 +2092,18 @@ async function buscarMetaTmdbApi(titulo, tipoHint) {
 
 var __TMDB_KEY__ = null; // se asigna en handleRequest desde env
 
-/** Busca meta para un título: tvymas → TMDB API → OMDb */
+/** Meta opcional: solo TMDB oficial si hay API key. Sin tvymas. Datos principales = scrape de la página. */
 async function metaTmdbParaTitulo(titulo, tipoHint) {
   var variantes = variantesTitulo(titulo);
   if (!variantes.length) return null;
 
-  // 1) tvymas (varias queries)
-  for (var v = 0; v < variantes.length; v++) {
-    try {
-      var metas = await buscarMetaTmdb(variantes[v]);
-      var best = elegirMejorMeta(metas, titulo);
-      if (best) return mapMetaFromSearchItem(best);
-    } catch (e) { /* next */ }
-  }
-
-  // 2) TMDB oficial (si hay API key)
+  // Solo TMDB oficial (si hay API key en env)
   for (var t = 0; t < Math.min(variantes.length, 3); t++) {
     try {
       var mTmdb = await buscarMetaTmdbApi(variantes[t], tipoHint);
       if (mTmdb && (mTmdb.descripcion || mTmdb.portada_tmdb || mTmdb.calificacion)) return mTmdb;
     } catch (e) { /* next */ }
   }
-
-  // OMDb desactivado por defecto: datos en inglés y posters de Amazon que no cargan.
-  // Usar solo TMDB (tvymas o API key) + scrape de la página fuente.
 
   return null;
 }
