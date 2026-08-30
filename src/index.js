@@ -75,6 +75,8 @@ async function handleRequest(request, env) {
   var sourceParam = normalizarSourceId(url.searchParams.get('source') || '');
 
   var commonOpts = {
+    epFrom: url.searchParams.get('ep_from') || url.searchParams.get('epFrom') || null,
+    epTo: url.searchParams.get('ep_to') || url.searchParams.get('epTo') || null,
     season: seasonQ ? parseInt(seasonQ, 10) : null,
     episode: episodeQ ? parseInt(episodeQ, 10) : null,
     players: playersQ,
@@ -3641,26 +3643,58 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     };
   }
 
-  // Listado de episodios (sin cargar embeds de todos)
-  var temporadas = [{ temporada: 1, episodios: [] }];
-  var maxList = Math.min(epsCount || 0, 500);
-  // Si no hay count, intentar leer hasta fallar no es viable; usar count
-  for (var e = 1; e <= maxList; e++) {
-    temporadas[0].episodios.push({
+  // Listado de episodios (stubs ligeros; players al pedir /4/anime/slug/1/N)
+  // Soporta rango: opts.epFrom / opts.epTo o query ep_from/ep_to
+  var totalEps = parseInt(epsCount, 10) || 0;
+  if (totalEps < 1) totalEps = 1;
+  // límite duro de seguridad (series kilométricas)
+  if (totalEps > 5000) totalEps = 5000;
+
+  var epFrom = parseInt(opts.epFrom || opts.ep_from || 1, 10) || 1;
+  var epTo = parseInt(opts.epTo || opts.ep_to || 0, 10) || 0;
+  // Por defecto: si hay muchos caps, devolver SOLO metadatos de total + primer bloque
+  // el cliente pide rangos. Si epTo=0 y total > 200, devolver lista vacía + rangos sugeridos.
+  var RANGO_DEFAULT = 100;
+  if (!epTo || epTo < epFrom) {
+    if (totalEps > 200) {
+      epFrom = 1;
+      epTo = Math.min(totalEps, RANGO_DEFAULT);
+    } else {
+      epFrom = 1;
+      epTo = totalEps;
+    }
+  }
+  if (epFrom < 1) epFrom = 1;
+  if (epTo > totalEps) epTo = totalEps;
+  if (epTo - epFrom > 300) epTo = epFrom + 299; // max 300 por respuesta
+
+  var episodiosRango = [];
+  for (var e = epFrom; e <= epTo; e++) {
+    episodiosRango.push({
       temporada: 1,
       episodio: e,
       titulo: 'Episodio ' + e,
-      url_video: null,
-      // el cliente pide /4/anime/slug/1/e
+      url_video: null
     });
   }
 
-  // Si pidieron players=1 y maxCaps, cargar algunos
-  if (opts.players && maxList > 0) {
+  // Rangos sugeridos para la UI (1-100, 101-200, ...)
+  var rangos = [];
+  var step = RANGO_DEFAULT;
+  for (var r = 1; r <= totalEps; r += step) {
+    var r2 = Math.min(r + step - 1, totalEps);
+    rangos.push({ desde: r, hasta: r2, label: r + '–' + r2 });
+  }
+
+  var temporadas = [{ temporada: 1, episodios: episodiosRango }];
+
+  // Si pidieron players=1 y maxCaps, cargar algunos del rango
+  if (opts.players && episodiosRango.length > 0) {
     var maxCaps = opts.maxCaps || 5;
-    for (var p = 0; p < Math.min(maxCaps, maxList); p++) {
+    for (var p = 0; p < Math.min(maxCaps, episodiosRango.length); p++) {
+      var epN = episodiosRango[p].episodio;
       try {
-        var er = await fetchAnimeAv1Data('/media/' + encodeURIComponent(slug) + '/' + (p + 1) + '/__data.json');
+        var er = await fetchAnimeAv1Data('/media/' + encodeURIComponent(slug) + '/' + epN + '/__data.json');
         var ed = decodeSvelteKitData(er);
         var mp = mapAnimeAv1Embeds(ed && ed.embeds);
         temporadas[0].episodios[p].reproductores = mp.reproductores;
@@ -3681,12 +3715,15 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     descripcion: sinopsis,
     calificacion: score,
     year: media.startDate ? String(media.startDate).slice(0, 4) : null,
-    total_episodios: epsCount || temporadas[0].episodios.length,
+    total_episodios: totalEps,
+    episodio_desde: epFrom,
+    episodio_hasta: epTo,
+    rangos_episodios: rangos,
     total: 0,
     embeds: [],
     reproductores: [],
     descargas: [],
     temporadas: temporadas,
-    nota: 'Usa /4/anime/' + slug + '/1/{episodio} para obtener reproductores del capítulo'
+    nota: 'Usa /4/anime/' + slug + '/1/{episodio} para players. Lista por rangos: ?ep_from=101&ep_to=200'
   };
 }
