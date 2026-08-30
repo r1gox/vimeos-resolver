@@ -2457,81 +2457,72 @@ function scoreItemBusqueda(item) {
  * - Película vs Serie/Anime: solo si título exacto
  * - Token JP/EN: palabra >= 7 chars compartida + slug la contiene (wistoria, acaramelados…)
  */
+/**
+ * ¿Misma obra entre DOS FUENTES DISTINTAS?
+ * REGLA CLAVE: dentro de la misma fuente NUNCA son duplicados
+ * (una página no lista la misma obra 4 veces; son entradas distintas).
+ * Solo se fusionan cuando fuentes diferentes apuntan a la misma obra.
+ *
+ * Matching estricto:
+ * 1) título normalizado idéntico
+ * 2) slug normalizado idéntico
+ * 3) slug prefijo solo si el resto es año/season (no "film-red", "heroines", "episode-of-…")
+ */
 function esMismaObra(a, b) {
   if (!a || !b) return false;
+
+  // Misma fuente → NUNCA duplicado
+  var fa = String(a.fuente || '').toLowerCase();
+  var fb = String(b.fuente || '').toLowerCase();
+  if (fa && fb && fa === fb) return false;
+
   if (!tiposCompatibles(a.tipo, b.tipo)) return false;
 
   var ta = normalizarTipoKey(a.tipo);
   var tb = normalizarTipoKey(b.tipo);
   var aIsMovie = ta === 'pelicula';
   var bIsMovie = tb === 'pelicula';
-  // Serie/Anime no se mezcla con Película salvo título idéntico
-  if (aIsMovie !== bIsMovie) {
-    var tExact = normalizarTituloKey(a.titulo) === normalizarTituloKey(b.titulo);
-    if (!tExact) return false;
-  }
 
   var titleA = normalizarTituloKey(a.titulo || '');
   var titleB = normalizarTituloKey(b.titulo || '');
   var slugA = normalizarSlugKey(a.slug || '');
   var slugB = normalizarSlugKey(b.slug || '');
 
+  // Anime/Serie vs Película: solo título exacto
+  if (aIsMovie !== bIsMovie) {
+    if (!titleA || !titleB || titleA !== titleB) return false;
+    return true;
+  }
+
+  // Título idéntico
   if (titleA && titleB && titleA === titleB) return true;
+
+  // Slug idéntico (sin año)
   if (slugA && slugB && slugA === slugB) return true;
 
-  // Slug: uno es prefijo del otro solo si el resto es corto (año ya quitado) o season
+  // Slug prefijo SOLO si el resto es season/part residual (no palabras de obra distinta)
   if (slugA && slugB && slugA.length >= 6 && slugB.length >= 6) {
     var longer = slugA.length >= slugB.length ? slugA : slugB;
     var shorter = slugA.length >= slugB.length ? slugB : slugA;
     if (longer.indexOf(shorter) === 0) {
       var rest = longer.slice(shorter.length);
-      // resto vacío o solo números/season residual
-      if (!rest || /^(season|part|temporada)?\d{0,2}$/i.test(rest)) return true;
+      if (!rest || /^(season|part|temporada|s)?\d{0,2}$/i.test(rest)) return true;
     }
   }
 
-  // Contención de título: solo si el EXTRA no aporta palabras de obra distinta
-  var EXTRA_BLOQUEADO = {
-    film:1, movie:1, pelicula:1, the:1, movie:1, gold:1, red:1, z:1, stampede:1, estampida:1,
-    strong:1, world:1, heroines:1, episode:1, episodio:1, special:1, especial:1, ova:1, ona:1,
-    fan:1, letter:1, chopper:1, alabasta:1, sabo:1, merry:1, luffy:1, adventure:1, aventura:1,
-    nebulandia:1, heart:1, collaboration:1, colaboracion:1, toriko:1, dragon:1, ball:1,
-    gyojin:1, sorajima:1, east:1, blue:1, hand:1, island:1, film:1
-  };
+  // Contención de título: SOLO año residual (nada de film/heroines/episode/…)
   if (titleA && titleB && titleA !== titleB) {
     var shortT = titleA.length <= titleB.length ? titleA : titleB;
     var longT = titleA.length <= titleB.length ? titleB : titleA;
     if (shortT.length >= 5 && longT.indexOf(shortT) === 0) {
       var extra = longT.slice(shortT.length).trim();
-      var extraWords = extra.split(/\s+/).filter(Boolean);
-      var blocked = false;
-      for (var ei = 0; ei < extraWords.length; ei++) {
-        if (EXTRA_BLOQUEADO[extraWords[ei]]) { blocked = true; break; }
-        // cualquier palabra extra larga = obra distinta (film red, heroines…)
-        if (extraWords[ei].length >= 4) { blocked = true; break; }
-      }
-      if (!blocked && extraWords.length <= 1) return true;
+      // Solo permitir vacío o un año de 4 dígitos
+      if (!extra || /^\d{4}$/.test(extra)) return true;
     }
   }
 
-  // Token distintivo largo (JP/EN) — no usar palabras genéricas de franquicia cortas
-  var stop = {
-    the:1, and:1, for:1, with:1, from:1, that:1, this:1, los:1, las:1, del:1, una:1,
-    one:1, no:1, to:1, of:1, piece:1, film:1, movie:1, season:1, part:1
-  };
-  if (titleA && titleB) {
-    var words = titleA.split(' ');
-    for (var wi = 0; wi < words.length; wi++) {
-      var w = words[wi];
-      if (w.length < 7 || stop[w]) continue;
-      if (titleB.indexOf(w) !== -1) {
-        if ((slugA && slugA.indexOf(w) !== -1) || (slugB && slugB.indexOf(w) !== -1) || (!slugA && !slugB)) {
-          return true;
-        }
-      }
-    }
-  }
-
+  // NO token matching suelto: provocaba unir "Episode of Sorajima" con
+  // "Episode of East Blue" por la palabra compartida "episode".
   return false;
 }
 
@@ -2563,13 +2554,19 @@ function dedupeAlternativas(alts) {
   return out;
 }
 
-/** Elige la mejor portada entre actual y candidata */
+/** Elige la mejor portada entre actual y candidata (prioridad: IMDb > no-sospechosa) */
 function mejorPortada(actual, candidata) {
   if (!candidata) return actual || null;
   if (!actual) return candidata;
   try {
-    if (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(actual) && !esPortadaSospechosa(candidata)) {
-      return candidata;
+    // IMDb siempre gana
+    if (typeof esPortadaImdb === 'function') {
+      if (esPortadaImdb(candidata) && !esPortadaImdb(actual)) return candidata;
+      if (esPortadaImdb(actual)) return actual;
+    }
+    if (typeof esPortadaSospechosa === 'function') {
+      if (esPortadaSospechosa(actual) && !esPortadaSospechosa(candidata)) return candidata;
+      if (!esPortadaSospechosa(actual) && esPortadaSospechosa(candidata)) return actual;
     }
   } catch (e) { /* ok */ }
   if (/placeholder/i.test(String(actual)) && candidata) return candidata;
@@ -2628,6 +2625,36 @@ function fusionarResultadosBusqueda(items) {
     for (var si = 0; si < subgrupos.length; si++) {
       var sg = subgrupos[si];
       if (!sg || !sg.length) continue;
+      // Preferir animeav1 como base
+      sg.sort(function (a, b) { return scoreItemBusqueda(b) - scoreItemBusqueda(a); });
+
+      // Solo 1 entrada por fuente: misma fuente = obras distintas (no duplicados)
+      // Agrupar por fuente y quedarnos con el mejor de cada una
+      var porFuente = Object.create(null);
+      var ordenF = [];
+      for (var j0 = 0; j0 < sg.length; j0++) {
+        var it0 = sg[j0];
+        var f0 = String(it0.fuente || 'unknown').toLowerCase();
+        if (!porFuente[f0]) {
+          porFuente[f0] = it0;
+          ordenF.push(f0);
+        } else {
+          // Misma fuente: NO fusionar. Empujar el extra como resultado independiente
+          // (se procesará solo: una entrada = una obra)
+          out.push(Object.assign({}, it0, {
+            fuentes: [f0],
+            alternativas: [],
+            success: undefined
+          }));
+          delete out[out.length - 1].success;
+        }
+      }
+
+      // Reconstruir sg con 1 por fuente
+      sg = [];
+      for (var of = 0; of < ordenF.length; of++) sg.push(porFuente[ordenF[of]]);
+      if (!sg.length) continue;
+
       sg.sort(function (a, b) { return scoreItemBusqueda(b) - scoreItemBusqueda(a); });
       var best = {};
       var src0 = sg[0];
@@ -2645,6 +2672,8 @@ function fusionarResultadosBusqueda(items) {
           seenF[f] = true;
           fuentes.push(f);
         }
+        // Solo fusionar datos de OTRAS fuentes (nunca de la misma)
+        if (j === 0) continue;
         best.portada = mejorPortada(best.portada, cur.portada);
         if ((!best.descripcion || String(best.descripcion).length < 40) && cur.descripcion && String(cur.descripcion).length >= 40) {
           best.descripcion = cur.descripcion;
@@ -2659,8 +2688,8 @@ function fusionarResultadosBusqueda(items) {
         if (!best.backdrop && cur.backdrop) best.backdrop = cur.backdrop;
         if (!best.genero && cur.genero) best.genero = cur.genero;
         if ((!best.generos || !best.generos.length) && cur.generos && cur.generos.length) best.generos = cur.generos;
-        if (!best.slug && cur.slug) best.slug = cur.slug;
-        if (j > 0) {
+        // Alternativa solo si fuente distinta
+        if (f && f !== String(best.fuente || '').toLowerCase()) {
           alternativas.push({
             fuente: cur.fuente,
             source_id: cur.source_id || (typeof sourceIdFromName === 'function' ? sourceIdFromName(cur.fuente) : null),
@@ -2669,33 +2698,34 @@ function fusionarResultadosBusqueda(items) {
             portada: cur.portada || null
           });
         }
-        if (Array.isArray(cur.alternativas)) {
-          for (var ax0 = 0; ax0 < cur.alternativas.length; ax0++) alternativas.push(cur.alternativas[ax0]);
-        }
       }
       var tiposFirst = [];
       for (var tf = 0; tf < sg.length; tf++) {
         if (sg[tf].tipo) tiposFirst.push(sg[tf].tipo);
       }
       best.tipo = preferirTipo(tiposFirst);
-      // Orden prioritario: animeav1 → pelisplushd → lamovie → hackstore
       best.fuentes = ordenarFuentesLista(fuentes);
       if (best.fuentes.length) best.fuente = best.fuentes[0];
-      // Si animeav1 está en el grupo, forzar fuente principal a animeav1
-      // y sincronizar slug/source_id de esa entrada
+      // Forzar animeav1 como principal si está en el grupo
       for (var ja = 0; ja < sg.length; ja++) {
         if (String(sg[ja].fuente || '').toLowerCase() === 'animeav1') {
           best.fuente = 'animeav1';
           if (sg[ja].slug) best.slug = sg[ja].slug;
+          if (sg[ja].tipo) best.tipo = preferirTipo([sg[ja].tipo].concat(tiposFirst));
           if (sg[ja].descripcion && (!best.descripcion || String(best.descripcion).length < 40)) {
             best.descripcion = sg[ja].descripcion;
           }
-          best.portada = mejorPortada(sg[ja].portada, best.portada);
+          best.portada = mejorPortada(best.portada, sg[ja].portada);
           if (typeof sourceIdFromName === 'function') best.source_id = sourceIdFromName('animeav1');
           break;
         }
       }
-      if (alternativas.length) best.alternativas = dedupeAlternativas(alternativas);
+      // Alternativas: solo otras fuentes (nunca la misma)
+      if (alternativas.length) {
+        best.alternativas = dedupeAlternativas(alternativas).filter(function (alt) {
+          return String(alt.fuente || '').toLowerCase() !== String(best.fuente || '').toLowerCase();
+        });
+      }
       delete best.success;
       if (!best.year) {
         var ey = extraerYearItem(best);
@@ -2760,9 +2790,10 @@ function fusionarResultadosBusqueda(items) {
           if (!best2.portada_tmdb && cur2.portada_tmdb) best2.portada_tmdb = cur2.portada_tmdb;
           if (!best2.poster_source && cur2.poster_source) best2.poster_source = cur2.poster_source;
           if (!best2.slug && cur2.slug) best2.slug = cur2.slug;
-          // alternativas de fuentes secundarias
-          if (g2 > 0 || (cur2.alternativas && cur2.alternativas.length)) {
-            if (g2 > 0) {
+          // alternativas SOLO de fuentes distintas (nunca la misma fuente)
+          if (g2 > 0) {
+            var fBest2 = String(best2.fuente || '').toLowerCase();
+            if (f2 && f2 !== fBest2) {
               alts2.push({
                 fuente: cur2.fuente,
                 source_id: cur2.source_id || (typeof sourceIdFromName === 'function' ? sourceIdFromName(cur2.fuente) : null),
@@ -2771,8 +2802,13 @@ function fusionarResultadosBusqueda(items) {
                 portada: cur2.portada || null
               });
             }
-            if (Array.isArray(cur2.alternativas)) {
-              for (var ax = 0; ax < cur2.alternativas.length; ax++) alts2.push(cur2.alternativas[ax]);
+          }
+          if (Array.isArray(cur2.alternativas)) {
+            for (var ax = 0; ax < cur2.alternativas.length; ax++) {
+              var altX = cur2.alternativas[ax];
+              if (!altX) continue;
+              if (String(altX.fuente || '').toLowerCase() === String(best2.fuente || '').toLowerCase()) continue;
+              alts2.push(altX);
             }
           }
         }
@@ -2791,12 +2827,17 @@ function fusionarResultadosBusqueda(items) {
             if (group2[ja2].descripcion && (!best2.descripcion || String(best2.descripcion).length < 40)) {
               best2.descripcion = group2[ja2].descripcion;
             }
-            best2.portada = mejorPortada(group2[ja2].portada, best2.portada);
+            best2.portada = mejorPortada(best2.portada, group2[ja2].portada);
             if (typeof sourceIdFromName === 'function') best2.source_id = sourceIdFromName('animeav1');
             break;
           }
         }
-        if (alts2.length) best2.alternativas = dedupeAlternativas(alts2);
+        if (alts2.length) {
+          var fMain = String(best2.fuente || '').toLowerCase();
+          best2.alternativas = dedupeAlternativas(alts2).filter(function (alt) {
+            return String(alt.fuente || '').toLowerCase() !== fMain;
+          });
+        }
         delete best2.success;
         if (!best2.year) {
           var ey2 = extraerYearItem(best2);
@@ -3447,29 +3488,38 @@ function esPortadaSospechosa(url) {
   return false;
 }
 
+/**
+ * Prioridad de portadas (todas las fuentes):
+ * 1) IMDb (scrape) — la más fiable
+ * 2) animeav1 / lamovie (si ya traen poster bueno)
+ * 3) TMDB
+ * 4) pelisplushd / hackstore (últimas; a veces rotas)
+ */
 function elegirPortadaPreferida(item, meta) {
-  if (!meta) return null;
-  var imdb = meta.portada_imdb || null;
-  var tmdb = meta.portada_tmdb || null;
+  if (!meta && !item) return null;
+  var imdb = (meta && meta.portada_imdb) || (item && item.portada_imdb) || null;
+  var tmdb = (meta && meta.portada_tmdb) || (item && item.portada_tmdb) || null;
   var actual = item && item.portada ? item.portada : null;
-  var esPP = esFuentePelisplus(item);
+  var fuente = String((item && item.fuente) || '').toLowerCase();
 
-  // PelisPlus: no confiar en su poster. Prioridad IMDb > TMDB > fuente.
-  // Esto se aplica aunque la portada original sea válida: el objetivo es reemplazar
-  // posters rotos o incorrectos de PelisPlus por metadata verificada.
-  if (esPP) {
-    if (esPortadaImdb(imdb)) return imdb;
-    if (esPortadaUrlValida(tmdb) && !esPortadaSospechosa(tmdb)) return tmdb;
-    if (!esPortadaSospechosa(actual)) return actual;
-    return null;
+  // 1) IMDb siempre gana si es válida
+  if (esPortadaImdb(imdb)) return imdb;
+
+  // 2) Si la fuente actual es animeav1 o lamovie y tiene poster bueno, usarlo
+  if ((fuente === 'animeav1' || fuente === 'lamovie') && actual && !esPortadaSospechosa(actual)) {
+    return actual;
   }
 
-  // Otras fuentes: IMDb/TMDB solo reemplazan una portada inexistente o sospechosa.
-  if (esPortadaSospechosa(actual)) {
-    if (esPortadaImdb(imdb)) return imdb;
-    if (esPortadaUrlValida(tmdb) && !esPortadaSospechosa(tmdb)) return tmdb;
-  }
-  return esPortadaSospechosa(actual) ? null : actual;
+  // 3) TMDB
+  if (esPortadaUrlValida(tmdb) && !esPortadaSospechosa(tmdb)) return tmdb;
+
+  // 4) Poster actual si no es sospechoso
+  if (actual && !esPortadaSospechosa(actual)) return actual;
+
+  // 5) Último recurso: cualquier imdb/tmdb que haya
+  if (esPortadaUrlValida(imdb)) return imdb;
+  if (esPortadaUrlValida(tmdb)) return tmdb;
+  return null;
 }
 
 function metaCacheKey(titulo, tipoHint, yearHint) {
