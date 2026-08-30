@@ -272,9 +272,10 @@ async function handleRequest(request, env) {
             resultados.resultados = fusionarResultadosBusqueda(resultados.resultados);
             resultados.total = resultados.resultados.length;
           } catch (eFuse) { /* ok */ }
-          // Quitar aliases duplicados en cada resultado
+          // Quitar aliases duplicados y campos basura en cada resultado
           for (var cj = 0; cj < resultados.resultados.length; cj++) {
             var itc = resultados.resultados[cj];
+            delete itc.success;
             delete itc.tmdb_overview;
             delete itc.overview_tmdb;
             delete itc.description;
@@ -290,6 +291,20 @@ async function handleRequest(request, env) {
             delete itc.tmdb_title;
             delete itc.original_title;
             delete itc.image;
+            // Rellenar portada desde alternativas si sigue vacía/sospechosa
+            if ((!itc.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(itc.portada))) && Array.isArray(itc.alternativas)) {
+              for (var ai = 0; ai < itc.alternativas.length; ai++) {
+                var ap = itc.alternativas[ai] && itc.alternativas[ai].portada;
+                if (ap && !(typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(ap))) {
+                  itc.portada = ap;
+                  break;
+                }
+              }
+            }
+            // Deduplicar alternativas por fuente+slug
+            if (Array.isArray(itc.alternativas)) {
+              itc.alternativas = dedupeAlternativas(itc.alternativas);
+            }
           }
         } catch (eEnrich) { /* silencioso */ }
       }
@@ -2475,6 +2490,47 @@ function esMismaObra(a, b) {
   return false;
 }
 
+/** Deduplica alternativas por fuente+slug; conserva la que tenga portada */
+function dedupeAlternativas(alts) {
+  if (!alts || !alts.length) return [];
+  var seen = Object.create(null);
+  var out = [];
+  for (var i = 0; i < alts.length; i++) {
+    var a = alts[i];
+    if (!a) continue;
+    var k = String(a.fuente || '').toLowerCase() + '|' + String(a.slug || '').toLowerCase();
+    if (seen[k] !== undefined) {
+      var prev = out[seen[k]];
+      if (prev && (!prev.portada || prev.portada === null) && a.portada) {
+        prev.portada = a.portada;
+      }
+      continue;
+    }
+    seen[k] = out.length;
+    out.push({
+      fuente: a.fuente || null,
+      source_id: a.source_id || null,
+      slug: a.slug || null,
+      link: a.link || null,
+      portada: a.portada || null
+    });
+  }
+  return out;
+}
+
+/** Elige la mejor portada entre actual y candidata */
+function mejorPortada(actual, candidata) {
+  if (!candidata) return actual || null;
+  if (!actual) return candidata;
+  try {
+    if (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(actual) && !esPortadaSospechosa(candidata)) {
+      return candidata;
+    }
+  } catch (e) { /* ok */ }
+  if (/placeholder/i.test(String(actual)) && candidata) return candidata;
+  return actual;
+}
+
 function fusionarResultadosBusqueda(items) {
   if (!items || !items.length) return [];
 
@@ -2483,6 +2539,8 @@ function fusionarResultadosBusqueda(items) {
   for (var i = 0; i < items.length; i++) {
     var it = items[i];
     if (!it) continue;
+    // Limpiar campos basura de fuentes (ej. success filtrado de animeav1)
+    delete it.success;
     var key = claveDeduplicacion(it);
     if (!key) key = 'uniq:' + i + ':' + String(it.titulo || it.slug || Math.random());
     if (!grupos[key]) {
@@ -2542,7 +2600,7 @@ function fusionarResultadosBusqueda(items) {
           seenF[f] = true;
           fuentes.push(f);
         }
-        if ((!best.portada || /placeholder/i.test(String(best.portada))) && cur.portada) best.portada = cur.portada;
+        best.portada = mejorPortada(best.portada, cur.portada);
         if ((!best.descripcion || String(best.descripcion).length < 40) && cur.descripcion && String(cur.descripcion).length >= 40) {
           best.descripcion = cur.descripcion;
         }
@@ -2566,6 +2624,9 @@ function fusionarResultadosBusqueda(items) {
             portada: cur.portada || null
           });
         }
+        if (Array.isArray(cur.alternativas)) {
+          for (var ax0 = 0; ax0 < cur.alternativas.length; ax0++) alternativas.push(cur.alternativas[ax0]);
+        }
       }
       var tiposFirst = [];
       for (var tf = 0; tf < sg.length; tf++) {
@@ -2574,7 +2635,8 @@ function fusionarResultadosBusqueda(items) {
       best.tipo = preferirTipo(tiposFirst);
       best.fuentes = fuentes;
       if (fuentes.length) best.fuente = fuentes[0];
-      if (alternativas.length) best.alternativas = alternativas;
+      if (alternativas.length) best.alternativas = dedupeAlternativas(alternativas);
+      delete best.success;
       if (!best.year) {
         var ey = extraerYearItem(best);
         if (ey) best.year = ey;
@@ -2628,7 +2690,7 @@ function fusionarResultadosBusqueda(items) {
           var f2 = String(cur2.fuente || '').toLowerCase();
           if (f2 && !seenF2[f2]) { seenF2[f2] = true; fuentes2.push(f2); }
           if (esFuentePelisplus(best2) && cur2.portada_imdb && esPortadaImdb(cur2.portada_imdb)) { best2.portada = cur2.portada_imdb; best2.poster_source = 'imdb'; }
-          if ((!best2.portada || esPortadaSospechosa(best2.portada)) && cur2.portada) best2.portada = cur2.portada;
+          best2.portada = mejorPortada(best2.portada, cur2.portada);
           if ((!best2.descripcion || String(best2.descripcion).length < 40) && cur2.descripcion) best2.descripcion = cur2.descripcion;
           if (!best2.year && cur2.year) best2.year = cur2.year;
           if (!best2.calificacion && cur2.calificacion) best2.calificacion = cur2.calificacion;
@@ -2662,7 +2724,8 @@ function fusionarResultadosBusqueda(items) {
         best2.tipo = preferirTipo(tiposG);
         best2.fuentes = fuentes2;
         if (fuentes2.length) best2.fuente = fuentes2[0];
-        if (alts2.length) best2.alternativas = alts2;
+        if (alts2.length) best2.alternativas = dedupeAlternativas(alts2);
+        delete best2.success;
         if (!best2.year) {
           var ey2 = extraerYearItem(best2);
           if (ey2) best2.year = ey2;
@@ -2727,6 +2790,43 @@ function mapMetaFromSearchItem(it) {
  */
 function aplicarMetaAResultadoBusqueda(item, meta) {
   if (!item || !meta) return item;
+
+  // Evitar cruzar metadata de obras con años distintos (ej. One Piece 1999 vs live-action 2023)
+  var itemYear = extraerYearItem(item);
+  var metaYear = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
+  var yearConflict = itemYear && metaYear && String(itemYear) !== String(metaYear);
+  if (yearConflict) {
+    var tItem = normalizarTituloKey(item.titulo || '');
+    var tMeta = normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
+    // Si el título normalizado no es idéntico, no aplicar IDs ni portadas de meta
+    if (tItem && tMeta && tItem !== tMeta) {
+      // Solo permitir completar descripción/géneros si faltan
+      if ((!item.descripcion || String(item.descripcion).length < 40) && meta.descripcion) {
+        item.descripcion = meta.descripcion;
+      }
+      if ((!item.generos || !item.generos.length) && meta.generos && meta.generos.length) {
+        item.generos = meta.generos;
+        item.genero = meta.generos.join(', ');
+      }
+      return item;
+    }
+    // Título igual pero año distinto (remake): no copiar IDs ni portadas
+    meta = {
+      descripcion: meta.descripcion,
+      generos: meta.generos,
+      calificacion: null,
+      votos: null,
+      year: null,
+      fecha_estreno: null,
+      tmdb_id: null,
+      imdb_id: null,
+      portada_imdb: null,
+      portada_tmdb: null,
+      backdrop: null,
+      titulo_tmdb: meta.titulo_tmdb,
+      titulo_original: meta.titulo_original
+    };
+  }
 
   if (meta.tmdb_id) item.tmdb_id = meta.tmdb_id;
   if (meta.imdb_id) item.imdb_id = meta.imdb_id;
@@ -4816,16 +4916,19 @@ async function buscarAnimeAv1(query, limit) {
     var catName = (it.category && it.category.name) || '';
     var tipo = 'Anime';
     if (/movie|pel[ií]cula/i.test(catName)) tipo = 'Pelicula';
+    var portadaAv1 = it.poster || it.image || it.cover || it.thumbnail || it.coverImage || null;
+    if (portadaAv1 && typeof portadaAv1 === 'string' && portadaAv1.indexOf('http') !== 0) {
+      portadaAv1 = ANIMEAV1_BASE + (portadaAv1.charAt(0) === '/' ? portadaAv1 : '/' + portadaAv1);
+    }
     out.push({
-      success: true,
       fuente: 'animeav1',
       tipo: tipo,
       titulo: it.title || it.slug,
       slug: it.slug,
       descripcion: it.synopsis || null,
-      portada: null,
+      portada: portadaAv1 || null,
       link: ANIMEAV1_BASE + '/media/' + it.slug,
-      year: null
+      year: it.startDate ? String(it.startDate).slice(0, 4) : (it.year || null)
     });
   }
   // Ocultar temporadas sueltas si ya existe el título base
