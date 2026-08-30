@@ -552,18 +552,42 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     }
   }
 
-  // Resolver slug real de AnimeAV1 (título JP). NO añadir slug-season-N aquí:
-  // scrapearAnimeAv1 del base ya une T2+; scrapear season-N aparte duplicaba T1.
+  /**
+   * ¿El resultado scrapeado corresponde al slug pedido?
+   * Evita unir one-piece-heroines con one-piece (obras distintas).
+   * Solo acepta: slug exacto, variante season/part del MISMO slug, o título normalizado idéntico.
+   */
+  function resultadoCoincideSlug(requestedSlug, resultSlug, resultTitle) {
+    var req = normalizarSlugKey(requestedSlug || '');
+    var got = normalizarSlugKey(resultSlug || '');
+    if (req && got && req === got) return true;
+    // Variante de temporada del mismo slug: one-piece-season-2
+    if (req && got && got.indexOf(req) === 0) {
+      var rest = got.slice(req.length);
+      if (!rest || /^(season|part|temporada|s)?\d{0,2}$/i.test(rest)) return true;
+    }
+    // Título normalizado idéntico (no prefijo: "one piece" ≠ "one piece heroines")
+    var titleReq = normalizarTituloKey(String(requestedSlug || '').replace(/-/g, ' '));
+    var titleGot = normalizarTituloKey(resultTitle || String(resultSlug || '').replace(/-/g, ' '));
+    if (titleReq && titleGot && titleReq === titleGot) return true;
+    return false;
+  }
+
+  // Resolver slug real de AnimeAV1. SOLO el slug pedido o coincidencia exacta de título.
+  // NO añadir "one-piece" cuando el pedido es "one-piece-heroines".
   var animeAv1Slugs = [];
   try {
-    var qAv1 = slugBase.replace(/-/g, ' ');
-    var hitsAv1 = await buscarAnimeAv1(qAv1, 8);
+    var qAv1 = slug.replace(/-/g, ' '); // usar slug completo, no solo base sin año
+    var hitsAv1 = await buscarAnimeAv1(qAv1, 12);
     for (var ha = 0; ha < (hitsAv1 || []).length; ha++) {
-      var hs = hitsAv1[ha] && hitsAv1[ha].slug;
+      var hitAv = hitsAv1[ha];
+      var hs = hitAv && hitAv.slug;
       if (!hs) continue;
       // Omitir seasons sueltas si el base ya está
       if (/-(?:season|temporada|part|parte)-\d+$/i.test(hs) ||
           /-\d+(?:st|nd|rd|th)-season$/i.test(hs)) continue;
+      // Solo aceptar si es el mismo slug/obra (no hermanos de franquicia)
+      if (!resultadoCoincideSlug(slug, hs, hitAv.titulo || hitAv.title)) continue;
       if (animeAv1Slugs.indexOf(hs) === -1) animeAv1Slugs.push(hs);
       add('animeav1', ANIMEAV1_BASE + '/media/' + hs);
     }
@@ -637,10 +661,34 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     }
   }
 
-  // --- Capítulo o película: UNIR TODOS los reproductores ---
+  // Filtrar: solo resultados de LA MISMA obra que el slug pedido
+  // (evita fusionar one-piece-heroines con one-piece / film-red / etc.)
+  if (resultadosOk.length > 1) {
+    var filtrados = [];
+    for (var fi = 0; fi < resultadosOk.length; fi++) {
+      var rf = resultadosOk[fi];
+      if (resultadoCoincideSlug(slug, rf.slug, rf.titulo || rf.titulo_serie)) {
+        filtrados.push(rf);
+      }
+    }
+    // Si el filtro dejó algo, usarlo; si no, conservar el que mejor matchee el slug exacto
+    if (filtrados.length) {
+      resultadosOk = filtrados;
+    } else {
+      var exactos = [];
+      for (var fx = 0; fx < resultadosOk.length; fx++) {
+        var rx = resultadosOk[fx];
+        if (normalizarSlugKey(rx.slug) === normalizarSlugKey(slug)) exactos.push(rx);
+      }
+      if (exactos.length) resultadosOk = exactos;
+    }
+  }
+
+  // --- Capítulo o película: UNIR reproductores solo de la misma obra ---
   if (resultadosOk.length > 0 && (esCapitulo || esPelicula)) {
     var baseCap = fusionarReproductoresFuentes(resultadosOk);
-    // Asegurar temporada/episodio
+    // Forzar slug/título del pedido (no el de otra obra fusionada por error)
+    baseCap.slug = slug;
     if (esCapitulo) {
       baseCap.tipo = 'Capitulo';
       baseCap.temporada = seasonOnly;
@@ -650,9 +698,10 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     return baseCap;
   }
 
-  // --- Serie/anime listado: UNIR temporadas + episodios ---
+  // --- Serie/anime listado: UNIR temporadas + episodios solo de la misma obra ---
   if (resultadosOk.length > 0 && esSerieListado) {
     var fused = fusionarDetalleSerie(resultadosOk, tipoRuta);
+    fused.slug = slug;
     fused = reescribirLinksCortos(fused, origin, slug, tipoRuta, fused.fuente);
     return fused;
   }
@@ -664,25 +713,33 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     return reescribirLinksCortos(r0, origin, slug, tipoRuta, r0.fuente);
   }
 
-  // Fallback búsqueda universal
-  var q = slugBase.replace(/-/g, ' ');
+  // Fallback búsqueda universal — solo hits de la MISMA obra (slug/título exacto)
+  var q = slug.replace(/-/g, ' ');
   var busqueda = await buscarUniversal(q, 'all', 12);
   var hits = (busqueda && busqueda.resultados) || [];
   for (var h = 0; h < hits.length; h++) {
     var hit = hits[h];
+    // Debe coincidir con el slug/obra pedido (no hermanos de franquicia)
+    if (!resultadoCoincideSlug(slug, hit.slug, hit.titulo)) continue;
+    // También validar alternativas del hit
     var tipoOk =
       (tipoRuta === 'pelicula' && hit.tipo === 'Pelicula') ||
       (tipoRuta === 'serie' && (hit.tipo === 'Serie' || hit.tipo === 'Anime')) ||
-      (tipoRuta === 'anime' && (hit.tipo === 'Anime' || hit.tipo === 'Serie')) ||
+      (tipoRuta === 'anime' && (hit.tipo === 'Anime' || hit.tipo === 'Serie' || hit.tipo === 'Pelicula')) ||
       normalizarSlugKey(hit.slug) === normalizarSlugKey(slug);
     if (!tipoOk) continue;
 
     var tryLinks = [];
-    if (hit.link) tryLinks.push({ fuente: hit.fuente, link: hit.link, slug: hit.slug });
+    if (hit.link && resultadoCoincideSlug(slug, hit.slug, hit.titulo)) {
+      tryLinks.push({ fuente: hit.fuente, link: hit.link, slug: hit.slug });
+    }
     if (Array.isArray(hit.alternativas)) {
       for (var al = 0; al < hit.alternativas.length; al++) {
         var alt = hit.alternativas[al];
-        if (alt && alt.link) tryLinks.push({ fuente: alt.fuente, link: alt.link, slug: alt.slug });
+        if (!alt || !alt.link) continue;
+        // Solo alternativas de la misma obra
+        if (!resultadoCoincideSlug(slug, alt.slug, alt.titulo || hit.titulo)) continue;
+        tryLinks.push({ fuente: alt.fuente, link: alt.link, slug: alt.slug });
       }
     }
 
@@ -694,7 +751,7 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
         var o3 = Object.assign({}, opts);
         // Si es capítulo, ajustar URL de pelisplus
         if (esCapitulo && hf === 'pelisplushd' && hl && !/\/temporada\//i.test(hl)) {
-          var mslug = (tryLinks[tl].slug || slugBase);
+          var mslug = (tryLinks[tl].slug || slug);
           hl = PELISPLUS_BASE + (/anime/i.test(tipoRuta) ? '/anime/' : '/serie/') + mslug +
             '/temporada/' + seasonOnly + '/capitulo/' + episodeOnly + '/';
         }
@@ -712,6 +769,8 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
         else if (hf === 'animeav1') r2 = await scrapearAnimeAv1(hl, o3);
         else r2 = await scrapearLamovie(hl, o3);
         if (r2 && r2.success !== false) {
+          // Descartar si el scrape devolvió otra obra
+          if (!resultadoCoincideSlug(slug, r2.slug, r2.titulo || r2.titulo_serie)) continue;
           if (esCapitulo && (!r2.reproductores || !r2.reproductores.length)) continue;
           r2._fuente_scrape = hf;
           r2.source_id = sourceIdFromName(hf);
@@ -724,15 +783,17 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     if (batch2.length) {
       if (esCapitulo || esPelicula) {
         var bf = fusionarReproductoresFuentes(batch2);
+        bf.slug = slug;
         if (esCapitulo) {
           bf.tipo = 'Capitulo';
           bf.temporada = seasonOnly;
           bf.episodio = episodeOnly;
         }
-        return reescribirLinksCortos(bf, origin, hit.slug || slug, tipoRuta, bf.fuente);
+        return reescribirLinksCortos(bf, origin, slug, tipoRuta, bf.fuente);
       }
       var bs = fusionarDetalleSerie(batch2, tipoRuta);
-      return reescribirLinksCortos(bs, origin, hit.slug || slug, tipoRuta, bs.fuente);
+      bs.slug = slug;
+      return reescribirLinksCortos(bs, origin, slug, tipoRuta, bs.fuente);
     }
   }
 
