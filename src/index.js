@@ -2250,8 +2250,18 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
 
   // Temporadas TMDB (solo meta; no pisa embeds)
   if (Array.isArray(metaFull.temporadas) && metaFull.temporadas.length) {
+    // Solo meta (nombres/stills). NO mezclar con temporadas de la fuente (evita T1 duplicada / T2 fantasma)
     detalle.temporadas_tmdb = metaFull.temporadas;
-    if (!detalle.total_temporadas) detalle.total_temporadas = metaFull.temporadas.length;
+    // total_temporadas: preferir lo que ya trajo la fuente (animeav1, etc.)
+    if (!detalle.total_temporadas) {
+      if (Array.isArray(detalle.temporadas) && detalle.temporadas.length) {
+        detalle.total_temporadas = detalle.temporadas.length;
+      } else {
+        // TMDB a veces incluye temporadas futuras sin streams — no inflar el contador de UI
+        detalle.total_temporadas = metaFull.temporadas.length;
+      }
+    }
+    // Solo rellenar lista de reproducción si la fuente no trajo ninguna
     if (!detalle.temporadas || !detalle.temporadas.length) {
       detalle.temporadas = metaFull.temporadas.map(function (t) {
         return t.season_number || t.temporada || t;
