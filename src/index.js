@@ -506,10 +506,11 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
       add('pelisplushd', PELISPLUS_BASE + '/pelicula/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/peliculas/' + s + '/');
     } else if (tipoRuta === 'anime') {
-      add('lamovie', LAMOVIE_BASE + '/animes/' + s + '/');
+      // Anime: animeav1 primero (más actualizado: One Piece, Wistoria T2…)
+      add('animeav1', ANIMEAV1_BASE + '/media/' + s);
       add('pelisplushd', PELISPLUS_BASE + '/anime/' + s + '/');
       add('pelisplushd', PELISPLUS_BASE + '/serie/' + s + '/');
-      add('animeav1', ANIMEAV1_BASE + '/media/' + s);
+      add('lamovie', LAMOVIE_BASE + '/animes/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/animes/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/series/' + s + '/');
     } else {
@@ -522,7 +523,8 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     }
   }
 
-  // Resolver slug real de AnimeAV1 (título JP) + temporadas extra
+  // Resolver slug real de AnimeAV1 (título JP). NO añadir slug-season-N aquí:
+  // scrapearAnimeAv1 del base ya une T2+; scrapear season-N aparte duplicaba T1.
   var animeAv1Slugs = [];
   try {
     var qAv1 = slugBase.replace(/-/g, ' ');
@@ -530,12 +532,11 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     for (var ha = 0; ha < (hitsAv1 || []).length; ha++) {
       var hs = hitsAv1[ha] && hitsAv1[ha].slug;
       if (!hs) continue;
+      // Omitir seasons sueltas si el base ya está
+      if (/-(?:season|temporada|part|parte)-\d+$/i.test(hs) ||
+          /-\d+(?:st|nd|rd|th)-season$/i.test(hs)) continue;
       if (animeAv1Slugs.indexOf(hs) === -1) animeAv1Slugs.push(hs);
       add('animeav1', ANIMEAV1_BASE + '/media/' + hs);
-      // Temporadas alternativas en AnimeAV1
-      for (var sn = 2; sn <= 4; sn++) {
-        add('animeav1', ANIMEAV1_BASE + '/media/' + hs + '-season-' + sn);
-      }
     }
   } catch (eAv1) { /* ok */ }
 
@@ -559,13 +560,22 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
   }
 
   candidatos.sort(function (a, b) {
-    return (b.preferred ? 1 : 0) - (a.preferred ? 1 : 0);
+    // preferred (source forzado en ruta) primero
+    var p = (b.preferred ? 1 : 0) - (a.preferred ? 1 : 0);
+    if (p !== 0) return p;
+    // Anime: animeav1 antes que hackstore/lamovie
+    if (tipoRuta === 'anime') {
+      var order = { animeav1: 0, pelisplushd: 1, lamovie: 2, hackstore: 3 };
+      return (order[a.fuente] != null ? order[a.fuente] : 9) - (order[b.fuente] != null ? order[b.fuente] : 9);
+    }
+    return 0;
   });
 
   // Fetch en paralelo (lotes de 4) para no timeout
   var lastErr = null;
   var resultadosOk = [];
-  var maxNeed = esCapitulo || esPelicula ? 6 : 5;
+  // Anime listado: priorizar 4 fuentes pero no hace falta scrapear 6× season
+  var maxNeed = esCapitulo || esPelicula ? 6 : (tipoRuta === 'anime' ? 4 : 5);
 
   async function scrapeOne(c) {
     try {
@@ -769,10 +779,21 @@ function fusionarReproductoresFuentes(resultadosOk) {
  * - Reproductores sumados por episodio
  */
 function fusionarDetalleSerie(resultadosOk, tipoRuta) {
+  // Preferir la fuente con MÁS episodios y temporadas (animeav1 suele ganar a hackstore)
   var scored = resultadosOk.slice().sort(function (a, b) {
     var ea = a.total_episodios || countEpsInResult(a);
     var eb = b.total_episodios || countEpsInResult(b);
     if (eb !== ea) return eb - ea;
+    var ta = a.total_temporadas || (a.temporadas && a.temporadas.length) || 0;
+    var tb = b.total_temporadas || (b.temporadas && b.temporadas.length) || 0;
+    if (tb !== ta) return tb - ta;
+    // Anime: animeav1 primero
+    var fa = String(a._fuente_scrape || a.fuente || '');
+    var fb = String(b._fuente_scrape || b.fuente || '');
+    if (tipoRuta === 'anime') {
+      if (fa === 'animeav1' && fb !== 'animeav1') return -1;
+      if (fb === 'animeav1' && fa !== 'animeav1') return 1;
+    }
     return scoreItemBusqueda(b) - scoreItemBusqueda(a);
   });
 
@@ -783,6 +804,8 @@ function fusionarDetalleSerie(resultadosOk, tipoRuta) {
   }
 
   var fuentesUsadas = [];
+  var maxTotalDeclarado = 0;
+  var bestRangos = null;
   var bySeason = Object.create(null);
 
   function ensureSeason(n) {
@@ -824,6 +847,15 @@ function fusionarDetalleSerie(resultadosOk, tipoRuta) {
     var rr = scored[ri];
     var fName = rr._fuente_scrape || rr.fuente || '';
     if (fName && fuentesUsadas.indexOf(fName) === -1) fuentesUsadas.push(fName);
+
+    var decl = parseInt(rr.total_episodios, 10) || 0;
+    if (decl > maxTotalDeclarado) maxTotalDeclarado = decl;
+    // Conservar rangos del que declare más episodios (One Piece 1175+)
+    if (Array.isArray(rr.rangos_episodios) && rr.rangos_episodios.length) {
+      if (!bestRangos || decl >= (parseInt(base.total_episodios, 10) || 0)) {
+        bestRangos = rr.rangos_episodios;
+      }
+    }
 
     if ((!base.portada || /placeholder/i.test(String(base.portada))) && rr.portada) base.portada = rr.portada;
     if ((!base.descripcion || String(base.descripcion).length < 40) && rr.descripcion) base.descripcion = rr.descripcion;
@@ -909,10 +941,25 @@ function fusionarDetalleSerie(resultadosOk, tipoRuta) {
 
   base.temporadas = temporadasOut;
   base.total_temporadas = Math.max(temporadasOut.length, parseInt(base.total_temporadas, 10) || 0);
-  base.total_episodios = Math.max(totalEps, parseInt(base.total_episodios, 10) || 0);
+  // total = max(listados fusionados, totales declarados por cualquier fuente)
+  // Evita bajar de 1175 a 1125 o de 24 a 10
+  base.total_episodios = Math.max(
+    totalEps,
+    parseInt(base.total_episodios, 10) || 0,
+    maxTotalDeclarado
+  );
+  if (bestRangos && bestRangos.length) base.rangos_episodios = bestRangos;
   base.fuentes = fuentesUsadas;
-  base.fuente = fuentesUsadas[0] || base.fuente;
-  base.source_id = sourceIdFromName(base.fuente || '');
+  // Fuente preferida: animeav1 si está y aporta más (o es anime)
+  var fuentePref = fuentesUsadas[0] || base.fuente;
+  if (tipoRuta === 'anime' && fuentesUsadas.indexOf('animeav1') !== -1) {
+    fuentePref = 'animeav1';
+  } else {
+    // la de más episodios ya está primero en scored → fuentesUsadas[0]
+    fuentePref = fuentesUsadas[0] || base.fuente;
+  }
+  base.fuente = fuentePref;
+  base.source_id = sourceIdFromName(fuentePref || '');
   if (tipoRuta === 'anime') base.tipo = 'Anime';
   else if (base.tipo !== 'Anime') base.tipo = base.tipo || 'Serie';
   base.nota_fusion = 'Unido de: ' + fuentesUsadas.join(', ') +
