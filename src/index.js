@@ -2253,14 +2253,10 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
     // Solo meta (nombres/stills). NO mezclar con temporadas de la fuente (evita T1 duplicada / T2 fantasma)
     detalle.temporadas_tmdb = metaFull.temporadas;
     // total_temporadas: preferir lo que ya trajo la fuente (animeav1, etc.)
-    if (!detalle.total_temporadas) {
-      if (Array.isArray(detalle.temporadas) && detalle.temporadas.length) {
-        detalle.total_temporadas = detalle.temporadas.length;
-      } else {
-        // TMDB a veces incluye temporadas futuras sin streams — no inflar el contador de UI
-        detalle.total_temporadas = metaFull.temporadas.length;
-      }
-    }
+    // Contar temporadas de fuente + extras TMDB no duplicadas
+    var nSrc = Array.isArray(detalle.temporadas) ? detalle.temporadas.length : 0;
+    var nTmdb = metaFull.temporadas.length;
+    detalle.total_temporadas = Math.max(nSrc || 0, nTmdb || 0, detalle.total_temporadas || 0) || nSrc || nTmdb || 1;
     // Solo rellenar lista de reproducción si la fuente no trajo ninguna
     if (!detalle.temporadas || !detalle.temporadas.length) {
       detalle.temporadas = metaFull.temporadas.map(function (t) {
@@ -3512,34 +3508,68 @@ function animeAv1Poster(slug, malId) {
   return null;
 }
 
+function normalizarIdiomaLabel(lang) {
+  var L = String(lang || '').toUpperCase().trim();
+  if (!L) return 'Desconocido';
+  if (L === 'SUB' || L === 'SOFTSUB' || L === 'SUBS' || /SUBTIT/.test(L)) return 'Subtitulado';
+  if (L === 'LAT' || L === 'LATINO' || L === 'DUB' || L === 'DUBLADO' || L === 'ESP' || L === 'ES' ||
+      L === 'AUDIO LATINO' || L === 'CAST' || L === 'CASTELLANO' || /LATIN/.test(L) || /ESPA/.test(L)) {
+    return 'Latino';
+  }
+  if (L === 'ENG' || L === 'EN' || L === 'VOSE') return 'Inglés';
+  return lang;
+}
+
+function esIdiomaLatino(label) {
+  return /latino|castellano|español|dub/i.test(String(label || ''));
+}
+
 function mapAnimeAv1Embeds(embedsObj) {
   var reproductores = [];
   var descargas = [];
   if (!embedsObj || typeof embedsObj !== 'object') return { reproductores: reproductores, descargas: descargas };
   var langs = Object.keys(embedsObj);
+  // Orden preferido de claves: LAT/DUB antes que SUB
+  langs.sort(function (a, b) {
+    var ra = esIdiomaLatino(normalizarIdiomaLabel(a)) ? 0 : 1;
+    var rb = esIdiomaLatino(normalizarIdiomaLabel(b)) ? 0 : 1;
+    return ra - rb;
+  });
   for (var i = 0; i < langs.length; i++) {
     var lang = langs[i];
     var list = embedsObj[lang];
     if (!Array.isArray(list)) continue;
+    var idioma = normalizarIdiomaLabel(lang);
     for (var j = 0; j < list.length; j++) {
       var e = list[j];
       if (!e || !e.url) continue;
       var url = e.url;
       var server = e.server || extraerServidor(url);
-      // downloads vs players: mega file links etc.
       var isDl = /mega\.nz\/file|1fichier|mediafire|download/i.test(url) && !/embed/i.test(url);
       var row = {
         url: url,
-        idioma: lang === 'SUB' ? 'Subtitulado' : (lang === 'DUB' || lang === 'LAT' ? 'Latino' : lang),
+        idioma: idioma,
+        lang: lang,
         servidor: server,
         tipo: isDl ? 'descarga' : 'reproductor'
       };
       if (isDl) descargas.push(row);
-      else if (esReproductorValido(url) || /zilla-networks|uns\.bio|mp4upload|mega\.nz\/embed/i.test(url)) {
+      else if (esReproductorValido(url) || /zilla-networks|uns\.bio|mp4upload|mega\.nz\/embed|yourupload|streamtape|vidhide|ryderjet/i.test(url)) {
         reproductores.push(row);
       }
     }
   }
+  // Latino primero en la lista final
+  reproductores.sort(function (a, b) {
+    var la = esIdiomaLatino(a.idioma) ? 0 : 1;
+    var lb = esIdiomaLatino(b.idioma) ? 0 : 1;
+    return la - lb;
+  });
+  descargas.sort(function (a, b) {
+    var la = esIdiomaLatino(a.idioma) ? 0 : 1;
+    var lb = esIdiomaLatino(b.idioma) ? 0 : 1;
+    return la - lb;
+  });
   return { reproductores: reproductores, descargas: descargas };
 }
 
