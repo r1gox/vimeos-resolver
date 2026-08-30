@@ -2319,6 +2319,93 @@ function scoreItemBusqueda(item) {
  * - Conserva alternativas por fuente
  * - No mezcla títulos con años distintos (ej. remakes)
  */
+
+/**
+ * ¿Misma obra o solo misma franquicia?
+ * - Mismo título normalizado → sí
+ * - Mismo slug base → sí
+ * - Un título contenido en otro SOLO si el extra es año/season/part (no film/movie/heroines…)
+ * - Película vs Serie/Anime: solo si título exacto
+ * - Token JP/EN: palabra >= 7 chars compartida + slug la contiene (wistoria, acaramelados…)
+ */
+function esMismaObra(a, b) {
+  if (!a || !b) return false;
+  if (!tiposCompatibles(a.tipo, b.tipo)) return false;
+
+  var ta = normalizarTipoKey(a.tipo);
+  var tb = normalizarTipoKey(b.tipo);
+  var aIsMovie = ta === 'pelicula';
+  var bIsMovie = tb === 'pelicula';
+  // Serie/Anime no se mezcla con Película salvo título idéntico
+  if (aIsMovie !== bIsMovie) {
+    var tExact = normalizarTituloKey(a.titulo) === normalizarTituloKey(b.titulo);
+    if (!tExact) return false;
+  }
+
+  var titleA = normalizarTituloKey(a.titulo || '');
+  var titleB = normalizarTituloKey(b.titulo || '');
+  var slugA = normalizarSlugKey(a.slug || '');
+  var slugB = normalizarSlugKey(b.slug || '');
+
+  if (titleA && titleB && titleA === titleB) return true;
+  if (slugA && slugB && slugA === slugB) return true;
+
+  // Slug: uno es prefijo del otro solo si el resto es corto (año ya quitado) o season
+  if (slugA && slugB && slugA.length >= 6 && slugB.length >= 6) {
+    var longer = slugA.length >= slugB.length ? slugA : slugB;
+    var shorter = slugA.length >= slugB.length ? slugB : slugA;
+    if (longer.indexOf(shorter) === 0) {
+      var rest = longer.slice(shorter.length);
+      // resto vacío o solo números/season residual
+      if (!rest || /^(season|part|temporada)?\d{0,2}$/i.test(rest)) return true;
+    }
+  }
+
+  // Contención de título: solo si el EXTRA no aporta palabras de obra distinta
+  var EXTRA_BLOQUEADO = {
+    film:1, movie:1, pelicula:1, the:1, movie:1, gold:1, red:1, z:1, stampede:1, estampida:1,
+    strong:1, world:1, heroines:1, episode:1, episodio:1, special:1, especial:1, ova:1, ona:1,
+    fan:1, letter:1, chopper:1, alabasta:1, sabo:1, merry:1, luffy:1, adventure:1, aventura:1,
+    nebulandia:1, heart:1, collaboration:1, colaboracion:1, toriko:1, dragon:1, ball:1,
+    gyojin:1, sorajima:1, east:1, blue:1, hand:1, island:1, film:1
+  };
+  if (titleA && titleB && titleA !== titleB) {
+    var shortT = titleA.length <= titleB.length ? titleA : titleB;
+    var longT = titleA.length <= titleB.length ? titleB : titleA;
+    if (shortT.length >= 5 && longT.indexOf(shortT) === 0) {
+      var extra = longT.slice(shortT.length).trim();
+      var extraWords = extra.split(/\s+/).filter(Boolean);
+      var blocked = false;
+      for (var ei = 0; ei < extraWords.length; ei++) {
+        if (EXTRA_BLOQUEADO[extraWords[ei]]) { blocked = true; break; }
+        // cualquier palabra extra larga = obra distinta (film red, heroines…)
+        if (extraWords[ei].length >= 4) { blocked = true; break; }
+      }
+      if (!blocked && extraWords.length <= 1) return true;
+    }
+  }
+
+  // Token distintivo largo (JP/EN) — no usar palabras genéricas de franquicia cortas
+  var stop = {
+    the:1, and:1, for:1, with:1, from:1, that:1, this:1, los:1, las:1, del:1, una:1,
+    one:1, no:1, to:1, of:1, piece:1, film:1, movie:1, season:1, part:1
+  };
+  if (titleA && titleB) {
+    var words = titleA.split(' ');
+    for (var wi = 0; wi < words.length; wi++) {
+      var w = words[wi];
+      if (w.length < 7 || stop[w]) continue;
+      if (titleB.indexOf(w) !== -1) {
+        if ((slugA && slugA.indexOf(w) !== -1) || (slugB && slugB.indexOf(w) !== -1) || (!slugA && !slugB)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
 function fusionarResultadosBusqueda(items) {
   if (!items || !items.length) return [];
 
@@ -2452,35 +2539,8 @@ function fusionarResultadosBusqueda(items) {
         if (baseYear && oYear && baseYear !== oYear) continue;
         var oTitle = normalizarTituloKey(other.titulo || '');
         var oSlug = normalizarSlugKey(other.slug || '');
-        var sameSlug = baseSlug && oSlug && baseSlug === oSlug;
-        var titleClose = baseTitle && oTitle && (
-          baseTitle === oTitle ||
-          (baseTitle.length >= 4 && oTitle.indexOf(baseTitle) !== -1) ||
-          (oTitle.length >= 4 && baseTitle.indexOf(oTitle) !== -1)
-        );
-        // Token distintivo largo compartido (ej. "wistoria" en título EN y JP)
-        var tokenHit = false;
-        if (!sameSlug && !titleClose && baseTitle && oTitle) {
-          var stop = { the:1, and:1, for:1, with:1, from:1, that:1, this:1, los:1, las:1, del:1, una:1, one:1, no:1, to:1, of:1 };
-          var wordsA = baseTitle.split(' ');
-          for (var wi = 0; wi < wordsA.length; wi++) {
-            var w = wordsA[wi];
-            if (w.length < 6 || stop[w]) continue;
-            if (oTitle.indexOf(w) !== -1) {
-              // Confirmar también en slug si existe (reduce falsos positivos)
-              var inSlug = (!baseSlug && !oSlug) ||
-                (baseSlug && baseSlug.indexOf(w) !== -1) ||
-                (oSlug && oSlug.indexOf(w) !== -1);
-              if (inSlug) { tokenHit = true; break; }
-            }
-          }
-        }
-        // Slug parcial: wistoria-wand-and-sword vs wistoria-wand-and-sword-2024
-        var slugPartial = false;
-        if (baseSlug && oSlug && baseSlug.length >= 8 && oSlug.length >= 8) {
-          if (baseSlug.indexOf(oSlug) !== -1 || oSlug.indexOf(baseSlug) !== -1) slugPartial = true;
-        }
-        if (sameSlug || titleClose || tokenHit || slugPartial) {
+        // Matching estricto: evita unir "One Piece" con "One Piece Film Red" / Heroines / especiales
+        if (esMismaObra(base, other)) {
           group2.push(other);
           used[b] = true;
         }
