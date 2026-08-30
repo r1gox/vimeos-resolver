@@ -1,5 +1,3 @@
-[file name]: index.js
-[file content begin]
 var __LAST_ORIGIN__ = "";
 // src/index.js — MovieZone Worker (Lamovie + Hackstore + PelisPlusHD + AnimeAV1)
 // Compatible con Workers clásico y module workers
