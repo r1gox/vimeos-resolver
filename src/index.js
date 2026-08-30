@@ -1,6 +1,8 @@
 var __LAST_ORIGIN__ = "";
-// src/index.js — MovieZone Worker (Lamovie + Hackstore + PelisPlusHD + AnimeAV1)
+// src/index.js — MovieZone Worker v3 (IMDb First)
+// Prioriza IMDb para portadas, calificaciones, descripciones y años
 // Compatible con Workers clásico y module workers
+
 addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request, event.env || self || {}));
 });
@@ -45,7 +47,7 @@ var REPRODUCTORES_BLOQUEADOS = [
 var PALABRAS_BLOQUEADAS_BUSQUEDA = ['estrenos', 'populares', 'genero', 'categoria', 'pagina'];
 
 // ======================================================
-// CACHE DE METADATOS (IMDb/TMDB)
+// CACHE DE METADATOS (IMDb)
 // ======================================================
 var __METADATA_CACHE__ = Object.create(null);
 var METADATA_CACHE_TTL = 3600000; // 1 hora
@@ -198,13 +200,14 @@ async function handleRequest(request, env) {
   if (path === '/' && !url.searchParams.has('url') && !url.searchParams.has('q') && !url.searchParams.has('episodePostId')) {
     return json({
       status: 'ok',
-      service: 'MovieZone Worker v2 (IMDb metadata)',
+      service: 'MovieZone Worker v3 (IMDb First)',
       sources: {
         '1': 'lamovie',
         '2': 'hackstore',
         '3': 'pelisplushd',
         '4': 'animeav1'
       },
+      metadata: 'Prioriza IMDb para portadas, calificaciones, descripciones y años',
       endpoints: {
         search: origin + '/search?q={texto}',
         serie: origin + '/{id}/serie/{slug}',
@@ -232,8 +235,7 @@ async function handleRequest(request, env) {
         hackstore_serie: origin + '/2/serie/asi-aprenderas-2026',
         pelisplus_serie: origin + '/3/serie/acaramelados',
         estrenos: origin + '/3/peliculas/estrenos'
-      },
-      meta: 'Metadata mejorada vía IMDb (calificación, sinopsis, año, portada)'
+      }
     });
   }
 
@@ -260,7 +262,7 @@ async function handleRequest(request, env) {
           delete r.link;
           delete r.url;
         }
-        // Enriquecer con IMDb metadata
+        // ENRIQUECER CON IMDb (prioridad total)
         try {
           resultados.resultados = await enriquecerListaConImdb(resultados.resultados);
           resultados.resultados = fusionarResultadosBusqueda(resultados.resultados);
@@ -351,7 +353,7 @@ async function handleRequest(request, env) {
 
     try {
       var resultadoPath = await scrapearPorSlug(tipoRuta, slug, forcedSource, commonOpts, origin);
-      // Enriquecer con IMDb
+      // ENRIQUECER CON IMDb (prioridad total)
       try {
         resultadoPath = await enriquecerDetalleConImdb(resultadoPath, tipoRuta);
       } catch (eDet) { /* silencioso */ }
@@ -411,7 +413,7 @@ async function handleRequest(request, env) {
 }
 
 // ======================================================
-// METADATA DESDE IMDb (mejorado)
+// METADATA DESDE IMDb (PRIORIDAD TOTAL)
 // ======================================================
 
 /**
@@ -430,6 +432,7 @@ async function buscarMetadataImdb(titulo, tipoHint) {
     .replace(/\s*-\s*Temporada\s*\d+/i, '')
     .replace(/\s*-\s*Episodio\s*\d+/i, '')
     .replace(/\s*-\s*Cap[ií]tulo\s*\d+/i, '')
+    .replace(/\s*[–—\-]\s*(?:serie|pel[ií]cula|anime|movie|online|gratis|ver|watch|download).*$/g, '')
     .trim();
   
   if (!q) return null;
@@ -463,7 +466,6 @@ async function buscarMetadataImdb(titulo, tipoHint) {
       var titleText = limpiarTexto(m[2]);
       if (titleText.length < 3) continue;
       var score = 0;
-      // Si el título coincide exactamente o casi
       var titleKey = normalizarTituloKey(titleText);
       var queryKey = normalizarTituloKey(q);
       if (titleKey === queryKey) score = 100;
@@ -508,6 +510,7 @@ async function buscarMetadataImdb(titulo, tipoHint) {
 
     if (jsonLd) {
       tituloImdb = jsonLd.name || null;
+      // Poster: preferir el de la URL completa
       poster = jsonLd.image || null;
       descripcion = jsonLd.description || null;
       if (jsonLd.aggregateRating && jsonLd.aggregateRating.ratingValue) {
@@ -544,12 +547,11 @@ async function buscarMetadataImdb(titulo, tipoHint) {
       }
     }
 
-    // Limpiar descripción (IMDb a veces trae truncado)
+    // Limpiar descripción
     if (descripcion) {
       descripcion = limpiarTexto(descripcion);
       // Si es una descripción de serie genérica, intentar obtener la correcta
       if (descripcion.length < 30 || /^[A-Z]{2,}/.test(descripcion)) {
-        // Buscar sinopsis en el HTML
         var mSyn = htmlTitle.match(/<div[^>]*data-testid=["'](?:synopsis|plot)["'][^>]*>([\s\S]*?)<\/div>/i);
         if (mSyn) {
           var syn = limpiarTexto(mSyn[1].replace(/<[^>]+>/g, ' '));
@@ -574,12 +576,20 @@ async function buscarMetadataImdb(titulo, tipoHint) {
     return result;
 
   } catch (e) {
+    // Fallback a TMDB
+    try {
+      var tmdbFallback = await buscarMetaTmdbApi(titulo, tipoHint);
+      if (tmdbFallback) {
+        setCachedMetadata(cacheKey, tmdbFallback);
+        return tmdbFallback;
+      }
+    } catch (e2) { /* ignore */ }
     return null;
   }
 }
 
 /**
- * TMDB API (fallback cuando IMDb no encuentra)
+ * TMDB API (fallback)
  */
 async function buscarMetaTmdbApi(titulo, tipoHint) {
   var q = String(titulo || '').replace(/\(\d{4}\)/g, '').trim();
@@ -589,7 +599,6 @@ async function buscarMetaTmdbApi(titulo, tipoHint) {
   var cached = getCachedMetadata(cacheKey);
   if (cached && cached.source === 'tmdb') return cached;
 
-  // Usar API pública sin key (rate limit bajo)
   try {
     var isTv = /serie|anime|tv/i.test(String(tipoHint || ''));
     var path = isTv ? 'search/tv' : 'search/movie';
@@ -642,31 +651,72 @@ async function buscarMetaTmdbApi(titulo, tipoHint) {
 }
 
 /**
- * Obtiene metadata combinando IMDb + TMDB
+ * Obtiene metadata combinando IMDb + TMDB (IMDb primero siempre)
  */
 async function obtenerMetadataCompleta(titulo, tipoHint) {
-  // Primero IMDb
+  // IMDb primero SIEMPRE
   var meta = await buscarMetadataImdb(titulo, tipoHint);
   
   // Si IMDb no tiene suficiente, completar con TMDB
-  if (meta && (!meta.portada || !meta.descripcion || meta.descripcion && meta.descripcion.length < 30)) {
-    var tmdbMeta = await buscarMetaTmdbApi(titulo, tipoHint);
-    if (tmdbMeta) {
-      if (!meta.portada && tmdbMeta.portada) meta.portada = tmdbMeta.portada;
-      if ((!meta.descripcion || meta.descripcion.length < 30) && tmdbMeta.descripcion) {
-        meta.descripcion = tmdbMeta.descripcion;
+  if (meta) {
+    var necesitaCompletar = false;
+    if (!meta.portada || meta.portada === 'N/A') necesitaCompletar = true;
+    if (!meta.descripcion || meta.descripcion.length < 30) necesitaCompletar = true;
+    if (!meta.calificacion) necesitaCompletar = true;
+    
+    if (necesitaCompletar) {
+      var tmdbMeta = await buscarMetaTmdbApi(titulo, tipoHint);
+      if (tmdbMeta) {
+        if (!meta.portada || meta.portada === 'N/A') meta.portada = tmdbMeta.portada;
+        if ((!meta.descripcion || meta.descripcion.length < 30) && tmdbMeta.descripcion) {
+          meta.descripcion = tmdbMeta.descripcion;
+        }
+        if (!meta.generos && tmdbMeta.generos) meta.generos = tmdbMeta.generos;
+        if (!meta.calificacion && tmdbMeta.calificacion) meta.calificacion = tmdbMeta.calificacion;
+        if (!meta.year && tmdbMeta.year) meta.year = tmdbMeta.year;
+        if (!meta.imdb_id && tmdbMeta.tmdb_id) meta.imdb_id = 'tmdb-' + tmdbMeta.tmdb_id;
       }
-      if (!meta.generos && tmdbMeta.generos) meta.generos = tmdbMeta.generos;
-      if (!meta.calificacion && tmdbMeta.calificacion) meta.calificacion = tmdbMeta.calificacion;
-      if (!meta.year && tmdbMeta.year) meta.year = tmdbMeta.year;
     }
+    return meta;
   }
   
-  return meta;
+  // Si IMDb falló completamente, usar TMDB
+  return await buscarMetaTmdbApi(titulo, tipoHint);
+}
+
+// ======================================================
+// ENRIQUECIMIENTO CON IMDb (PRIORIDAD TOTAL)
+// ======================================================
+
+/**
+ * Verifica si una portada es de PelisPlus (y probablemente rota o genérica)
+ */
+function esPortadaPelisPlus(url) {
+  if (!url) return false;
+  var u = String(url).toLowerCase();
+  // Portadas de PelisPlus que suelen ser problemáticas
+  if (u.indexOf('pelisplushd.la/poster/') !== -1) return true;
+  if (u.indexOf('pelisplushd.la/wp-content') !== -1) return true;
+  // Patrones de portadas genéricas/rotas
+  if (/\/poster\/[^\/]+\.(?:jpg|png|webp)$/.test(u)) return true;
+  return false;
 }
 
 /**
- * Enriquece una lista de resultados con metadata IMDb
+ * Verifica si una portada parece válida (no rota ni genérica)
+ */
+function esPortadaValida(url) {
+  if (!url) return false;
+  var u = String(url).toLowerCase();
+  if (u.indexOf('data:image') === 0) return false;
+  if (u.indexOf('placeholder') !== -1) return false;
+  if (u.indexOf('amazon') !== -1 && u.indexOf('image.tmdb') === -1) return false;
+  if (/\.(?:gif|svg)(?:$|\?)/.test(u)) return false;
+  return true;
+}
+
+/**
+ * Enriquece una lista de resultados con metadata IMDb (prioridad total)
  */
 async function enriquecerListaConImdb(lista) {
   if (!lista || !lista.length) return lista;
@@ -679,31 +729,55 @@ async function enriquecerListaConImdb(lista) {
       var idx = i++;
       var item = lista[idx];
       if (!item || !item.titulo) continue;
-      // Si ya tiene buena metadata, saltar
-      if (item.calificacion && item.descripcion && item.descripcion.length > 50 && item.portada) continue;
+      
       try {
         var meta = await obtenerMetadataCompleta(item.titulo, item.tipo);
         if (meta) {
-          if (meta.portada && !/placeholder|data:image/i.test(String(item.portada || ''))) {
-            // Si la portada existente es de TMDB o está rota, reemplazar
-            if (!item.portada || /image\.tmdb\.org|placeholder/i.test(item.portada) || !/^https?:\/\//.test(item.portada)) {
+          // PORTADA: SIEMPRE priorizar IMDb sobre cualquier otra fuente
+          if (meta.portada && meta.portada !== 'N/A' && esPortadaValida(meta.portada)) {
+            // Reemplazar portada de PelisPlus o cualquier otra que sea problemática
+            if (esPortadaPelisPlus(item.portada) || 
+                !item.portada || 
+                !esPortadaValida(item.portada) ||
+                /placeholder|data:image|default/i.test(item.portada)) {
               item.portada = meta.portada;
             }
           }
-          if (meta.descripcion && (!item.descripcion || item.descripcion.length < 40)) {
-            item.descripcion = meta.descripcion;
+          
+          // DESCRIPCIÓN: priorizar IMDb si es más larga o la actual es de PelisPlus
+          if (meta.descripcion) {
+            var descActual = item.descripcion || '';
+            if (descActual.length < 40 || descActual.length < meta.descripcion.length) {
+              item.descripcion = meta.descripcion;
+            }
           }
-          if (meta.calificacion && !item.calificacion) {
+          
+          // CALIFICACIÓN: siempre de IMDb
+          if (meta.calificacion) {
             item.calificacion = String(meta.calificacion);
           }
-          if (meta.year && !item.year) {
-            item.year = meta.year;
+          
+          // AÑO: priorizar IMDb
+          if (meta.year) {
+            // Solo si el año actual no existe o es de PelisPlus (a veces erroneo)
+            if (!item.year || item.year.length !== 4 || /^20\d{2}$/.test(item.year)) {
+              item.year = meta.year;
+            }
           }
-          if (meta.generos && !item.generos) {
+          
+          // GÉNEROS
+          if (meta.generos && (!item.generos || !item.generos.length)) {
             item.generos = meta.generos;
             item.genero = meta.generos.join(', ');
           }
-          if (meta.imdb_id) item.imdb_id = meta.imdb_id;
+          
+          // IDs
+          if (meta.imdb_id && !item.imdb_id) {
+            item.imdb_id = meta.imdb_id;
+          }
+          if (meta.votos && !item.votos) {
+            item.votos = meta.votos;
+          }
         }
       } catch (e) { /* siguiente */ }
     }
@@ -718,7 +792,7 @@ async function enriquecerListaConImdb(lista) {
 }
 
 /**
- * Enriquece detalle con metadata IMDb
+ * Enriquece detalle con metadata IMDb (prioridad total)
  */
 async function enriquecerDetalleConImdb(detalle, tipoRuta) {
   if (!detalle || detalle.success === false) return detalle;
@@ -730,31 +804,54 @@ async function enriquecerDetalleConImdb(detalle, tipoRuta) {
     var meta = await obtenerMetadataCompleta(titulo, tipoRuta || detalle.tipo);
     if (!meta) return detalle;
 
-    // Aplicar metadata (sin pisar datos buenos de la fuente)
-    if (meta.portada && !/placeholder|data:image/i.test(String(detalle.portada || ''))) {
-      if (!detalle.portada || /image\.tmdb\.org|placeholder/i.test(detalle.portada) || !/^https?:\/\//.test(detalle.portada)) {
+    // PORTADA: SIEMPRE priorizar IMDb
+    if (meta.portada && meta.portada !== 'N/A' && esPortadaValida(meta.portada)) {
+      // Si la portada actual es de PelisPlus o está rota, reemplazar siempre
+      if (esPortadaPelisPlus(detalle.portada) || 
+          !detalle.portada || 
+          !esPortadaValida(detalle.portada) ||
+          /placeholder|data:image|default/i.test(detalle.portada)) {
         detalle.portada = meta.portada;
       }
     }
-    if (meta.descripcion && (!detalle.descripcion || detalle.descripcion.length < 40)) {
-      detalle.descripcion = meta.descripcion;
+    
+    // DESCRIPCIÓN
+    if (meta.descripcion) {
+      var descActual = detalle.descripcion || '';
+      if (descActual.length < 40 || descActual.length < meta.descripcion.length) {
+        detalle.descripcion = meta.descripcion;
+      }
     }
-    if (meta.calificacion && !detalle.calificacion) {
+    
+    // CALIFICACIÓN: siempre de IMDb
+    if (meta.calificacion && (!detalle.calificacion || parseFloat(detalle.calificacion) < meta.calificacion)) {
       detalle.calificacion = String(meta.calificacion);
     }
-    if (meta.year && !detalle.year) {
+    
+    // AÑO: priorizar IMDb
+    if (meta.year && (!detalle.year || detalle.year.length !== 4 || /^20\d{2}$/.test(detalle.year))) {
       detalle.year = meta.year;
     }
+    
+    // GÉNEROS
     if (meta.generos && (!detalle.generos || !detalle.generos.length)) {
       detalle.generos = meta.generos;
       detalle.genero = meta.generos.join(', ');
     }
+    
+    // IDs
     if (meta.imdb_id && !detalle.imdb_id) {
       detalle.imdb_id = meta.imdb_id;
     }
     if (meta.votos && !detalle.votos) {
       detalle.votos = meta.votos;
     }
+    
+    // Título IMDb (si el de la fuente es genérico)
+    if (meta.titulo_imdb && detalle.titulo && detalle.titulo.length < 5) {
+      detalle.titulo = meta.titulo_imdb;
+    }
+    
   } catch (e) { /* silencioso */ }
 
   return detalle;
@@ -771,14 +868,11 @@ function normalizarTituloKey(t) {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\(\d{4}\)/g, '');
   
-  // Eliminar notación de episodio/temporada
   s = s.replace(/\bs\d{1,2}\s*e\d{1,3}\b/g, '');
   s = s.replace(/\b\d{1,2}\s*x\s*\d{1,3}\b/g, '');
   s = s.replace(/\b(cap(?:i?tulo)?|chapter)\.?\s*\d{1,4}\b/g, '');
   s = s.replace(/\b(episodio|episode|ep)\.?\s*\d{1,4}\b/g, '');
   s = s.replace(/\b(temporada|season)\.?\s*\d{1,2}\b/g, '');
-  
-  // Eliminar sufijos de calidad
   s = s.replace(/\s*(?:hd|fhd|4k|1080p|720p)\s*/g, '');
   s = s.replace(/\s*[–—\-]\s*(?:serie|pel[ií]cula|anime|movie|online|gratis|ver|watch|download).*$/g, '');
   
@@ -844,8 +938,8 @@ function extraerYearItem(item) {
 
 function claveDeduplicacion(item) {
   if (!item) return null;
-  if (item.tmdb_id) return 'tmdb:' + String(item.tmdb_id);
   if (item.imdb_id) return 'imdb:' + String(item.imdb_id);
+  if (item.tmdb_id) return 'tmdb:' + String(item.tmdb_id);
   var tipo = normalizarTipoKey(item.tipo);
   var bucket = (tipo === 'anime' || tipo === 'serie') ? 'show' : tipo;
   var titulo = normalizarTituloKey(item.titulo || '');
@@ -858,14 +952,14 @@ function claveDeduplicacion(item) {
 function scoreItemBusqueda(item) {
   if (!item) return 0;
   var s = 0;
-  if (item.portada && !/placeholder|data:image/i.test(String(item.portada))) s += 35;
+  // IMDb tiene prioridad máxima
+  if (item.imdb_id) s += 40;
+  if (item.portada && !/placeholder|data:image/i.test(String(item.portada))) s += 30;
   if (item.descripcion && String(item.descripcion).length > 40) s += 20;
-  if (item.imdb_id) s += 30;
-  if (item.tmdb_id) s += 20;
+  if (item.tmdb_id) s += 15;
   if (item.calificacion) s += 15;
   if (item.year) s += 5;
   if (item.slug) s += 5;
-  if (item.backdrop) s += 5;
   var f = String(item.fuente || '').toLowerCase();
   if (f === 'pelisplushd') s += 3;
   else if (f === 'lamovie') s += 2;
@@ -899,7 +993,7 @@ function esMismaObra(a, b) {
   if (titleA && titleB && titleA === titleB) return true;
   if (slugA && slugB && slugA === slugB) return true;
 
-  // Contención de slugs/títulos
+  // Contención de slugs
   if (slugA && slugB && slugA.length >= 5 && slugB.length >= 5) {
     var longer = slugA.length >= slugB.length ? slugA : slugB;
     var shorter = slugA.length >= slugB.length ? slugB : slugA;
@@ -909,7 +1003,7 @@ function esMismaObra(a, b) {
     }
   }
 
-  // Token compartido (para casos como One Piece vs One Piece Film Red)
+  // Token compartido
   var stop = {
     the:1, and:1, for:1, with:1, from:1, that:1, this:1, los:1, las:1, del:1, una:1,
     one:1, no:1, to:1, of:1, piece:1, film:1, movie:1, season:1, part:1, special:1
@@ -923,10 +1017,7 @@ function esMismaObra(a, b) {
       if (w.length < 5 || stop[w]) continue;
       if (wordsB.indexOf(w) !== -1) common++;
     }
-    // Si comparten palabra clave de 5+ letras, probablemente misma obra
     if (common >= 1) {
-      // Pero no si son claramente distintas (ej: "One Piece" vs "One Piece Film Red" → sí)
-      // "One Piece" vs "Stampede" → no
       if (common === 1 && titleA.split(' ').length === 1 && titleB.split(' ').length > 2) {
         var extra = titleB.replace(titleA, '').trim();
         var extraWords = extra.split(' ');
@@ -939,7 +1030,6 @@ function esMismaObra(a, b) {
     }
   }
 
-  // Año: si ambos tienen año y difieren, no es misma obra
   var yearA = extraerYearItem(a);
   var yearB = extraerYearItem(b);
   if (yearA && yearB && yearA !== yearB) return false;
@@ -969,7 +1059,6 @@ function fusionarResultadosBusqueda(items) {
     var group = grupos[orden[oi]];
     if (!group || !group.length) continue;
 
-    // Separar por año
     var byYear = Object.create(null);
     var sinYear = [];
     for (var g = 0; g < group.length; g++) {
@@ -986,7 +1075,6 @@ function fusionarResultadosBusqueda(items) {
     if (years.length <= 1) {
       subgrupos.push(group);
     } else {
-      // Elegir el año con más resultados
       var maxY = years[0];
       var maxN = byYear[maxY].length;
       for (var yi = 1; yi < years.length; yi++) {
@@ -1022,11 +1110,11 @@ function fusionarResultadosBusqueda(items) {
           seenF[f] = true;
           fuentes.push(f);
         }
-        // Priorizar portada de IMDb/TMDB
+        // Priorizar portada de IMDb
         if (cur.imdb_id && !best.imdb_id) best.imdb_id = cur.imdb_id;
         if (cur.tmdb_id && !best.tmdb_id) best.tmdb_id = cur.tmdb_id;
-        if (cur.portada && !/placeholder|data:image/i.test(String(cur.portada))) {
-          if (!best.portada || /placeholder|data:image|image\.tmdb\.org/i.test(String(best.portada))) {
+        if (cur.portada && esPortadaValida(cur.portada) && !esPortadaPelisPlus(cur.portada)) {
+          if (!best.portada || esPortadaPelisPlus(best.portada) || !esPortadaValida(best.portada)) {
             best.portada = cur.portada;
           }
         }
@@ -1074,7 +1162,7 @@ function fusionarResultadosBusqueda(items) {
     }
   }
 
-  // Segunda pasada: unir por título/slug
+  // Segunda pasada
   if (out.length > 1) {
     var merged = [];
     var used = Object.create(null);
@@ -1107,8 +1195,8 @@ function fusionarResultadosBusqueda(items) {
           var cur2 = group2[g2];
           var f2 = String(cur2.fuente || '').toLowerCase();
           if (f2 && !seenF2[f2]) { seenF2[f2] = true; fuentes2.push(f2); }
-          if (cur2.portada && !/placeholder|data:image/i.test(String(cur2.portada))) {
-            if (!best2.portada || /placeholder|data:image|image\.tmdb\.org/i.test(String(best2.portada))) {
+          if (cur2.portada && esPortadaValida(cur2.portada) && !esPortadaPelisPlus(cur2.portada)) {
+            if (!best2.portada || esPortadaPelisPlus(best2.portada) || !esPortadaValida(best2.portada)) {
               best2.portada = cur2.portada;
             }
           }
@@ -1148,24 +1236,7 @@ function fusionarResultadosBusqueda(items) {
 }
 
 // ======================================================
-// FUNCIONES EXISTENTES (mantenidas igual)
-// ======================================================
-
-// Las siguientes funciones se mantienen igual que en tu código original:
-// - normalizarSourceId, sourceIdFromName, sourceNameFromId
-// - scrapearPorSlug, fusionarReproductoresFuentes, fusionarDetalleSerie
-// - countEpsInResult, reescribirLinksCortos, normalizarUrlEntrada, detectarFuente
-// - Resolvers HLS: resolveVimeosEmbed, resolveStreamwishEmbed, etc.
-// - Scrapers: scrapearLamovie, scrapearPelisplus, scrapearHackstore, scrapearAnimeAv1
-// - Buscadores: buscarLamovie, buscarHackstore, buscarPelisplus, buscarAnimeAv1, buscarUniversal
-// - Y todas las funciones auxiliares
-
-// [Aquí iría el resto de tu código que no ha cambiado]
-// Por razones de espacio, incluyo solo las funciones que cambian o son nuevas.
-// El código completo debe incluir todas tus funciones originales.
-
-// ======================================================
-// FUNCIONES AUXILIARES (mantenidas)
+// FUNCIONES AUXILIARES
 // ======================================================
 
 function normalizarSourceId(s) {
@@ -1211,7 +1282,6 @@ function json(data, status) {
 function limpiarTexto(txt) {
   if (!txt) return '';
   var s = String(txt);
-  // Corregir mojibake
   if (/Ã.|Â.|â.|ð./.test(s)) {
     try {
       var bytes = [];
@@ -1252,12 +1322,36 @@ function normalizarPortadaUrl(url) {
   if (/image\.tmdb\.org/i.test(u)) {
     return u.replace(/\/w\d+\//, '/w500/');
   }
+  // Si es de PelisPlus y parece genérica, devolver null para que IMDb la reemplace
+  if (/pelisplushd\.la\/poster\//i.test(u)) {
+    return null;
+  }
   var m = u.match(/\/(?:uploads\/\d{4}\/\d{2}\/|t\/p\/w\d+\/)([a-zA-Z0-9]{20,}\.(?:jpg|jpeg|png|webp))/i);
   if (m) {
     return 'https://image.tmdb.org/t/p/w500/' + m[1];
   }
   if (/media-amazon|amazon\.com/i.test(u)) return null;
   return u;
+}
+
+function esPortadaPelisPlus(url) {
+  if (!url) return false;
+  var u = String(url).toLowerCase();
+  if (u.indexOf('pelisplushd.la/poster/') !== -1) return true;
+  if (u.indexOf('pelisplushd.la/wp-content') !== -1) return true;
+  if (/\/poster\/[^\/]+\.(?:jpg|png|webp)$/.test(u)) return true;
+  return false;
+}
+
+function esPortadaValida(url) {
+  if (!url) return false;
+  var u = String(url).toLowerCase();
+  if (u.indexOf('data:image') === 0) return false;
+  if (u.indexOf('placeholder') !== -1) return false;
+  if (u.indexOf('amazon') !== -1 && u.indexOf('image.tmdb') === -1) return false;
+  if (/\.(?:gif|svg)(?:$|\?)/.test(u)) return false;
+  if (u.indexOf('default') !== -1) return false;
+  return true;
 }
 
 // ======================================================
@@ -1281,6 +1375,7 @@ async function fetchText(url, headers, timeoutMs) {
   if (!res.ok) throw new Error('HTTP ' + res.status + ' en ' + url);
   return await res.text();
 }
+
 
 
 function toBaseN(n, base) {
