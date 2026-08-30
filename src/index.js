@@ -3636,9 +3636,30 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   var catName = (media.category && media.category.name) || 'TV Anime';
   var tipo = /movie|pel[ií]cula/i.test(catName) ? 'Pelicula' : 'Anime';
 
-  // Si piden episodio concreto → embeds
+  // Si piden episodio concreto → embeds (T2+ puede vivir en slug-season-N)
   if (epNum && epNum > 0) {
-    var epRaw = await fetchAnimeAv1Data('/media/' + encodeURIComponent(slug) + '/' + epNum + '/__data.json');
+    var seasonNum = parseInt(opts.season || 1, 10) || 1;
+    var mediaSlug = slug;
+    if (seasonNum > 1) {
+      var seasonCandidates = [
+        slug + '-season-' + seasonNum,
+        slug + '-' + seasonNum + 'nd-season',
+        slug + '-' + seasonNum + 'rd-season',
+        slug + '-' + seasonNum + 'th-season',
+        slug + '-part-' + seasonNum
+      ];
+      for (var sc = 0; sc < seasonCandidates.length; sc++) {
+        try {
+          var testRaw = await fetchAnimeAv1Data('/media/' + encodeURIComponent(seasonCandidates[sc]) + '/__data.json');
+          var testData = decodeSvelteKitData(testRaw);
+          if (testData && testData.media) {
+            mediaSlug = seasonCandidates[sc];
+            break;
+          }
+        } catch (eS) { /* next */ }
+      }
+    }
+    var epRaw = await fetchAnimeAv1Data('/media/' + encodeURIComponent(mediaSlug) + '/' + epNum + '/__data.json');
     var epData = decodeSvelteKitData(epRaw);
     var mapped = mapAnimeAv1Embeds(epData && epData.embeds);
     var dlMapped = mapAnimeAv1Embeds(epData && epData.downloads);
@@ -3671,8 +3692,9 @@ async function scrapearAnimeAv1(pageUrl, opts) {
       slug: slug,
       titulo: titulo + ' — Episodio ' + epNum,
       titulo_serie: titulo,
-      temporada: epMeta.season || opts.season || 1,
+      temporada: seasonNum || epMeta.season || opts.season || 1,
       episodio: epNum,
+      slug_media: mediaSlug,
       portada: portada,
       descripcion: sinopsis,
       calificacion: score,
@@ -3743,6 +3765,50 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     }
   }
 
+  // Descubrir temporadas extra en animeav1 (ej. slug-season-2 con DUB/Latino)
+  for (var sn = 2; sn <= 5; sn++) {
+    var altSlugs = [
+      slug + '-season-' + sn,
+      slug + '-' + sn + 'nd-season',
+      slug + '-' + sn + 'rd-season',
+      slug + '-' + sn + 'th-season'
+    ];
+    var found = null;
+    var foundSlug = null;
+    for (var ai = 0; ai < altSlugs.length; ai++) {
+      try {
+        var altRaw = await fetchAnimeAv1Data('/media/' + encodeURIComponent(altSlugs[ai]) + '/__data.json');
+        var altData = decodeSvelteKitData(altRaw);
+        if (altData && altData.media && (altData.media.episodesCount || altData.media.title)) {
+          found = altData.media;
+          foundSlug = altSlugs[ai];
+          break;
+        }
+      } catch (eAlt) { /* next */ }
+    }
+    if (!found) break;
+    var altCount = parseInt(found.episodesCount, 10) || 0;
+    if (altCount < 1) altCount = 12;
+    if (altCount > 500) altCount = 500;
+    var altEps = [];
+    for (var ae = 1; ae <= altCount; ae++) {
+      altEps.push({
+        temporada: sn,
+        episodio: ae,
+        titulo: 'Episodio ' + ae,
+        url_video: null,
+        slug_media: foundSlug
+      });
+    }
+    temporadas.push({
+      temporada: sn,
+      slug_media: foundSlug,
+      titulo: found.title || ('Temporada ' + sn),
+      episodios: altEps
+    });
+    totalEps += altCount;
+  }
+
   return {
     success: true,
     fuente: 'animeav1',
@@ -3756,6 +3822,7 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     calificacion: score,
     year: media.startDate ? String(media.startDate).slice(0, 4) : null,
     total_episodios: totalEps,
+    total_temporadas: temporadas.length,
     episodio_desde: epFrom,
     episodio_hasta: epTo,
     rangos_episodios: rangos,
@@ -3764,6 +3831,6 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     reproductores: [],
     descargas: [],
     temporadas: temporadas,
-    nota: 'Usa /4/anime/' + slug + '/1/{episodio} para players. Lista por rangos: ?ep_from=101&ep_to=200'
+    nota: 'T1=' + slug + '. Temporadas extra en slug-season-N. Players: /4/anime/' + slug + '/{temp}/{ep}. DUB=Latino se prioriza.'
   };
 }
