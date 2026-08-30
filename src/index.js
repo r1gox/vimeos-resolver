@@ -3221,7 +3221,7 @@ function elegirMejorMeta(metas, titulo) {
   return best;
 }
 
-/** OMDb (fallback gratuito cuando tvymas no tiene el título) */
+/** OMDb (fallback gratuito). Posters de Amazon se tratan como portada_imdb. */
 async function buscarMetaOmdb(titulo) {
   var q = String(titulo || '').replace(/\(\d{4}\)/g, '').trim();
   if (!q) return null;
@@ -3234,17 +3234,21 @@ async function buscarMetaOmdb(titulo) {
     var genres = d.Genre ? d.Genre.split(',').map(function (g) { return g.trim(); }) : [];
     var year = d.Year ? String(d.Year).slice(0, 4) : null;
     var released = d.Released && d.Released !== 'N/A' ? d.Released : null;
-    // Convertir fecha tipo "28 Aug 2026" a ISO aproximado
     var fecha = null;
     if (released) {
       var dt = new Date(released);
       if (!isNaN(dt.getTime())) fecha = dt.toISOString().slice(0, 10);
     }
+    var posterRaw = d.Poster && d.Poster !== 'N/A' ? d.Poster : null;
+    var posterNorm = posterRaw ? (typeof normalizarPosterImdb === 'function' ? normalizarPosterImdb(posterRaw) : posterRaw) : null;
+    var esAmazon = posterNorm && /media-amazon|amazon\.com/i.test(posterNorm);
     return {
       tmdb_id: null,
       imdb_id: d.imdbID || null,
       titulo_tmdb: d.Title || q,
-      portada_tmdb: d.Poster && d.Poster !== 'N/A' ? d.Poster : null,
+      // Amazon poster = calidad IMDb
+      portada_tmdb: esAmazon ? null : posterNorm,
+      portada_imdb: esAmazon ? posterNorm : null,
       backdrop: null,
       calificacion: d.imdbRating && d.imdbRating !== 'N/A' ? Number(d.imdbRating) : null,
       descripcion: d.Plot && d.Plot !== 'N/A' ? d.Plot : null,
@@ -3264,10 +3268,26 @@ async function buscarMetaOmdb(titulo) {
 }
 
 /**
- * IMDb público, sin API key.
- * Busca candidatos y selecciona por título + año + tipo antes de abrir la ficha.
- * Se usa como fuente preferida de poster para PelisPlus porque sus posters
- * de origen pueden estar rotos.
+ * Mejora URL de poster IMDb/Amazon a tamaño usable (~500px de alto).
+ */
+function normalizarPosterImdb(url) {
+  if (!url || typeof url !== 'string') return null;
+  var u = url.trim();
+  if (!/^https?:\/\//i.test(u)) return null;
+  // Quitar parámetros de tamaño rotos y forzar versión limpia
+  u = u.replace(/\._V1_.*?(?=\.jpg|\.png|\.webp|$)/i, '._V1_');
+  if (/\._V1_\.(jpg|png|webp)/i.test(u)) {
+    u = u.replace(/\._V1_\.(jpg|png|webp)/i, '._V1_UX380_CR0,0,380,562_.$1');
+  } else if (!/\._V1_/i.test(u) && /media-amazon\.com\/images/i.test(u)) {
+    u = u.replace(/\.(jpg|png|webp)(\?|$)/i, '._V1_UX380_CR0,0,380,562_.$1');
+  }
+  return u;
+}
+
+/**
+ * IMDb vía API de sugerencias (JSON público, no bloqueado).
+ * Fallback: scrape HTML de /find + ficha (a menudo bloqueado en Workers).
+ * Prioridad de portadas: imageUrl de suggestion → OMDb.
  */
 async function buscarMetaImdb(titulo, tipoHint, yearHint) {
   var q = String(titulo || '').trim();
@@ -3279,9 +3299,121 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint) {
   var wantedType = normalizarTipoKey(tipoHint);
   var wantedIsTv = wantedType === 'serie' || wantedType === 'anime';
 
+  function scoreSug(item) {
+    if (!item || !item.id || String(item.id).indexOf('tt') !== 0) return -999;
+    var ct = normalizarTituloKey(item.l || item.titulo || '');
+    var score = 0;
+    if (ct === wantedTitle) score += 150;
+    else if (ct && (ct.indexOf(wantedTitle) === 0 || wantedTitle.indexOf(ct) === 0)) score += 70;
+    else if (ct && (ct.indexOf(wantedTitle) !== -1 || wantedTitle.indexOf(ct) !== -1)) score += 40;
+    else {
+      var wa = wantedTitle.split(' ').filter(function (x) { return x.length > 2; });
+      var wb = ct.split(' ');
+      var common = 0;
+      for (var i = 0; i < wa.length; i++) if (wb.indexOf(wa[i]) !== -1) common++;
+      score += common * 12;
+    }
+    var y = item.y ? String(item.y) : null;
+    if (wantedYear && y) score += wantedYear === y ? 90 : -130;
+    var qid = String(item.qid || item.q || '').toLowerCase();
+    var isTv = /tvseries|tvminiseries|tvspecial|tvmovie|tv/.test(qid);
+    var isMovie = /movie|feature|video|short/.test(qid);
+    if (wantedIsTv && isTv) score += 40;
+    if (wantedIsTv && isMovie) score -= 80;
+    if (wantedType === 'pelicula' && isMovie) score += 40;
+    if (wantedType === 'pelicula' && isTv) score -= 80;
+    // Preferir ranks mejores (número más bajo)
+    if (item.rank && item.rank < 5000) score += 15;
+    else if (item.rank && item.rank < 20000) score += 5;
+    return score;
+  }
+
+  // --- 1) API de sugerencias IMDb (rápida y fiable) ---
+  try {
+    var letter = (q.replace(/[^a-zA-Z0-9]/g, '') || 'x').charAt(0).toLowerCase();
+    var sugUrl = 'https://v3.sg.media-imdb.com/suggestion/' + letter + '/' +
+      encodeURIComponent(q).replace(/%20/g, '%20') + '.json';
+    var resSug = await fetch(sugUrl, {
+      headers: {
+        'User-Agent': HEADERS['User-Agent'],
+        'Accept': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9'
+      }
+    });
+    if (resSug.ok) {
+      var sugData = await resSug.json();
+      var list = (sugData && Array.isArray(sugData.d)) ? sugData.d : [];
+      var scored = [];
+      for (var si = 0; si < list.length; si++) {
+        var it = list[si];
+        if (!it || !it.id || String(it.id).indexOf('tt') !== 0) continue;
+        var sc = scoreSug(it);
+        if (sc < 50) continue;
+        scored.push({ item: it, score: sc });
+      }
+      scored.sort(function (a, b) { return b.score - a.score; });
+
+      if (scored.length) {
+        var best = scored[0].item;
+        var poster = null;
+        if (best.i && best.i.imageUrl) {
+          poster = normalizarPosterImdb(best.i.imageUrl);
+        }
+        var y = best.y ? String(best.y) : null;
+        // Completar rating/plot con OMDb si tenemos imdb id
+        var extra = null;
+        try {
+          var omdbUrl = 'https://www.omdbapi.com/?i=' + encodeURIComponent(best.id) + '&apikey=trilogy&plot=full';
+          var omdbRes = await fetch(omdbUrl, { headers: { Accept: 'application/json' } });
+          if (omdbRes.ok) {
+            var od = await omdbRes.json();
+            if (od && od.Response !== 'False') {
+              extra = od;
+              if ((!poster || poster.indexOf('N/A') !== -1) && od.Poster && od.Poster !== 'N/A') {
+                poster = normalizarPosterImdb(od.Poster);
+              }
+            }
+          }
+        } catch (eO) { /* ok */ }
+
+        var generos = [];
+        if (extra && extra.Genre) {
+          generos = extra.Genre.split(',').map(function (g) { return g.trim(); }).filter(Boolean);
+        }
+        return {
+          tmdb_id: null,
+          imdb_id: best.id,
+          titulo_tmdb: best.l || q,
+          portada_tmdb: null,
+          portada_imdb: poster,
+          backdrop: null,
+          calificacion: extra && extra.imdbRating && extra.imdbRating !== 'N/A'
+            ? Number(extra.imdbRating) : null,
+          descripcion: extra && extra.Plot && extra.Plot !== 'N/A' ? extra.Plot : null,
+          generos: generos,
+          fecha_estreno: (extra && extra.Released && extra.Released !== 'N/A')
+            ? (function () {
+                var dt = new Date(extra.Released);
+                return !isNaN(dt.getTime()) ? dt.toISOString().slice(0, 10) : (y ? y + '-01-01' : null);
+              })()
+            : (y ? y + '-01-01' : null),
+          year: y || (extra && extra.Year ? String(extra.Year).slice(0, 4) : null),
+          titulo_original: best.l || q,
+          votos: extra && extra.imdbVotes && extra.imdbVotes !== 'N/A' ? extra.imdbVotes : null,
+          duracion: extra && extra.Runtime && extra.Runtime !== 'N/A'
+            ? parseInt(extra.Runtime, 10) || null : null,
+          status: null,
+          tagline: null,
+          slug_tmdb: null
+        };
+      }
+    }
+  } catch (eSug) { /* fallback HTML abajo */ }
+
+  // --- 2) Fallback HTML (puede fallar en Workers por bloqueo IMDb) ---
   var headersImdb = {
     'User-Agent': HEADERS['User-Agent'],
-    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
     'Accept': 'text/html,application/xhtml+xml'
   };
 
@@ -3290,211 +3422,60 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint) {
       .replace(/<[^>]+>/g, ' ')
       .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
       .replace(/&#x27;/gi, "'").replace(/&nbsp;/g, ' ')
-      .replace(/\\u0026/gi, '&')
-      .replace(/\\u0027/gi, "'")
-      .replace(/\\u0022/gi, '"')
       .replace(/\s+/g, ' ').trim();
   }
 
-  function typeCompatible(typeValue) {
-    var t = String(typeValue || '').toLowerCase();
-    if (!t) return null;
-    if (wantedIsTv) return /tvseries|tvminiseries|tvshort|tvspecial/.test(t) ? true : (/movie|featurefilm/.test(t) ? false : null);
-    if (wantedType === 'pelicula') return /movie|featurefilm/.test(t) ? true : (/tvseries|tvminiseries|tvshort|tvspecial/.test(t) ? false : null);
-    return null;
-  }
-
-  function scoreCandidato(c) {
-    var ct = normalizarTituloKey(c.titulo || '');
-    var score = 0;
-    if (ct === wantedTitle) score += 150;
-    else if (ct && (ct.indexOf(wantedTitle) === 0 || wantedTitle.indexOf(ct) === 0)) score += 75;
-    else if (ct && (ct.indexOf(wantedTitle) !== -1 || wantedTitle.indexOf(ct) !== -1)) score += 45;
-    else {
-      var wa = wantedTitle.split(' ').filter(function (x) { return x.length > 2; });
-      var wb = ct.split(' ');
-      var common = 0;
-      for (var i = 0; i < wa.length; i++) if (wb.indexOf(wa[i]) !== -1) common++;
-      score += common * 12;
-    }
-    if (wantedYear && c.year) score += wantedYear === c.year ? 80 : -120;
-    if (wantedYear && !c.year) score -= 5;
-    if (wantedIsTv && c.isTv === true) score += 35;
-    if (wantedType === 'pelicula' && c.isTv === false) score += 35;
-    if (c.isTv !== null && ((wantedIsTv && c.isTv === false) || (wantedType === 'pelicula' && c.isTv === true))) score -= 90;
-    return score;
-  }
-
-  function parseJsonLd(html) {
-    var ldRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-    var ldMatch, candidates = [];
-    while ((ldMatch = ldRe.exec(html)) !== null) {
-      try {
-        var parsed = JSON.parse(ldMatch[1].trim());
-        var arr = [];
-        if (Array.isArray(parsed)) arr = parsed;
-        else if (parsed && Array.isArray(parsed['@graph'])) arr = parsed['@graph'];
-        else if (parsed) arr = [parsed];
-        for (var i = 0; i < arr.length; i++) {
-          var x = arr[i];
-          if (x && (x.name || x.image || x.description || x.aggregateRating)) candidates.push(x);
-        }
-      } catch (e) {}
-    }
-    if (!candidates.length) return null;
-    // Prefer a title object, Movie/TVSeries, not breadcrumb/website objects.
-    candidates.sort(function (a, b) {
-      function rank(x) {
-        var ty = Array.isArray(x['@type']) ? x['@type'].join(' ') : String(x['@type'] || '');
-        var r = 0;
-        if (/Movie|TVSeries|TVMiniSeries|TVSpecial/i.test(ty)) r += 50;
-        if (x.name) r += 20;
-        if (x.image) r += 10;
-        if (x.aggregateRating) r += 5;
-        return r;
-      }
-      return rank(b) - rank(a);
-    });
-    return candidates[0];
-  }
-
   try {
-    var findUrl = 'https://www.imdb.com/es/find/?q=' + encodeURIComponent(q) + '&s=tt';
-    var resFind = await fetchWithTimeout(findUrl, { headers: headersImdb, redirect: 'follow' }, 10000);
-    if (!resFind.ok) return null;
+    var findUrl = 'https://www.imdb.com/find/?q=' + encodeURIComponent(q) + '&s=tt';
+    var resFind = await fetchWithTimeout(findUrl, { headers: headersImdb, redirect: 'follow' }, 8000);
+    if (!resFind || !resFind.ok) return null;
     var htmlFind = await resFind.text();
+    if (!htmlFind || htmlFind.length < 200) return null;
 
     var candidates = [];
     var seenIds = Object.create(null);
-    var re = /<a[^>]+href=["'][^"']*\/title\/(tt\d+)[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi;
+    var re = /\/title\/(tt\d+)\//gi;
     var m;
-    while ((m = re.exec(htmlFind)) !== null && candidates.length < 40) {
-      var id = m[1];
-      if (seenIds[id]) continue;
-      seenIds[id] = true;
-      var anchorText = limpiarHtmlTexto(m[2]);
-      var windowStart = Math.max(0, m.index - 220);
-      var windowEnd = Math.min(htmlFind.length, re.lastIndex + 500);
-      var around = htmlFind.slice(windowStart, windowEnd);
-      var yearMatches = around.match(/(?:19|20)\d{2}/g) || [];
-      var year = null;
-      // Prefer requested year if it appears near this candidate.
-      for (var yi = 0; yi < yearMatches.length; yi++) {
-        if (!year || (wantedYear && yearMatches[yi] === wantedYear)) year = yearMatches[yi];
-        if (wantedYear && yearMatches[yi] === wantedYear) break;
-      }
-      var isTv = null;
-      if (/TV Series|TV Mini Series|TV Movie|TV Special|TV Episode|Serie de TV|Miniserie/i.test(around)) isTv = true;
-      else if (/Movie|Pel[ií]cula|Feature Film/i.test(around)) isTv = false;
-      if (!anchorText) {
-        var lab = around.match(/(?:aria-label|title)=["']([^"']+)["']/i);
-        if (lab) anchorText = limpiarHtmlTexto(lab[1]);
-      }
-      candidates.push({ imdbId: id, titulo: anchorText, year: year, isTv: isTv });
-    }
-
-    if (!candidates.length) {
-      var idRe = /\/title\/(tt\d+)\//gi, im;
-      while ((im = idRe.exec(htmlFind)) !== null && candidates.length < 20) {
-        if (!seenIds[im[1]]) {
-          seenIds[im[1]] = true;
-          candidates.push({ imdbId: im[1], titulo: q, year: null, isTv: null });
-        }
-      }
+    while ((m = re.exec(htmlFind)) !== null && candidates.length < 15) {
+      if (seenIds[m[1]]) continue;
+      seenIds[m[1]] = true;
+      candidates.push({ imdbId: m[1], titulo: q, year: null, isTv: null });
     }
     if (!candidates.length) return null;
 
-    candidates.sort(function (a, b) { return scoreCandidato(b) - scoreCandidato(a); });
-
-    // Probar varias coincidencias, no solo la primera. Esto evita asignar, por ejemplo,
-    // el IMDb de One Piece (1999) a One Piece (2023) por un bloque HTML ambiguo.
-    var maxCandidates = Math.min(candidates.length, 8);
-    for (var ci = 0; ci < maxCandidates; ci++) {
-      var cand = candidates[ci];
-      var roughScore = scoreCandidato(cand);
-      if (roughScore < 55) continue;
-
-      var titleUrl = 'https://www.imdb.com/es/title/' + cand.imdbId + '/';
-      var resTitle = await fetchWithTimeout(titleUrl, { headers: headersImdb, redirect: 'follow' }, 10000);
-      if (!resTitle.ok) continue;
-      var htmlTitle = await resTitle.text();
-      var jsonLd = parseJsonLd(htmlTitle);
-
-      var poster = null, descripcion = null, calificacion = null,
-          tituloImdb = null, year = null, generos = [], votos = null, imdbType = null;
-
-      if (jsonLd) {
-        tituloImdb = jsonLd.name || null;
-        poster = Array.isArray(jsonLd.image) ? jsonLd.image[0] : (jsonLd.image || null);
-        descripcion = jsonLd.description || null;
-        imdbType = Array.isArray(jsonLd['@type']) ? jsonLd['@type'].join(' ') : (jsonLd['@type'] || null);
-        if (jsonLd.aggregateRating && jsonLd.aggregateRating.ratingValue) {
-          calificacion = Number(jsonLd.aggregateRating.ratingValue);
-          votos = jsonLd.aggregateRating.ratingCount || null;
+    var cand = candidates[0];
+    // Usar OMDb con el primer tt encontrado
+    try {
+      var omdbUrl2 = 'https://www.omdbapi.com/?i=' + encodeURIComponent(cand.imdbId) + '&apikey=trilogy&plot=full';
+      var omdbRes2 = await fetch(omdbUrl2, { headers: { Accept: 'application/json' } });
+      if (omdbRes2.ok) {
+        var od2 = await omdbRes2.json();
+        if (od2 && od2.Response !== 'False') {
+          var poster2 = od2.Poster && od2.Poster !== 'N/A' ? normalizarPosterImdb(od2.Poster) : null;
+          var y2 = od2.Year ? String(od2.Year).slice(0, 4) : null;
+          if (wantedYear && y2 && wantedYear !== y2) return null;
+          return {
+            tmdb_id: null,
+            imdb_id: od2.imdbID || cand.imdbId,
+            titulo_tmdb: od2.Title || q,
+            portada_tmdb: null,
+            portada_imdb: poster2,
+            backdrop: null,
+            calificacion: od2.imdbRating && od2.imdbRating !== 'N/A' ? Number(od2.imdbRating) : null,
+            descripcion: od2.Plot && od2.Plot !== 'N/A' ? od2.Plot : null,
+            generos: od2.Genre ? od2.Genre.split(',').map(function (g) { return g.trim(); }) : [],
+            fecha_estreno: null,
+            year: y2,
+            titulo_original: od2.Title || null,
+            votos: od2.imdbVotes && od2.imdbVotes !== 'N/A' ? od2.imdbVotes : null,
+            duracion: od2.Runtime && od2.Runtime !== 'N/A' ? parseInt(od2.Runtime, 10) || null : null,
+            status: null,
+            tagline: null,
+            slug_tmdb: null
+          };
         }
-        if (jsonLd.datePublished) year = String(jsonLd.datePublished).slice(0, 4);
-        if (Array.isArray(jsonLd.genre)) generos = jsonLd.genre;
-        else if (jsonLd.genre) generos = [jsonLd.genre];
       }
-
-      if (!tituloImdb) {
-        var mt = htmlTitle.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i)
-          || htmlTitle.match(/content=["']([^"']+)["']\s+property=["']og:title["']/i);
-        if (mt) tituloImdb = limpiarHtmlTexto(mt[1]);
-      }
-      if (!year) {
-        var my = htmlTitle.match(/(?:19|20)\d{2}/);
-        if (my) year = my[0];
-      }
-      if (!poster) {
-        var mPoster = htmlTitle.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i)
-          || htmlTitle.match(/content=["']([^"']+)["']\s+property=["']og:image["']/i);
-        if (mPoster) poster = mPoster[1];
-      }
-      if (!descripcion) {
-        var mDesc = htmlTitle.match(/name=["']description["']\s+content=["']([^"']+)["']/i)
-          || htmlTitle.match(/content=["']([^"']+)["']\s+name=["']description["']/i);
-        if (mDesc) descripcion = limpiarHtmlTexto(mDesc[1]);
-      }
-
-      var pageTitleKey = normalizarTituloKey(tituloImdb || '');
-      var titleScore = pageTitleKey === wantedTitle ? 100 :
-        (pageTitleKey.indexOf(wantedTitle) === 0 || wantedTitle.indexOf(pageTitleKey) === 0 ? 55 : 0);
-      var yearOk = !wantedYear || !year || wantedYear === year;
-      var typeOk = typeCompatible(imdbType);
-      if (!typeOk && cand.isTv !== null) typeOk = wantedIsTv ? cand.isTv : (wantedType === 'pelicula' ? !cand.isTv : null);
-
-      // Si hay año solicitado y la página tiene otro, jamás usarla.
-      if (wantedYear && year && wantedYear !== year) continue;
-      // Si el título de la página no guarda una relación fuerte, no usarla.
-      if (titleScore < 55) continue;
-      // Si IMDb identifica claramente el tipo y no coincide, no usarla.
-      if (typeOk === false) continue;
-      if (!yearOk) continue;
-
-      if (poster && !esPortadaUrlValida(poster)) poster = null;
-      if (!poster && !descripcion && !calificacion) continue;
-
-      return {
-        tmdb_id: null,
-        imdb_id: cand.imdbId,
-        titulo_tmdb: tituloImdb || q,
-        portada_tmdb: null,
-        portada_imdb: poster,
-        backdrop: null,
-        calificacion: calificacion,
-        descripcion: descripcion ? limpiarTexto(descripcion) : null,
-        generos: generos,
-        fecha_estreno: year ? year + '-01-01' : null,
-        year: year,
-        titulo_original: tituloImdb || null,
-        votos: votos,
-        duracion: null,
-        status: null,
-        tagline: null,
-        slug_tmdb: null
-      };
-    }
+    } catch (e2) { /* ok */ }
     return null;
   } catch (e) {
     return null;
@@ -5138,9 +5119,28 @@ function decodeSvelteKitData(payload) {
   return result;
 }
 
+/** Poster desde Jikan/MAL por malId (animeav1 a menudo no trae poster en JSON) */
+async function fetchPosterMal(malId) {
+  if (!malId) return null;
+  try {
+    var url = 'https://api.jikan.moe/v4/anime/' + encodeURIComponent(String(malId));
+    var res = await fetch(url, {
+      headers: { Accept: 'application/json', 'User-Agent': HEADERS['User-Agent'] }
+    });
+    if (!res.ok) return null;
+    var data = await res.json();
+    var img = data && data.data && data.data.images;
+    if (!img) return null;
+    var jpg = img.jpg || {};
+    var webp = img.webp || {};
+    return jpg.large_image_url || jpg.image_url || webp.large_image_url || webp.image_url || null;
+  } catch (e) {
+    return null;
+  }
+}
+
 function animeAv1Poster(slug, malId) {
-  if (malId) return 'https://cdn.myanimelist.net/images/anime/' + String(malId).replace(/[^0-9]/g, '') + '.jpg';
-  // fallback genérico (puede 404)
+  // Path MAL directo no es fiable (necesita folder id); usar fetchPosterMal async
   return null;
 }
 
@@ -5295,13 +5295,20 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   var epsCount = media.episodesCount || 0;
   var score = media.score || null;
   var malId = media.malId || null;
-  var portada = media.poster || null;
+  var portada = media.poster || media.cover || media.image || null;
+  if (portada && typeof portada === 'string' && portada.indexOf('http') !== 0) {
+    portada = ANIMEAV1_BASE + (portada.charAt(0) === '/' ? portada : '/' + portada);
+  }
+  // animeav1 suele traer poster=null → Jikan/MAL
   if (!portada && malId) {
-    // MAL id a veces no es path directo; dejar null y TMDB enriquecerá
-    portada = null;
+    try {
+      portada = await fetchPosterMal(malId);
+    } catch (eMal) { portada = null; }
   }
   var catName = (media.category && media.category.name) || 'TV Anime';
   var tipo = /movie|pel[ií]cula/i.test(catName) ? 'Pelicula' : 'Anime';
+  // Año desde startDate
+  var yearAv1 = media.startDate ? String(media.startDate).slice(0, 4) : null;
 
   // Si piden episodio concreto → embeds (T2+ puede vivir en slug-season-N)
   if (epNum && epNum > 0) {
