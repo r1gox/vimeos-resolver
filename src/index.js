@@ -3379,9 +3379,30 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
     if (String(item.year) === my) item.fecha_estreno = meta.fecha_estreno;
   }
 
-  if (meta.duracion && !item.duracion) item.duracion = meta.duracion;
-  if (meta.duracion_texto && !item.duracion_texto) item.duracion_texto = meta.duracion_texto;
-  if (meta.certificacion && !item.certificacion) item.certificacion = meta.certificacion;
+  // Duración, género y certificación IMDb: priorizar siempre si el match es válido
+  if (yearOkMeta && simOk) {
+    if (meta.duracion) {
+      item.duracion = meta.duracion;
+      item.duracion_texto = meta.duracion_texto || formatearDuracionImdb(meta.duracion);
+    } else if (meta.duracion_texto) {
+      item.duracion_texto = meta.duracion_texto;
+    }
+    if (meta.generos && meta.generos.length) {
+      item.generos = meta.generos;
+      item.genero = meta.generos.join(', ');
+    }
+    if (meta.certificacion) {
+      item.certificacion = meta.certificacion;
+      item.clasificacion = meta.certificacion;
+    }
+  } else {
+    if (meta.duracion && !item.duracion) item.duracion = meta.duracion;
+    if (meta.duracion_texto && !item.duracion_texto) item.duracion_texto = meta.duracion_texto;
+    if (meta.certificacion && !item.certificacion) {
+      item.certificacion = meta.certificacion;
+      item.clasificacion = meta.certificacion;
+    }
+  }
   if (meta.status) item.status = meta.status;
   if (meta.tagline) item.tagline = meta.tagline;
 
@@ -3506,6 +3527,8 @@ async function buscarMetaOmdb(titulo) {
       titulo_original: d.Title || null,
       votos: d.imdbVotes && d.imdbVotes !== 'N/A' ? d.imdbVotes : null,
       duracion: d.Runtime && d.Runtime !== 'N/A' ? parseInt(d.Runtime, 10) || null : null,
+      duracion_texto: d.Runtime && d.Runtime !== 'N/A' ? formatearDuracionImdb(parseInt(d.Runtime, 10)) : null,
+      certificacion: d.Rated && d.Rated !== 'N/A' ? String(d.Rated).trim() : null,
       status: null,
       tagline: null,
       slug_tmdb: null
@@ -3513,6 +3536,17 @@ async function buscarMetaOmdb(titulo) {
   } catch (e) {
     return null;
   }
+}
+
+/** Minutos → "1h 31min" (estilo IMDb ES) */
+function formatearDuracionImdb(mins) {
+  var n = parseInt(mins, 10);
+  if (!n || n <= 0) return null;
+  var h = Math.floor(n / 60);
+  var m = n % 60;
+  if (h > 0 && m > 0) return h + 'h ' + m + 'min';
+  if (h > 0) return h + 'h';
+  return m + 'min';
 }
 
 /**
@@ -4498,17 +4532,26 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
     if (!destino.portada_imdb && origenMeta.portada_imdb) destino.portada_imdb = origenMeta.portada_imdb;
     if (!destino.portada_tmdb && origenMeta.portada_tmdb) destino.portada_tmdb = origenMeta.portada_tmdb;
     if (!destino.descripcion && origenMeta.descripcion) destino.descripcion = origenMeta.descripcion;
-    if (destino.calificacion == null && origenMeta.calificacion != null) destino.calificacion = origenMeta.calificacion;
-    if (!destino.imdb_id && origenMeta.imdb_id) destino.imdb_id = origenMeta.imdb_id;
+    // Preferir datos IMDb: si origen trae imdb_id o calificacion IMDb, pisa
+    var esImdb = !!(origenMeta.imdb_id || origenMeta.portada_imdb || origenMeta.certificacion);
+    if (origenMeta.calificacion != null) {
+      if (destino.calificacion == null || esImdb) destino.calificacion = origenMeta.calificacion;
+    }
+    if (origenMeta.imdb_id) destino.imdb_id = origenMeta.imdb_id;
     if (!destino.tmdb_id && origenMeta.tmdb_id) destino.tmdb_id = origenMeta.tmdb_id;
-    if ((!destino.generos || !destino.generos.length) && origenMeta.generos && origenMeta.generos.length) destino.generos = origenMeta.generos;
+    if (origenMeta.generos && origenMeta.generos.length) {
+      if (!destino.generos || !destino.generos.length || esImdb) destino.generos = origenMeta.generos;
+    }
     if (!destino.year && origenMeta.year) destino.year = origenMeta.year;
     if (!destino.fecha_estreno && origenMeta.fecha_estreno) destino.fecha_estreno = origenMeta.fecha_estreno;
-    if (!destino.votos && origenMeta.votos) destino.votos = origenMeta.votos;
+    if (origenMeta.votos && (!destino.votos || esImdb)) destino.votos = origenMeta.votos;
     if (!destino.backdrop && origenMeta.backdrop) destino.backdrop = origenMeta.backdrop;
-    if (!destino.duracion && origenMeta.duracion) destino.duracion = origenMeta.duracion;
-    if (!destino.duracion_texto && origenMeta.duracion_texto) destino.duracion_texto = origenMeta.duracion_texto;
-    if (!destino.certificacion && origenMeta.certificacion) destino.certificacion = origenMeta.certificacion;
+    if (origenMeta.duracion && (!destino.duracion || esImdb)) {
+      destino.duracion = origenMeta.duracion;
+      destino.duracion_texto = origenMeta.duracion_texto || formatearDuracionImdb(origenMeta.duracion);
+    }
+    if (origenMeta.duracion_texto && (!destino.duracion_texto || esImdb)) destino.duracion_texto = origenMeta.duracion_texto;
+    if (origenMeta.certificacion && (!destino.certificacion || esImdb)) destino.certificacion = origenMeta.certificacion;
     return destino;
   }
 
@@ -4584,7 +4627,8 @@ function normalizarCamposResultado(item) {
   var campos = [
     'titulo', 'titulo_original', 'tipo', 'formato', 'fuente', 'source_id', 'slug',
     'portada', 'backdrop', 'descripcion', 'calificacion', 'votos', 'year', 'fecha_estreno',
-    'generos', 'genero', 'duracion', 'estado', 'en_emision', 'finalizado',
+    'generos', 'genero', 'duracion', 'duracion_texto', 'certificacion', 'clasificacion',
+    'estado', 'en_emision', 'finalizado',
     'imdb_id', 'tmdb_id', 'url_extract'
   ];
   for (var i = 0; i < campos.length; i++) {
@@ -4709,25 +4753,39 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
     meta.fecha_estreno = metaFull.release_date || metaFull.tmdb_release_date;
   }
 
-  // No pisar datos buenos ya extraídos de la página fuente
+  // Conservar sinopsis/portada de la fuente si son buenas;
+  // calificación, duración, género y certificación → SIEMPRE preferir IMDb cuando existan
   var descFuente = detalle.descripcion || '';
   var descFuenteOk = descFuente.length > 60 && !/\.\.\.\s*$/.test(descFuente);
   var portadaFuenteOk = detalle.portada && !esFuentePelisplus(detalle) && !esPortadaSospechosa(detalle.portada);
 
   if (descFuenteOk) meta.descripcion = null; // conservar scrape
   if (portadaFuenteOk) { meta.portada_tmdb = null; meta.portada_imdb = null; }
-  if (detalle.genero) meta.generos = null;
-  // No bloquear rating: si la fuente no trae calificación, usar IMDb/TMDB/OMDb
+  // NO anular generos de IMDb aunque la fuente traiga genero
 
   aplicarMetaAResultadoBusqueda(detalle, meta);
 
-  // Garantizar calificacion siempre que meta la tenga
-  if ((detalle.calificacion == null || detalle.calificacion === '') && metaFull.calificacion != null) {
+  // Forzar campos IMDb (calificación, votos, duración, géneros, certificación)
+  if (metaFull.calificacion != null) {
     detalle.calificacion = normalizarCalificacion(metaFull.calificacion);
   } else if (detalle.calificacion != null) {
     detalle.calificacion = normalizarCalificacion(detalle.calificacion);
   }
-  if (!detalle.votos && metaFull.votos) detalle.votos = metaFull.votos;
+  if (metaFull.votos) detalle.votos = metaFull.votos;
+  if (metaFull.imdb_id) detalle.imdb_id = metaFull.imdb_id;
+  if (metaFull.duracion) {
+    detalle.duracion = metaFull.duracion;
+    detalle.duracion_texto = metaFull.duracion_texto || formatearDuracionImdb(metaFull.duracion);
+  }
+  if (metaFull.duracion_texto) detalle.duracion_texto = metaFull.duracion_texto;
+  if (metaFull.generos && metaFull.generos.length) {
+    detalle.generos = metaFull.generos;
+    detalle.genero = metaFull.generos.join(', ');
+  }
+  if (metaFull.certificacion) {
+    detalle.certificacion = metaFull.certificacion;
+    detalle.clasificacion = metaFull.certificacion; // alias (B15, PG-13, TV-MA…)
+  }
 
   // Temporadas TMDB (solo meta; no pisa embeds)
   if (Array.isArray(metaFull.temporadas) && metaFull.temporadas.length) {
