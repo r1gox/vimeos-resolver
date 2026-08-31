@@ -28,6 +28,7 @@ var DORAMASFLIX_BASE = 'https://doramasflix.io';
 var DORAMASFLIX_GQL = 'https://user-api.fluxcedene.net/graphql';
 // Metadatos TMDB vía worker público (no cambia el flujo de embeds/fuentes)
 var TMDB_META_API = ''; // desactivado: meta solo de la página fuente (+ TMDB key si hay)
+var OMDB_API_KEY = 'cfce6c48'; // OMDb API (datos IMDb)
 
 var REPRODUCTORES_PERMITIDOS = [
   'vimeos.net', 'player.vimeos',
@@ -56,6 +57,7 @@ async function handleRequest(request, env) {
   // API key TMDB opcional (Cloudflare Worker secret / var)
   try {
     if (env && env.TMDB_API_KEY) __TMDB_KEY__ = env.TMDB_API_KEY;
+    if (env && env.OMDB_API_KEY) OMDB_API_KEY = env.OMDB_API_KEY;
   } catch (eEnv) { /* ok */ }
 
   var url = new URL(request.url);
@@ -3517,11 +3519,20 @@ function elegirMejorMeta(metas, titulo) {
 }
 
 /** OMDb (fallback gratuito). Posters de Amazon se tratan como portada_imdb. */
-async function buscarMetaOmdb(titulo) {
+async function buscarMetaOmdb(titulo, yearHint, imdbId) {
   var q = String(titulo || '').replace(/\(\d{4}\)/g, '').trim();
-  if (!q) return null;
+  if (!q && !imdbId) return null;
   try {
-    var url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) + '&apikey=trilogy&plot=full';
+    var url;
+    if (imdbId && String(imdbId).indexOf('tt') === 0) {
+      url = 'https://www.omdbapi.com/?i=' + encodeURIComponent(imdbId) + '&apikey=' + encodeURIComponent(OMDB_API_KEY) + '&plot=full';
+    } else {
+      url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) + '&apikey=' + encodeURIComponent(OMDB_API_KEY) + '&plot=full';
+      if (yearHint) {
+        var yH = String(yearHint).match(/(19|20)\d{2}/);
+        if (yH) url += '&y=' + yH[0];
+      }
+    }
     var res = await fetch(url, { headers: { Accept: 'application/json' } });
     if (!res.ok) return null;
     var d = await res.json();
@@ -3555,6 +3566,7 @@ async function buscarMetaOmdb(titulo) {
       duracion: d.Runtime && d.Runtime !== 'N/A' ? parseInt(d.Runtime, 10) || null : null,
       duracion_texto: d.Runtime && d.Runtime !== 'N/A' ? formatearDuracionImdb(parseInt(d.Runtime, 10)) : null,
       certificacion: d.Rated && d.Rated !== 'N/A' ? String(d.Rated).trim() : null,
+      rating_source: 'omdb',
       status: null,
       tagline: null,
       slug_tmdb: null
@@ -4059,7 +4071,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
     var c = candidates[ci];
     var omdb = null;
     try {
-      var oRes = await fetch('https://www.omdbapi.com/?i=' + encodeURIComponent(c.id) + '&apikey=trilogy&plot=full', {
+      var oRes = await fetch('https://www.omdbapi.com/?i=' + encodeURIComponent(c.id) + '&apikey=' + encodeURIComponent(OMDB_API_KEY) + '&plot=full', {
         headers: { Accept: 'application/json' }
       });
       if (oRes.ok) {
@@ -4134,7 +4146,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
   if (wantedYear) {
     try {
       var omdbSearch = 'https://www.omdbapi.com/?s=' + encodeURIComponent(q) +
-        '&y=' + encodeURIComponent(wantedYear) + '&type=movie&apikey=trilogy';
+        '&y=' + encodeURIComponent(wantedYear) + '&type=movie&apikey=' + encodeURIComponent(OMDB_API_KEY);
       var oS = await fetch(omdbSearch, { headers: { Accept: 'application/json' } });
       if (oS.ok) {
         var sd = await oS.json();
@@ -4148,7 +4160,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
           try { fichaR = await scrapeFichaImdbEs(row.imdbID); } catch (eR) { fichaR = null; }
           var omdbR = null;
           try {
-            var oR = await fetch('https://www.omdbapi.com/?i=' + encodeURIComponent(row.imdbID) + '&apikey=trilogy&plot=full', {
+            var oR = await fetch('https://www.omdbapi.com/?i=' + encodeURIComponent(row.imdbID) + '&apikey=' + encodeURIComponent(OMDB_API_KEY) + '&plot=full', {
               headers: { Accept: 'application/json' }
             });
             if (oR.ok) {
@@ -4473,6 +4485,247 @@ function metaCacheSet(key, value) {
  *   2. TMDB oficial si existe TMDB_API_KEY (backdrop + respaldo)
  *   3. OMDb solo si todavía faltan datos
  */
+
+/**
+ * Busca en themoviedb.org (HTML, sin API key) y scrapea la ficha.
+ * Útil cuando IMDb/OMDb fallan (WAF o título no indexado).
+ * Devuelve: calificacion (0-10), generos, duracion, certificacion, portada, year, tmdb_id
+ */
+async function buscarMetaTmdbWeb(titulo, tipoHint, yearHint) {
+  var q = String(titulo || '').replace(/\(\d{4}\)/g, '').trim();
+  if (!q) return null;
+  var wantedYear = yearHint ? String(yearHint).match(/(19|20)\d{2}/) : null;
+  wantedYear = wantedYear ? wantedYear[0] : null;
+  var isTv = /serie|anime|tv/i.test(String(tipoHint || ''));
+  var searchPath = isTv ? '/search/tv' : '/search/movie';
+
+  try {
+    var searchUrl = 'https://www.themoviedb.org' + searchPath + '?query=' + encodeURIComponent(q) +
+      (wantedYear ? '&year=' + wantedYear : '');
+    var res = await fetchWithTimeout(searchUrl, {
+      headers: {
+        'User-Agent': HEADERS['User-Agent'],
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.5',
+        'Accept': 'text/html'
+      },
+      redirect: 'follow'
+    }, 10000);
+    if (!res || !res.ok) return null;
+    var html = await res.text();
+    if (!html || html.length < 500) return null;
+
+    // Candidatos: /movie/ID-slug o /tv/ID-slug
+    var re = isTv
+      ? /href="(\/tv\/(\d+)[^"]*)"[^>]*>[\s\S]{0,400}?<(?:h2|span)[^>]*>([^<]{2,120})</gi
+      : /href="(\/movie\/(\d+)[^"]*)"[^>]*>[\s\S]{0,400}?<(?:h2|span)[^>]*>([^<]{2,120})</gi;
+
+    var cands = [];
+    var seen = Object.create(null);
+    var m;
+    while ((m = re.exec(html)) !== null && cands.length < 12) {
+      var id = m[2];
+      if (seen[id]) continue;
+      seen[id] = true;
+      var path = m[1].split('?')[0];
+      var name = limpiarTexto(m[3] || '');
+      // año cerca de la tarjeta
+      var slice = html.slice(m.index, m.index + 600);
+      var yM = slice.match(/\((19|20)\d{2}\)/) || slice.match(/(19|20)\d{2}/);
+      var y = yM ? (yM[0].replace(/[()]/g, '').slice(0, 4)) : null;
+      if (wantedYear && y && y !== wantedYear) continue;
+      cands.push({ id: id, path: path, title: name, year: y });
+    }
+
+    // Fallback más simple: solo IDs
+    if (!cands.length) {
+      var re2 = isTv ? /href="(\/tv\/(\d+)[^"]*)"/g : /href="(\/movie\/(\d+)[^"]*)"/g;
+      while ((m = re2.exec(html)) !== null && cands.length < 8) {
+        if (seen[m[2]]) continue;
+        seen[m[2]] = true;
+        cands.push({ id: m[2], path: m[1].split('?')[0], title: q, year: wantedYear });
+      }
+    }
+    if (!cands.length) return null;
+
+    // Preferir título que solape + año
+    function ov(a, b) {
+      var na = normalizarTituloKey(a || '');
+      var nb = normalizarTituloKey(b || '');
+      if (!na || !nb) return 0;
+      if (na === nb) return 1;
+      var words = na.split(/\s+/).filter(function (w) { return w.length >= 3; });
+      if (!words.length) return 0;
+      var hit = 0;
+      for (var i = 0; i < words.length; i++) if (nb.indexOf(words[i]) !== -1) hit++;
+      return hit / words.length;
+    }
+    cands.sort(function (a, b) {
+      var sa = ov(q, a.title) * 100 + (wantedYear && a.year === wantedYear ? 50 : 0);
+      var sb = ov(q, b.title) * 100 + (wantedYear && b.year === wantedYear ? 50 : 0);
+      // "Facing El Chapo" vs "La captura": si el path contiene la-captura, bonus
+      if (/la-captura|facing-el-chapo/i.test(a.path)) sa += 40;
+      if (/la-captura|facing-el-chapo/i.test(b.path)) sb += 40;
+      return sb - sa;
+    });
+
+    // Probar top 3
+    for (var i = 0; i < Math.min(3, cands.length); i++) {
+      var ficha = await scrapeFichaTmdb(cands[i].path, isTv);
+      if (!ficha) continue;
+      if (wantedYear && ficha.year && ficha.year !== wantedYear) continue;
+      // Si el título no pega nada y no hay year match fuerte, seguir
+      var o = Math.max(ov(q, ficha.titulo_tmdb || ''), ov(q, ficha.titulo_original || ''));
+      if (o < 0.2 && !(wantedYear && ficha.year === wantedYear)) continue;
+      return ficha;
+    }
+    // Último: primera ficha con año correcto
+    for (var j = 0; j < Math.min(3, cands.length); j++) {
+      var f2 = await scrapeFichaTmdb(cands[j].path, isTv);
+      if (f2 && (!wantedYear || !f2.year || f2.year === wantedYear)) return f2;
+    }
+  } catch (e) {
+    return null;
+  }
+  return null;
+}
+
+/** Scrape ficha TMDB /movie/ID o /tv/ID */
+async function scrapeFichaTmdb(path, isTv) {
+  if (!path || path.charAt(0) !== '/') return null;
+  try {
+    var url = 'https://www.themoviedb.org' + path;
+    var res = await fetchWithTimeout(url, {
+      headers: {
+        'User-Agent': HEADERS['User-Agent'],
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.5',
+        'Accept': 'text/html',
+        'Referer': 'https://www.themoviedb.org/'
+      },
+      redirect: 'follow'
+    }, 12000);
+    if (!res || !res.ok) return null;
+    var html = await res.text();
+    if (!html || html.length < 1000) return null;
+
+    var idM = path.match(/\/(?:movie|tv)\/(\d+)/);
+    var tmdbId = idM ? parseInt(idM[1], 10) : null;
+
+    var titulo = null;
+    var ogTitle = html.match(/property="og:title"\s+content="([^"]+)"/i);
+    if (ogTitle) titulo = limpiarTexto(ogTitle[1].replace(/\(\d{4}\)\s*$/, '').trim());
+    if (!titulo) {
+      var h2 = html.match(/<h2\s+class="[^"]*"[^>]*>\s*<a[^>]*>\s*([^<]+)/i);
+      if (h2) titulo = limpiarTexto(h2[1]);
+    }
+
+    var tituloOrig = null;
+    var toM = html.match(/Título original<\/strong>\s*([^<]+)/i)
+      || html.match(/Original Title<\/strong>\s*([^<]+)/i)
+      || html.match(/original_title["']?\s*:\s*["']([^"']+)["']/i);
+    if (toM) tituloOrig = limpiarTexto(toM[1]);
+
+    var year = null;
+    var yM = html.match(/<span class="tag release_date">\((\d{4})\)<\/span>/)
+      || html.match(/property="og:title"[^>]*content="[^"]*\((\d{4})\)/i)
+      || html.match(/release[^>]*>\s*\d{1,2}\/\d{1,2}\/(\d{4})/);
+    if (yM) year = yM[1];
+
+    // User score data-percent 0-100 → 0-10
+    var calif = null;
+    var sc = html.match(/data-percent="([0-9.]+)"/);
+    if (sc) {
+      var pct = parseFloat(sc[1]);
+      if (!isNaN(pct) && pct > 0) calif = Math.round((pct / 10) * 10) / 10; // 88 → 8.8
+    }
+
+    var cert = null;
+    var cM = html.match(/<span class="certification">\s*([^<]+?)\s*<\/span>/i);
+    if (cM) cert = limpiarTexto(cM[1]);
+
+    var duracion = null;
+    var durTxt = null;
+    var rt = html.match(/(\d+)\s*h\s*(\d+)\s*m/i) || html.match(/>(\d+)\s*m</i);
+    if (rt) {
+      if (rt[2] != null) {
+        duracion = parseInt(rt[1], 10) * 60 + parseInt(rt[2], 10);
+        durTxt = rt[1] + 'h ' + rt[2] + 'min';
+      } else {
+        var mins = parseInt(rt[1], 10);
+        if (mins >= 20 && mins <= 400) {
+          duracion = mins;
+          durTxt = formatearDuracionImdb(mins);
+        }
+      }
+    }
+
+    var generos = [];
+    var gre = /href="\/genre\/\d+-[^"]+"[^>]*>([^<]+)<\/a>/gi;
+    var gm;
+    var seenG = {};
+    while ((gm = gre.exec(html)) !== null && generos.length < 8) {
+      var gn = limpiarTexto(gm[1]);
+      var gk = gn.toLowerCase();
+      if (!gn || seenG[gk]) continue;
+      seenG[gk] = true;
+      generos.push(gn);
+    }
+
+    var desc = null;
+    var ogd = html.match(/property="og:description"\s+content="([^"]+)"/i);
+    if (ogd) desc = limpiarTexto(ogd[1]);
+    if (!desc || desc.length < 40) {
+      var ov = html.match(/class="overview"[\s\S]*?<p>\s*([\s\S]*?)\s*<\/p>/i);
+      if (ov) desc = limpiarTexto(ov[1]);
+    }
+
+    var portada = null;
+    var ogi = html.match(/property="og:image"\s+content="([^"]+)"/i);
+    if (ogi && /themoviedb\.org/i.test(ogi[1])) {
+      portada = ogi[1].replace(/\/t\/p\/w\d+/, '/t/p/w500');
+    }
+
+    var backdrop = null;
+    var bg = html.match(/data-backdrop=["']([^"']+)["']/i)
+      || html.match(/backdrop_path["']?\s*:\s*["']([^"']+)["']/i);
+    if (bg) {
+      var bp = bg[1];
+      if (bp.indexOf('http') === 0) backdrop = bp;
+      else if (bp.charAt(0) === '/') backdrop = 'https://image.tmdb.org/t/p/w1280' + bp;
+    }
+
+    var imdbId = null;
+    var im = html.match(/imdb\.com\/title\/(tt\d+)/i);
+    if (im) imdbId = im[1];
+
+    if (!titulo && !tmdbId) return null;
+
+    return {
+      tmdb_id: tmdbId,
+      imdb_id: imdbId,
+      titulo_tmdb: titulo,
+      titulo_original: tituloOrig || titulo,
+      portada_tmdb: portada,
+      portada_imdb: null,
+      backdrop: backdrop,
+      calificacion: calif,
+      descripcion: desc,
+      generos: generos,
+      fecha_estreno: year ? year + '-01-01' : null,
+      year: year,
+      votos: null,
+      duracion: duracion,
+      duracion_texto: durTxt,
+      certificacion: cert,
+      status: null,
+      tagline: null,
+      slug_tmdb: path.replace(/^\/(movie|tv)\//, ''),
+      rating_source: 'tmdb'
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
   var variantes = variantesTitulo(titulo);
   if (!variantes.length) return null;
@@ -4494,9 +4747,18 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
     if (!destino.portada_tmdb && origenMeta.portada_tmdb) destino.portada_tmdb = origenMeta.portada_tmdb;
     if (!destino.descripcion && origenMeta.descripcion) destino.descripcion = origenMeta.descripcion;
     // Preferir datos IMDb: si origen trae imdb_id o calificacion IMDb, pisa
-    var esImdb = !!(origenMeta.imdb_id || origenMeta.portada_imdb || origenMeta.certificacion);
+    var esImdb = !!(origenMeta.imdb_id || origenMeta.portada_imdb || origenMeta.rating_source === 'imdb' || origenMeta.rating_source === 'omdb');
+    var destEsImdb = !!(destino.imdb_id || destino.rating_source === 'imdb' || destino.rating_source === 'omdb');
+    // No pisar rating IMDb/OMDb con TMDB
     if (origenMeta.calificacion != null) {
-      if (destino.calificacion == null || esImdb) destino.calificacion = origenMeta.calificacion;
+      if (destino.calificacion == null) {
+        destino.calificacion = origenMeta.calificacion;
+        if (origenMeta.rating_source) destino.rating_source = origenMeta.rating_source;
+        else if (esImdb) destino.rating_source = 'imdb';
+      } else if (esImdb && !destEsImdb) {
+        destino.calificacion = origenMeta.calificacion;
+        destino.rating_source = origenMeta.rating_source || 'imdb';
+      }
     }
     if (origenMeta.imdb_id) destino.imdb_id = origenMeta.imdb_id;
     if (!destino.tmdb_id && origenMeta.tmdb_id) destino.tmdb_id = origenMeta.tmdb_id;
@@ -4516,48 +4778,70 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
     return destino;
   }
 
-  // 1) IMDb primero (suggestion + ficha ES + cruce por sinopsis)
+  // Prioridad: 1) IMDb  2) OMDb (rating IMDb vía API)  3) TMDB (secundario)
   // 4º arg opcional: string descripción o { descripcion }
   var descHintMeta = arguments.length >= 4 ? arguments[3] : null;
   if (descHintMeta && typeof descHintMeta === 'object') {
     descHintMeta = descHintMeta.descripcion || descHintMeta.descripcionHint || null;
   }
+
+  // 1) IMDb primero (suggestion + ficha ES)
   for (var i = 0; i < Math.min(variantes.length, 7); i++) {
     try {
       var mImdb = await buscarMetaImdb(variantes[i], tipoHint, yearHint, { descripcionHint: descHintMeta });
       if (mImdb) {
-        // Si hay yearHint y el candidato no coincide → descartar este match
         if (yearHint && mImdb.year && String(yearHint).slice(0, 4) !== String(mImdb.year).slice(0, 4)) {
           continue;
         }
         meta = completar(meta, mImdb);
+        // Si ya tenemos rating IMDb + id, suficiente para lo principal
+        if (meta.imdb_id && meta.calificacion != null && (meta.portada_imdb || meta.duracion || meta.certificacion)) break;
         if (meta.portada_imdb || meta.imdb_id || meta.calificacion != null) break;
       }
     } catch (eImdb) { /* siguiente variante */ }
   }
 
-  // 2) TMDB para completar. No sustituye el poster IMDb si ya existe.
-  for (var t = 0; t < Math.min(variantes.length, 3); t++) {
-    try {
-      var mTmdb = await buscarMetaTmdbApi(variantes[t], tipoHint, yearHint);
-      if (mTmdb) {
-        meta = completar(meta, mTmdb);
-        if (meta.tmdb_id && meta.descripcion && meta.portada_tmdb) break;
-      }
-    } catch (eTmdb) { /* siguiente */ }
-  }
-
-  // 3) OMDb como último recurso — probar varias variantes, no solo la primera
-  if (!meta || !meta.portada_imdb || !meta.descripcion || !meta.calificacion) {
+  // 2) OMDb — datos oficiales IMDb (rating, Runtime, Genre, Rated) con tu API key
+  if (!meta || meta.calificacion == null || !meta.duracion || !meta.certificacion || !meta.imdb_id) {
+    // Si ya tenemos imdb_id, consultar por id (más preciso)
+    if (meta && meta.imdb_id) {
+      try {
+        var mById = await buscarMetaOmdb(null, yearHint, meta.imdb_id);
+        if (mById) meta = completar(meta, mById);
+      } catch (eId) { /* ok */ }
+    }
     for (var oi = 0; oi < Math.min(variantes.length, 5); oi++) {
       try {
-        var mOmdb = await buscarMetaOmdb(variantes[oi]);
+        var mOmdb = await buscarMetaOmdb(variantes[oi], yearHint, null);
         if (mOmdb) {
+          // Respetar yearHint
+          if (yearHint && mOmdb.year && String(yearHint).slice(0, 4) !== String(mOmdb.year).slice(0, 4)) continue;
           meta = completar(meta, mOmdb);
-          if (meta.portada_imdb || meta.portada_tmdb) break;
+          if (meta.calificacion != null && meta.imdb_id) break;
         }
       } catch (eOmdb) { /* siguiente */ }
     }
+  }
+
+  // 3) TMDB API oficial (secundario — solo rellena huecos)
+  if (!meta || meta.calificacion == null || !meta.descripcion || !meta.portada_tmdb || !meta.backdrop) {
+    for (var t = 0; t < Math.min(variantes.length, 3); t++) {
+      try {
+        var mTmdb = await buscarMetaTmdbApi(variantes[t], tipoHint, yearHint);
+        if (mTmdb) {
+          meta = completar(meta, mTmdb);
+          if (meta.tmdb_id && meta.descripcion) break;
+        }
+      } catch (eTmdb) { /* siguiente */ }
+    }
+  }
+
+  // 4) TMDB web scrape (secundario — themoviedb.org sin API key)
+  if (!meta || meta.calificacion == null || !meta.duracion || !meta.generos || !meta.generos.length || !meta.certificacion) {
+    try {
+      var mWeb = await buscarMetaTmdbWeb(titulo, tipoHint, yearHint);
+      if (mWeb) meta = completar(meta, mWeb);
+    } catch (eWeb) { /* ok */ }
   }
 
   if (meta) metaCacheSet(cacheKey, meta);
