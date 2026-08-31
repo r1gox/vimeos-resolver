@@ -284,6 +284,13 @@ async function handleRequest(request, env) {
             delete itc.genres;
             delete itc.tmdb_poster;
             delete itc.poster_tmdb;
+            // Conservar rating antes de borrar aliases
+            if ((itc.calificacion == null || itc.calificacion === '') && itc.rating != null) {
+              itc.calificacion = itc.rating;
+            }
+            if ((itc.calificacion == null || itc.calificacion === '') && itc.tmdb_rating != null) {
+              itc.calificacion = itc.tmdb_rating;
+            }
             delete itc.tmdb_rating;
             delete itc.rating;
             delete itc.tmdb_release_date;
@@ -301,6 +308,10 @@ async function handleRequest(request, env) {
                 itc.portada = itc.portada_tmdb;
                 itc.poster_source = 'tmdb';
               }
+            }
+            // Normalizar calificación (número 0–10)
+            if (itc.calificacion != null && itc.calificacion !== '') {
+              itc.calificacion = normalizarCalificacion(itc.calificacion);
             }
             if (itc.slug) {
               var sidFinal = sourceIdFromName(itc.fuente);
@@ -3195,8 +3206,11 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
     item.backdrop = meta.backdrop;
   }
 
-  if (meta.calificacion != null && !isNaN(meta.calificacion) && !item.calificacion) {
-    item.calificacion = String(meta.calificacion);
+  // Rating: siempre rellenar si falta (IMDb / TMDB / OMDb)
+  if (meta.calificacion != null && !isNaN(Number(meta.calificacion))) {
+    if (item.calificacion == null || item.calificacion === '' || item.calificacion === 0 || item.calificacion === '0') {
+      item.calificacion = normalizarCalificacion(meta.calificacion);
+    }
   }
   if (meta.votos && !item.votos) item.votos = meta.votos;
 
@@ -3990,6 +4004,17 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
  * Enriquece CADA ítem de la lista (no solo los que coinciden con una query).
  * Concurrencia limitada para no saturar el worker de meta.
  */
+/** Normaliza rating a número 0–10 con 1 decimal (string o number) */
+function normalizarCalificacion(val) {
+  if (val == null || val === '' || val === 'N/A') return null;
+  var n = Number(String(val).replace(',', '.').replace(/[^\d.]/g, ''));
+  if (isNaN(n) || n <= 0) return null;
+  // Si viene 0–100 (raro), escalar
+  if (n > 10 && n <= 100) n = n / 10;
+  if (n > 10) n = 10;
+  return Math.round(n * 10) / 10;
+}
+
 async function enriquecerListaConTmdb(lista, query) {
   if (!lista || !lista.length) return lista;
 
@@ -4003,11 +4028,16 @@ async function enriquecerListaConTmdb(lista, query) {
       if (!item || !item.titulo) continue;
       var sinPortada = !item.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(item.portada));
       var sinInfo = !item.descripcion || !item.genero;
-      // Siempre enriquecer si falta portada o info; no saltar solo por tener tmdb_id
-      if (!sinPortada && !sinInfo && item.tmdb_id && !esFuentePelisplus(item)) continue;
+      var sinRating = item.calificacion == null || item.calificacion === '' || item.calificacion === 0 || item.calificacion === '0';
+      // Siempre enriquecer si falta portada, info o rating
+      if (!sinPortada && !sinInfo && !sinRating && item.tmdb_id && !esFuentePelisplus(item)) continue;
       try {
         var meta = await metaTmdbParaTitulo(item.titulo, item.tipo, extraerYearItem(item));
         if (meta) aplicarMetaAResultadoBusqueda(item, meta);
+        // Forzar rating si sigue vacío
+        if ((item.calificacion == null || item.calificacion === '') && meta && meta.calificacion != null) {
+          item.calificacion = normalizarCalificacion(meta.calificacion);
+        }
         // Último recurso: forzar portada_tmdb / portada_imdb si sigue vacía
         if ((!item.portada || esPortadaSospechosa(item.portada))) {
           if (item.portada_imdb && esPortadaUrlValida(item.portada_imdb)) {
@@ -4026,6 +4056,8 @@ async function enriquecerListaConTmdb(lista, query) {
             item.poster_source = 'imdb';
           }
         }
+        // Normalizar formato final
+        if (item.calificacion != null) item.calificacion = normalizarCalificacion(item.calificacion);
       } catch (e) { /* siguiente */ }
     }
   }
@@ -4084,8 +4116,17 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   if (descFuenteOk) meta.descripcion = null; // conservar scrape
   if (portadaFuenteOk) { meta.portada_tmdb = null; meta.portada_imdb = null; }
   if (detalle.genero) meta.generos = null;
+  // No bloquear rating: si la fuente no trae calificación, usar IMDb/TMDB/OMDb
 
   aplicarMetaAResultadoBusqueda(detalle, meta);
+
+  // Garantizar calificacion siempre que meta la tenga
+  if ((detalle.calificacion == null || detalle.calificacion === '') && metaFull.calificacion != null) {
+    detalle.calificacion = normalizarCalificacion(metaFull.calificacion);
+  } else if (detalle.calificacion != null) {
+    detalle.calificacion = normalizarCalificacion(detalle.calificacion);
+  }
+  if (!detalle.votos && metaFull.votos) detalle.votos = metaFull.votos;
 
   // Temporadas TMDB (solo meta; no pisa embeds)
   if (Array.isArray(metaFull.temporadas) && metaFull.temporadas.length) {
