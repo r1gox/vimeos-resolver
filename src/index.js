@@ -3185,14 +3185,19 @@ function metaCoincideConItem(item, meta) {
   // Año de la fuente manda: si difiere, NO es la misma obra
   if (yItem && yMeta && String(yItem) !== String(yMeta)) return false;
 
-  if (tItem === tMeta) {
-    // Título idéntico + año OK (o sin año en ítem) → coincide
-    return true;
+  if (tItem === tMeta) return true;
+
+  // Contención casi exacta (solo año extra)
+  if (tItem.indexOf(tMeta) === 0 || tMeta.indexOf(tItem) === 0) {
+    var longer = tItem.length >= tMeta.length ? tItem : tMeta;
+    var shorter = tItem.length >= tMeta.length ? tMeta : tItem;
+    var rest = longer.slice(shorter.length).trim();
+    if (!rest || /^\d{4}$/.test(rest)) return true;
   }
 
   var STOP = {
     one:1, piece:1, the:1, and:1, film:1, movie:1, special:1, episode:1,
-    anime:1, series:1, season:1, part:1
+    anime:1, series:1, season:1, part:1, el:1, la:1, los:1, las:1, de:1, del:1
   };
   function extras(t) {
     return t.split(/\s+/).filter(function (w) { return w.length >= 3 && !STOP[w]; });
@@ -3200,16 +3205,21 @@ function metaCoincideConItem(item, meta) {
   var eItem = extras(tItem);
   var eMeta = extras(tMeta);
 
-  if (eItem.length) {
-    var shared = 0;
-    for (var i = 0; i < eItem.length; i++) {
-      if (tMeta.indexOf(eItem[i]) !== -1) shared++;
-    }
-    if (shared === 0) return false;
-    if (shared < Math.ceil(eItem.length / 2)) return false;
-  } else {
-    if (eMeta.length > 0) return false;
+  // "la captura" vs "facing el chapo" → shared 0 → NO
+  if (!eItem.length) return false;
+  var shared = 0;
+  for (var i = 0; i < eItem.length; i++) {
+    if (tMeta.indexOf(eItem[i]) !== -1) shared++;
   }
+  if (shared === 0) return false;
+  // Debe compartir la mayoría de tokens distintivos
+  if (shared < Math.ceil(eItem.length * 0.6)) return false;
+  // Y el candidato no debe tener muchos extras ajenos (facing, chapo…)
+  var extraAjenos = 0;
+  for (var j = 0; j < eMeta.length; j++) {
+    if (tItem.indexOf(eMeta[j]) === -1) extraAjenos++;
+  }
+  if (eMeta.length && extraAjenos > eItem.length) return false;
 
   return true;
 }
@@ -3218,12 +3228,15 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   if (!item || !meta) return item;
 
   var coincide = metaCoincideConItem(item, meta);
-  // Si IMDb ya filtró por año (year fuente = year meta) y trajo imdb_id,
-  // confiar en el match aunque el título IMDb sea distinto ("La captura" vs "Facing El Chapo")
-  var yIt0 = extraerYearItem(item);
-  var yMt0 = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
-  if (!coincide && meta.imdb_id && yIt0 && yMt0 && String(yIt0) === String(yMt0)) {
-    coincide = true;
+  // NUNCA forzar coincide solo por año: "La captura" 2026 ≠ "Facing El Chapo" 2026
+  // Solo permitir rescue si la sinopsis es muy parecida (>= 0.28)
+  if (!coincide && meta.imdb_id && item.descripcion && meta.descripcion) {
+    var yIt0 = extraerYearItem(item);
+    var yMt0 = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
+    var yearOk0 = !yIt0 || !yMt0 || String(yIt0) === String(yMt0);
+    if (yearOk0 && similitudDescripcion(item.descripcion, meta.descripcion) >= 0.28) {
+      coincide = true;
+    }
   }
   var sinPortada = !item.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(item.portada));
 
@@ -3950,8 +3963,21 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
             else if (sim >= 0.12) adj += 40;
             else if (descHint.length > 50 && sim < 0.08) adj -= 40;
           }
-          // Mismo año que la fuente: bonus (título local ≠ título IMDb)
-          if (cand.sameYear) adj += 60;
+          // Título debe compartir tokens (evita La captura → Facing El Chapo)
+          var ctN = normalizarTituloKey(cand.item.l || cand.item.titulo || '');
+          var shareT = 0;
+          var wantTok = tokensDistintivos(wantedTitle);
+          for (var sti = 0; sti < wantTok.length; sti++) {
+            if (ctN.indexOf(wantTok[sti]) !== -1) shareT++;
+          }
+          if (wantTok.length && shareT === 0) {
+            adj -= 500; // rechazo fuerte: ningún token en común
+            cand._skip = true;
+          } else if (wantTok.length && shareT < Math.ceil(wantTok.length * 0.6)) {
+            adj -= 200;
+          }
+          // Mismo año que la fuente: bonus solo si hay overlap de título
+          if (cand.sameYear && shareT > 0) adj += 60;
           if (!wantedYear && cy && descHint) {
             var yn = parseInt(cy, 10);
             if (yn >= 2023) adj += 25;
