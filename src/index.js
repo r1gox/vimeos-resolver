@@ -3214,28 +3214,43 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   }
   if (meta.votos && !item.votos) item.votos = meta.votos;
 
+  // Descripción: preferir SIEMPRE español. Nunca reemplazar español por inglés.
   if (meta.descripcion) {
     var d = item.descripcion || '';
-    var metaEsIngles = /\b(the|and|with|from|after|when|his|her)\b/i.test(meta.descripcion)
-      && !/[áéíóúñ¿¡]/i.test(meta.descripcion);
+    var metaEs = pareceEspanol(meta.descripcion);
+    var metaEn = pareceIngles(meta.descripcion);
+    var dEs = pareceEspanol(d);
+    var dEn = pareceIngles(d);
     var dIncompleta = !d || d.length < 40 || /\.\.\.\s*$/.test(d) || /^(Pel[ií]cula|Serie|Anime)\s/i.test(d);
-    if (dIncompleta && !metaEsIngles) {
-      item.descripcion = meta.descripcion;
-    } else if (dIncompleta && metaEsIngles && !d) {
-      item.descripcion = meta.descripcion;
+
+    if (metaEs) {
+      // Meta en español: usar si no hay descripción o la actual es incompleta/inglesa
+      if (dIncompleta || dEn || !dEs) item.descripcion = meta.descripcion;
+    } else if (!metaEn && dIncompleta) {
+      // Meta ambigua (ni claro ES ni EN)
+      if (!d || dIncompleta) item.descripcion = meta.descripcion;
+    } else if (metaEn) {
+      // Meta en inglés: solo si no hay NADA
+      if (!d) item.descripcion = meta.descripcion;
+      // Si la actual es inglesa e incompleta, dejar; cliente puede traducir luego
     }
   }
+  // Si la descripción final sigue en inglés y hay una alternativa española en el ítem, no tocar
 
   if (meta.generos && meta.generos.length) {
     item.generos = meta.generos;
     item.genero = meta.generos.join(', ');
   }
 
+  // Año / fecha: rellenar si falta
   if (meta.fecha_estreno) {
     item.fecha_estreno = meta.fecha_estreno;
     if (!item.year) item.year = String(meta.fecha_estreno).slice(0, 4);
-  } else if (meta.year && !item.year) {
-    item.year = meta.year;
+  }
+  if (!item.year && meta.year) item.year = String(meta.year).slice(0, 4);
+  if (!item.year) {
+    var yFlex = extraerYearFlexible(item.titulo, item.slug, null);
+    if (yFlex) item.year = yFlex;
   }
 
   if (meta.duracion) item.duracion = meta.duracion;
@@ -5455,6 +5470,97 @@ function normalizarIdiomaLabel(lang) {
   return lang;
 }
 
+/**
+ * Número de temporada desde título o slug.
+ * "One Punch Man 3" → 3
+ * "One Punch Man 2nd Season Specials" → 2
+ * slug one-punch-man-season-2 / -2nd-season / -s2 → 2
+ * Si no se detecta → 1
+ */
+function extraerNumeroTemporada(titulo, slug) {
+  var t = String(titulo || '');
+  var s = String(slug || '').toLowerCase();
+
+  // Slug: -season-N, -temporada-N, -Nth-season, -sN, -part-N
+  var ms = s.match(/(?:^|-)(?:season|temporada|part|parte)-(\d+)(?:-|$)/i)
+    || s.match(/(?:^|-)(\d+)(?:st|nd|rd|th)-season(?:-|$)/i)
+    || s.match(/(?:^|-)s(\d+)(?:-|$)/i);
+  if (ms) {
+    var nS = parseInt(ms[1], 10);
+    if (nS >= 1 && nS <= 50) return nS;
+  }
+  // Slug termina en -N (one-punch-man-3) — solo si N es 2–20 y no parece año
+  var me = s.match(/-(\d{1,2})$/);
+  if (me) {
+    var nE = parseInt(me[1], 10);
+    if (nE >= 2 && nE <= 20) return nE;
+  }
+
+  // Título: "2nd Season", "Season 2", "Temporada 2", "2ª temporada"
+  var mt = t.match(/(\d+)(?:st|nd|rd|th)\s*season/i)
+    || t.match(/(?:season|temporada|parte?)\s*(\d+)/i)
+    || t.match(/(\d+)\s*ª\s*temporada/i);
+  if (mt) {
+    var nT = parseInt(mt[1], 10);
+    if (nT >= 1 && nT <= 50) return nT;
+  }
+  // Título: "One Punch Man 3" / "One Punch Man III" al final (no año 4 dígitos)
+  var mt2 = t.match(/\s+(\d{1,2})\s*(?:$|[:\-–—]|special|ova|ona|movie|film|especial)/i);
+  if (mt2) {
+    var n2 = parseInt(mt2[1], 10);
+    if (n2 >= 2 && n2 <= 20) return n2;
+  }
+
+  return 1;
+}
+
+/**
+ * Formato anime: TV / OVA / ONA / Especial / Pelicula
+ */
+function detectarFormatoAnime(titulo, category, slug) {
+  var blob = [titulo, category, slug].map(function (x) { return String(x || ''); }).join(' ');
+  if (/ova\b/i.test(blob)) return 'OVA';
+  if (/\bona\b/i.test(blob)) return 'ONA';
+  if (/specials?|especiales?/i.test(blob)) return 'Especial';
+  if (/movie|pel[ií]cula|film/i.test(blob)) return 'Pelicula';
+  if (/tv\s*special/i.test(blob)) return 'Especial';
+  return 'TV';
+}
+
+/** ¿Texto parece español? */
+function pareceEspanol(txt) {
+  var s = String(txt || '');
+  if (!s || s.length < 20) return false;
+  if (/[áéíóúñü¿¡]/i.test(s)) return true;
+  var esWords = (s.match(/\b(el|la|los|las|de|del|que|en|un|una|por|con|para|como|más|también|después|cuando|sobre|entre|hasta|desde|sin|este|esta|estos|sus|su|se|es|son|fue|ser|está|están)\b/gi) || []).length;
+  var enWords = (s.match(/\b(the|and|with|from|after|when|his|her|their|this|that|was|were|are|is|for|into|about|which|who|whom)\b/gi) || []).length;
+  return esWords >= 3 && esWords > enWords;
+}
+
+/** ¿Texto parece inglés? */
+function pareceIngles(txt) {
+  var s = String(txt || '');
+  if (!s || s.length < 20) return false;
+  if (/[áéíóúñü¿¡]/i.test(s)) return false;
+  var enWords = (s.match(/\b(the|and|with|from|after|when|his|her|their|this|that|was|were|are|is|for|into|about|which)\b/gi) || []).length;
+  return enWords >= 3;
+}
+
+/** Extrae año 19xx/20xx de título, slug o fecha */
+function extraerYearFlexible(titulo, slug, fecha) {
+  if (fecha) {
+    var yf = String(fecha).match(/(19|20)\d{2}/);
+    if (yf) return yf[0];
+  }
+  var t = String(titulo || '');
+  var yt = t.match(/\b((?:19|20)\d{2})\b/);
+  if (yt) return yt[1];
+  var s = String(slug || '');
+  var ys = s.match(/(?:^|-)((?:19|20)\d{2})(?:-|$)/);
+  if (ys) return ys[1];
+  return null;
+}
+
 function esIdiomaLatino(label) {
   return /latino|castellano|español|dub/i.test(String(label || ''));
 }
@@ -5519,8 +5625,9 @@ async function buscarAnimeAv1(query, limit) {
     var it = data.results[i];
     if (!it || !it.slug) continue;
     var catName = (it.category && it.category.name) || '';
-    var tipo = 'Anime';
-    if (/movie|pel[ií]cula/i.test(catName)) tipo = 'Pelicula';
+    var titAv1 = it.title || it.slug;
+    var formatoAv1 = detectarFormatoAnime(titAv1, catName, it.slug);
+    var tipo = formatoAv1 === 'Pelicula' ? 'Pelicula' : 'Anime';
     var portadaAv1 = it.poster || it.image || it.cover || it.thumbnail || it.coverImage || null;
     // AnimeAV1: covers en CDN por id numérico → https://cdn.animeav1.com/covers/{id}.jpg
     if (!portadaAv1 && it.id != null && String(it.id).match(/^\d+$/)) {
@@ -5533,15 +5640,18 @@ async function buscarAnimeAv1(query, limit) {
         portadaAv1 = ANIMEAV1_BASE + (portadaAv1.charAt(0) === '/' ? portadaAv1 : '/' + portadaAv1);
       }
     }
+    var yearAv = extraerYearFlexible(titAv1, it.slug, it.startDate || it.year);
     out.push({
       fuente: 'animeav1',
       tipo: tipo,
-      titulo: it.title || it.slug,
+      formato: formatoAv1,
+      titulo: titAv1,
       slug: it.slug,
       descripcion: it.synopsis || null,
       portada: portadaAv1 || null,
       link: ANIMEAV1_BASE + '/media/' + it.slug,
-      year: it.startDate ? String(it.startDate).slice(0, 4) : (it.year || null)
+      year: yearAv,
+      temporada: extraerNumeroTemporada(titAv1, it.slug)
     });
   }
   // Ocultar temporadas sueltas si ya existe el título base
@@ -5620,13 +5730,23 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     } catch (eMal) { portada = null; }
   }
   var catName = (media.category && media.category.name) || 'TV Anime';
-  var tipo = /movie|pel[ií]cula/i.test(catName) ? 'Pelicula' : 'Anime';
-  // Año desde startDate
-  var yearAv1 = media.startDate ? String(media.startDate).slice(0, 4) : null;
+  var formato = detectarFormatoAnime(titulo, catName, slug);
+  var tipo = formato === 'Pelicula' ? 'Pelicula' : 'Anime';
+  // Año: startDate → título/slug
+  var yearAv1 = extraerYearFlexible(titulo, slug, media.startDate || media.year);
+  // Temporada real del título/slug (One Punch Man 3 → 3, 2nd Season → 2)
+  var temporadaDetectada = extraerNumeroTemporada(titulo, slug);
+  var temporadaBase = temporadaDetectada;
+  if (opts.season) {
+    var os = parseInt(opts.season, 10);
+    // Si el media YA es T2/T3 por título, no degradar a T1 por la ruta /1/N
+    if (temporadaDetectada > 1 && os === 1) temporadaBase = temporadaDetectada;
+    else if (os >= 1) temporadaBase = os;
+  }
 
   // Si piden episodio concreto → embeds (T2+ puede vivir en slug-season-N)
   if (epNum && epNum > 0) {
-    var seasonNum = parseInt(opts.season || 1, 10) || 1;
+    var seasonNum = parseInt(opts.season || temporadaBase || 1, 10) || temporadaBase || 1;
     var mediaSlug = slug;
     if (seasonNum > 1) {
       var seasonCandidates = [
@@ -5676,16 +5796,18 @@ async function scrapearAnimeAv1(pageUrl, opts) {
       fuente: 'animeav1',
       source_id: '4',
       tipo: 'Capitulo',
+      formato: formato,
       link: ANIMEAV1_BASE + '/media/' + slug + '/' + epNum,
       slug: slug,
       titulo: titulo + ' — Episodio ' + epNum,
       titulo_serie: titulo,
-      temporada: seasonNum || epMeta.season || opts.season || 1,
+      temporada: seasonNum || epMeta.season || temporadaBase || 1,
       episodio: epNum,
       slug_media: mediaSlug,
       portada: portada,
       descripcion: sinopsis,
       calificacion: score,
+      year: yearAv1,
       total: mapped.reproductores.length,
       embeds: mapped.reproductores.map(function (r) { return r.url; }),
       reproductores: mapped.reproductores,
@@ -5693,18 +5815,15 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     };
   }
 
-  // Listado de episodios (stubs ligeros; players al pedir /4/anime/slug/1/N)
-  // Soporta rango: opts.epFrom / opts.epTo o query ep_from/ep_to
+  // Listado de episodios (stubs ligeros; players al pedir /4/anime/slug/{temp}/{ep})
+  // temporadaBase: si el título/slug es "Season 2" o "OPM 3", NO empieza en T1
   var totalEps = parseInt(epsCount, 10) || 0;
   if (totalEps < 1) totalEps = 1;
-  // límite duro de seguridad (series kilométricas)
   if (totalEps > 5000) totalEps = 5000;
 
   var epFrom = parseInt(opts.epFrom || opts.ep_from || 1, 10) || 1;
   var epTo = parseInt(opts.epTo || opts.ep_to || 0, 10) || 0;
-  // Por defecto: si hay muchos caps, devolver SOLO metadatos de total + primer bloque
-  // el cliente pide rangos. Si epTo=0 y total > 200, devolver lista vacía + rangos sugeridos.
-  var RANGO_DEFAULT = 50; // bloques 1-50, 51-100
+  var RANGO_DEFAULT = 50;
   if (!epTo || epTo < epFrom) {
     if (totalEps > 200) {
       epFrom = 1;
@@ -5716,19 +5835,19 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   }
   if (epFrom < 1) epFrom = 1;
   if (epTo > totalEps) epTo = totalEps;
-  if (epTo - epFrom > 300) epTo = epFrom + 299; // max 300 por respuesta
+  if (epTo - epFrom > 300) epTo = epFrom + 299;
 
+  var tempPrincipal = temporadaBase || 1;
   var episodiosRango = [];
   for (var e = epFrom; e <= epTo; e++) {
     episodiosRango.push({
-      temporada: 1,
+      temporada: tempPrincipal,
       episodio: e,
       titulo: 'Episodio ' + e,
       url_video: null
     });
   }
 
-  // Rangos sugeridos para la UI (1-100, 101-200, ...)
   var rangos = [];
   var step = RANGO_DEFAULT;
   for (var r = 1; r <= totalEps; r += step) {
@@ -5736,7 +5855,12 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     rangos.push({ desde: r, hasta: r2, label: r + '–' + r2 });
   }
 
-  var temporadas = [{ temporada: 1, episodios: episodiosRango }];
+  var temporadas = [{
+    temporada: tempPrincipal,
+    titulo: formato !== 'TV' ? (formato + (tempPrincipal > 1 ? ' T' + tempPrincipal : '')) : ('Temporada ' + tempPrincipal),
+    formato: formato,
+    episodios: episodiosRango
+  }];
 
   // Si pidieron players=1 y maxCaps, cargar algunos del rango
   if (opts.players && episodiosRango.length > 0) {
@@ -5753,48 +5877,52 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     }
   }
 
-  // Descubrir temporadas extra en animeav1 (ej. slug-season-2 con DUB/Latino)
-  for (var sn = 2; sn <= 5; sn++) {
-    var altSlugs = [
-      slug + '-season-' + sn,
-      slug + '-' + sn + 'nd-season',
-      slug + '-' + sn + 'rd-season',
-      slug + '-' + sn + 'th-season'
-    ];
-    var found = null;
-    var foundSlug = null;
-    for (var ai = 0; ai < altSlugs.length; ai++) {
-      try {
-        var altRaw = await fetchAnimeAv1Data('/media/' + encodeURIComponent(altSlugs[ai]) + '/__data.json');
-        var altData = decodeSvelteKitData(altRaw);
-        if (altData && altData.media && (altData.media.episodesCount || altData.media.title)) {
-          found = altData.media;
-          foundSlug = altSlugs[ai];
-          break;
-        }
-      } catch (eAlt) { /* next */ }
-    }
-    if (!found) break;
-    var altCount = parseInt(found.episodesCount, 10) || 0;
-    if (altCount < 1) altCount = 12;
-    if (altCount > 500) altCount = 500;
-    var altEps = [];
-    for (var ae = 1; ae <= altCount; ae++) {
-      altEps.push({
+  // Solo descubrir temporadas extra si ESTE media es la temporada 1 base
+  // (si ya es "One Punch Man 3" / season-2, no inventar T1 ni re-etiquetar)
+  if (tempPrincipal === 1 && formato === 'TV') {
+    for (var sn = 2; sn <= 5; sn++) {
+      var altSlugs = [
+        slug + '-season-' + sn,
+        slug + '-' + sn + 'nd-season',
+        slug + '-' + sn + 'rd-season',
+        slug + '-' + sn + 'th-season'
+      ];
+      var found = null;
+      var foundSlug = null;
+      for (var ai = 0; ai < altSlugs.length; ai++) {
+        try {
+          var altRaw = await fetchAnimeAv1Data('/media/' + encodeURIComponent(altSlugs[ai]) + '/__data.json');
+          var altData = decodeSvelteKitData(altRaw);
+          if (altData && altData.media && (altData.media.episodesCount || altData.media.title)) {
+            found = altData.media;
+            foundSlug = altSlugs[ai];
+            break;
+          }
+        } catch (eAlt) { /* next */ }
+      }
+      if (!found) break;
+      var altCount = parseInt(found.episodesCount, 10) || 0;
+      if (altCount < 1) altCount = 12;
+      if (altCount > 500) altCount = 500;
+      var altEps = [];
+      for (var ae = 1; ae <= altCount; ae++) {
+        altEps.push({
+          temporada: sn,
+          episodio: ae,
+          titulo: 'Episodio ' + ae,
+          url_video: null,
+          slug_media: foundSlug
+        });
+      }
+      temporadas.push({
         temporada: sn,
-        episodio: ae,
-        titulo: 'Episodio ' + ae,
-        url_video: null,
-        slug_media: foundSlug
+        slug_media: foundSlug,
+        titulo: found.title || ('Temporada ' + sn),
+        formato: detectarFormatoAnime(found.title, null, foundSlug),
+        episodios: altEps
       });
+      totalEps += altCount;
     }
-    temporadas.push({
-      temporada: sn,
-      slug_media: foundSlug,
-      titulo: found.title || ('Temporada ' + sn),
-      episodios: altEps
-    });
-    totalEps += altCount;
   }
 
   return {
@@ -5802,15 +5930,17 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     fuente: 'animeav1',
     source_id: '4',
     tipo: tipo,
+    formato: formato,
     link: ANIMEAV1_BASE + '/media/' + slug,
     slug: slug,
     titulo: titulo,
     portada: portada,
     descripcion: sinopsis,
     calificacion: score,
-    year: media.startDate ? String(media.startDate).slice(0, 4) : null,
+    year: yearAv1,
     total_episodios: totalEps,
     total_temporadas: temporadas.length,
+    temporada_principal: tempPrincipal,
     episodio_desde: epFrom,
     episodio_hasta: epTo,
     rangos_episodios: rangos,
@@ -5819,7 +5949,8 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     reproductores: [],
     descargas: [],
     temporadas: temporadas,
-    nota: 'T1=' + slug + '. Temporadas extra en slug-season-N. Players: /4/anime/' + slug + '/{temp}/{ep}. DUB=Latino se prioriza.'
+    nota: 'Temporada principal=' + tempPrincipal + (formato !== 'TV' ? ' (' + formato + ')' : '') +
+      '. Players: /4/anime/' + slug + '/' + tempPrincipal + '/{ep}'
   };
 }
 // ======================================================
