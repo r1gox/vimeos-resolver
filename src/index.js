@@ -2267,28 +2267,45 @@ function extraerMetas(html) {
   }
   titulo = limpiarTitulo(titulo);
 
-  // Año desde título "Nombre (2026)", ficha, o año suelto en meta
+  // Año: título (2026), "Fecha de estreno: 2026", /year/2026
   var year = null;
   var ym = titulo.match(/\(((?:19|20)\d{2})\)/);
   if (ym) year = ym[1];
   if (!year) {
-    ym = html.match(/Ver\s+[^<(]+\(((?:19|20)\d{2})\)/i);
+    ym = html.match(/Fecha\s+de\s+estreno\s*:?\s*<\/[^>]+>\s*((?:19|20)\d{2})/i)
+      || html.match(/Fecha\s+de\s+estreno\s*:?\s*((?:19|20)\d{2})/i);
+    if (ym) year = ym[1];
+  }
+  if (!year) {
+    ym = html.match(/Ver\s+[^<(]+\(((?:19|20)\d{2})\)/i)
+      || html.match(/<title[^>]*>[^<]*\(((?:19|20)\d{2})\)/i);
     if (ym) year = ym[1];
   }
   if (!year) {
     ym = html.match(/(?:Año|Year|Estreno|Released?)[:\s]*((?:19|20)\d{2})/i)
-      || html.match(/itemprop=["']datePublished["'][^>]*content=["']((?:19|20)\d{2})/i)
-      || html.match(/content=["']((?:19|20)\d{2})[^"']*["'][^>]*itemprop=["']datePublished["']/i);
+      || html.match(/href=["']\/year\/((?:19|20)\d{2})["']/i)
+      || html.match(/itemprop=["']datePublished["'][^>]*content=["']((?:19|20)\d{2})/i);
     if (ym) year = ym[1];
   }
   if (!year) {
-    ym = html.match(/<span[^>]*class=["'][^"']*year[^"']*["'][^>]*>\s*((?:19|20)\d{2})/i);
+    ym = html.match(/class=["'][^"']*text-semibold[^"']*["'][^>]*>\s*((?:19|20)\d{2})\s*<\/span>\s*<small[^>]*>\s*Año/i)
+      || html.match(/<span[^>]*class=["'][^"']*year[^"']*["'][^>]*>\s*((?:19|20)\d{2})/i);
     if (ym) year = ym[1];
   }
 
-  // Sinopsis COMPLETA de la página (div.text-large tras "Sinopsis"), no el meta truncado
+  // Rating de la página (ej. 8.7/10)
+  var calificacionPagina = null;
+  var rm = html.match(/ion-md-star[^>]*>\s*(\d+[.,]\d+)\s*\/\s*10/i)
+    || html.match(/(\d+[.,]\d+)\s*\/\s*10\s*<\/span>\s*<small[^>]*>\s*Rating/i)
+    || html.match(/(\d+[.,]\d+)\s*\/\s*10/i);
+  if (rm) {
+    calificacionPagina = normalizarCalificacion(String(rm[1]).replace(',', '.'));
+  }
+
+  // Sinopsis COMPLETA de la página (div.text-large tras "Sinopsis")
   var descripcion = '';
   m = html.match(/Sinopsis\s*:?\s*<\/(?:b|strong|span|p)[^>]*>\s*(?:<\/p>\s*)?<div[^>]*class=["'][^"']*text-large[^"']*["'][^>]*>([\s\S]*?)<\/div>/i)
+    || html.match(/Sinopsis[\s\S]{0,80}?class=["'][^"']*text-large[^"']*["'][^>]*>([\s\S]*?)<\/div>/i)
     || html.match(/class=["'][^"']*text-large[^"']*["'][^>]*>\s*([\s\S]{40,}?)\s*<\/div>/i);
   if (m) {
     descripcion = limpiarTexto(m[1].replace(/<[^>]+>/g, ' '));
@@ -2300,12 +2317,20 @@ function extraerMetas(html) {
       || html.match(/content=["']([^"']+)["']\s+name=["']description["']/i);
     if (m) descripcion = limpiarTexto(m[1]);
   }
-  // Quitar prefijos "Pelicula X:" / "Serie X:" y puntos suspensivos finales del meta
   descripcion = descripcion
     .replace(/^(Pel[ií]cula|Serie|Anime|Movie)\s*[^:]{0,80}:\s*/i, '')
     .replace(/\.\.\.\s*$/, '')
     .trim();
   descripcion = limpiarTexto(descripcion);
+  // Mojibake típico (policÃ­as → policías)
+  if (/Ã.|Â./.test(descripcion)) {
+    descripcion = descripcion
+      .replace(/Ã¡/g, 'á').replace(/Ã©/g, 'é').replace(/Ã­/g, 'í')
+      .replace(/Ã³/g, 'ó').replace(/Ãº/g, 'ú').replace(/Ã±/g, 'ñ')
+      .replace(/Ã/g, 'Á').replace(/Ã‰/g, 'É').replace(/Ã/g, 'Í')
+      .replace(/Ã“/g, 'Ó').replace(/Ãš/g, 'Ú').replace(/Ã‘/g, 'Ñ')
+      .replace(/Â¿/g, '¿').replace(/Â¡/g, '¡');
+  }
 
   // Portada: preferir poster del sitio o TMDB, NUNCA amazon media-amazon rotas
   var portada = '';
@@ -2368,10 +2393,53 @@ function extraerMetas(html) {
     descripcion: descripcion,
     portada: portada,
     year: year,
+    calificacion: calificacionPagina,
     generos: generos,
     genero: generos.length ? generos.join(', ') : null,
     actores: actores
   };
+}
+
+/**
+ * Para búsqueda: si PelisPlus no trajo año/sinopsis, leer la ficha (rápido)
+ * ANTES de consultar IMDb, para no cruzar con otra película del mismo título.
+ */
+async function enriquecerDesdeFichaPelisplus(item) {
+  if (!item || !item.slug) return item;
+  var yaOk = item.year && item.descripcion && String(item.descripcion).length >= 40;
+  if (yaOk) return item;
+  var tipoPath = 'pelicula';
+  if (item.tipo === 'Serie') tipoPath = 'serie';
+  if (item.tipo === 'Anime') tipoPath = 'anime';
+  var url = PELISPLUS_BASE + '/' + tipoPath + '/' + item.slug + '/';
+  try {
+    var res = await fetch(url, {
+      headers: Object.assign({}, HEADERS, {
+        Referer: PELISPLUS_BASE + '/',
+        'Accept-Language': 'es-ES,es;q=0.9'
+      })
+    });
+    if (!res.ok) return item;
+    var html = await res.text();
+    if (!html || html.length < 500) return item;
+    var meta = extraerMetas(html);
+    if (meta.year && !item.year) item.year = meta.year;
+    if (meta.descripcion && (!item.descripcion || String(item.descripcion).length < 40)) {
+      item.descripcion = meta.descripcion;
+    }
+    if (meta.calificacion != null && (item.calificacion == null || item.calificacion === '')) {
+      item.calificacion = meta.calificacion;
+    }
+    if (meta.generos && meta.generos.length && (!item.generos || !item.generos.length)) {
+      item.generos = meta.generos;
+      item.genero = meta.genero;
+    }
+    if (meta.titulo && meta.titulo.length > 2) {
+      // No pisar título si ya está limpio
+      if (!item.titulo || item.titulo.length < 3) item.titulo = meta.titulo;
+    }
+  } catch (e) { /* ok */ }
+  return item;
 }
 
 /** Extrae links de descarga (mega, mediafire, etc.) del HTML */
@@ -4100,6 +4168,10 @@ async function enriquecerListaConTmdb(lista, query) {
       // Siempre enriquecer si falta portada, info o rating
       if (!sinPortada && !sinInfo && !sinRating && item.tmdb_id && !esFuentePelisplus(item)) continue;
       try {
+        // PelisPlus: leer ficha ANTES de IMDb (año/sinopsis reales evitan cruzar con otra película)
+        if (esFuentePelisplus(item) || String(item.fuente || '').toLowerCase() === 'pelisplushd') {
+          await enriquecerDesdeFichaPelisplus(item);
+        }
         var meta = await metaTmdbParaTitulo(item.titulo, item.tipo, extraerYearItem(item));
         if (meta) aplicarMetaAResultadoBusqueda(item, meta);
         // Forzar rating si sigue vacío
@@ -5106,7 +5178,7 @@ async function scrapearPelisplus(pageUrl, opts) {
       genero: generoMeta,
       generos: generosMeta,
       actores: actoresMeta,
-      calificacion: null,
+      calificacion: metas.calificacion != null ? metas.calificacion : null,
       total_temporadas: temporadas.length,
       total_episodios: caps.length,
       total: resolved,
@@ -5136,7 +5208,7 @@ async function scrapearPelisplus(pageUrl, opts) {
     genero: generoMeta,
     generos: generosMeta,
     actores: actoresMeta,
-    calificacion: null,
+    calificacion: metas.calificacion != null ? metas.calificacion : null,
     temporada: capMatch ? parseInt(capMatch[1], 10) : null,
     episodio: capMatch ? parseInt(capMatch[2], 10) : null,
     total: reproductores.length,
