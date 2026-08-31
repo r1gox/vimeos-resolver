@@ -2396,6 +2396,7 @@ function extraerMetas(html) {
     if (an && actores.indexOf(an) === -1) actores.push(an);
   }
 
+  if (esDescripcionBasura(descripcion)) descripcion = '';
   return {
     titulo: titulo,
     descripcion: descripcion,
@@ -2951,7 +2952,9 @@ function fusionarResultadosBusqueda(items) {
         // Solo fusionar datos de OTRAS fuentes (nunca de la misma)
         if (j === 0) continue;
         best.portada = mejorPortada(best.portada, cur.portada);
-        if ((!best.descripcion || String(best.descripcion).length < 40) && cur.descripcion && String(cur.descripcion).length >= 40) {
+        if (descripcionValida(cur.descripcion) && !descripcionValida(best.descripcion)) {
+          best.descripcion = cur.descripcion;
+        } else if ((!best.descripcion || esDescripcionBasura(best.descripcion)) && descripcionValida(cur.descripcion)) {
           best.descripcion = cur.descripcion;
         }
         if (!best.year && cur.year) best.year = cur.year;
@@ -3057,7 +3060,7 @@ function fusionarResultadosBusqueda(items) {
           if (f2 && !seenF2[f2]) { seenF2[f2] = true; fuentes2.push(f2); }
           if (esFuentePelisplus(best2) && cur2.portada_imdb && esPortadaImdb(cur2.portada_imdb)) { best2.portada = cur2.portada_imdb; best2.poster_source = 'imdb'; }
           best2.portada = mejorPortada(best2.portada, cur2.portada);
-          if ((!best2.descripcion || String(best2.descripcion).length < 40) && cur2.descripcion) best2.descripcion = cur2.descripcion;
+          if (descripcionValida(cur2.descripcion) && (!descripcionValida(best2.descripcion) || esDescripcionBasura(best2.descripcion))) best2.descripcion = cur2.descripcion;
           if (!best2.year && cur2.year) best2.year = cur2.year;
           if (!best2.calificacion && cur2.calificacion) best2.calificacion = cur2.calificacion;
           if (!best2.tmdb_id && cur2.tmdb_id) best2.tmdb_id = cur2.tmdb_id;
@@ -3363,28 +3366,19 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
     if (meta.imdb_id) item.imdb_id = meta.imdb_id;
   }
 
-  // Descripción: si la FUENTE tiene español válido → conservar.
-  // Si no → IMDb ES / TMDB ES. NUNCA dejar sinopsis solo en inglés.
+  // Descripción: 1) fuente válida  2) IMDb/TMDB en español  3) nunca basura SEO ni solo inglés
   var descFuente = item.descripcion || '';
-  var descFuenteEs = descFuente.length >= 40 && pareceEspanol(descFuente)
-    && !/\.\.\.\s*$/.test(descFuente) && !/^(Pel[ií]cula|Serie|Anime)\s/i.test(descFuente);
-  var descFuenteOk = descFuente.length >= 40 && !/\.\.\.\s*$/.test(descFuente)
-    && !/^(Pel[ií]cula|Serie|Anime)\s/i.test(descFuente) && !pareceIngles(descFuente);
-  if (descFuenteEs || descFuenteOk) {
-    // conservar fuente
-  } else if (meta.descripcion) {
-    if (pareceEspanol(meta.descripcion)) {
-      item.descripcion = meta.descripcion;
-    } else if (!pareceIngles(meta.descripcion)) {
-      item.descripcion = meta.descripcion;
-    } else if (!descFuente) {
-      // Solo inglés disponible: no asignar (evitar sinopsis en inglés)
-      // item.descripcion se deja vacío o la de fuente corta
-    }
+  var descMeta = meta.descripcion || '';
+  // Si la fuente es basura (Cuevana / Ver online / T1E1 Latino…), descartarla
+  if (esDescripcionBasura(descFuente)) {
+    descFuente = '';
+    item.descripcion = null;
   }
-  // Si la fuente era inglesa y meta trae español, reemplazar
-  if (pareceIngles(descFuente) && meta.descripcion && pareceEspanol(meta.descripcion)) {
-    item.descripcion = meta.descripcion;
+  var elegida = elegirDescripcion(descFuente, descMeta);
+  if (elegida) {
+    item.descripcion = elegida;
+  } else if (esDescripcionBasura(item.descripcion)) {
+    item.descripcion = null;
   }
 
   // Géneros: preferir IMDb (ya en español) si el match es bueno
@@ -5360,11 +5354,13 @@ async function enriquecerListaConTmdb(lista, query) {
         if (esFuentePelisplus(item) || String(item.fuente || '').toLowerCase() === 'pelisplushd') {
           await enriquecerDesdeFichaPelisplus(item);
         }
+        if (esDescripcionBasura(item.descripcion)) item.descripcion = null;
         var meta = await metaTmdbParaTitulo(item.titulo, item.tipo, extraerYearItem(item), item.descripcion);
         if (meta) {
           meta = await aplicarRatingImdbOficial(meta);
           aplicarMetaAResultadoBusqueda(item, meta);
         }
+        if (esDescripcionBasura(item.descripcion)) item.descripcion = null;
         // Forzar rating si sigue vacío
         if ((item.calificacion == null || item.calificacion === '') && meta && meta.calificacion != null) {
           item.calificacion = normalizarCalificacion(meta.calificacion);
@@ -5456,7 +5452,11 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   var descFuenteOk = descFuente.length > 60 && !/\.\.\.\s*$/.test(descFuente);
   var portadaFuenteOk = detalle.portada && !esFuentePelisplus(detalle) && !esPortadaSospechosa(detalle.portada);
 
-  if (descFuenteOk) meta.descripcion = null; // conservar scrape
+  if (descripcionValida(detalle.descripcion) || (detalle.descripcion && !esDescripcionBasura(detalle.descripcion) && String(detalle.descripcion).length >= 40 && !pareceIngles(detalle.descripcion))) {
+    meta.descripcion = null; // conservar sinopsis de la página fuente
+  } else if (esDescripcionBasura(detalle.descripcion)) {
+    detalle.descripcion = null;
+  }
   if (portadaFuenteOk) { meta.portada_tmdb = null; meta.portada_imdb = null; }
   // NO anular generos de IMDb aunque la fuente traiga genero
 
@@ -6882,6 +6882,58 @@ function detectarFormatoAnime(titulo, category, slug) {
 }
 
 /** ¿Texto parece español? */
+/**
+ * Sinopsis basura de SEO / listados (Cuevana, "Ver online", etc.)
+ * Ej: "Ver Found Encontrados Temporada 1 Episodio 1 en Latino... | Cuevana3"
+ */
+function esDescripcionBasura(txt) {
+  var s = String(txt || '').replace(/\s+/g, ' ').trim();
+  if (!s) return true;
+  if (s.length < 35) return true;
+  // Patrones típicos de meta description de streaming
+  if (/\b(ver\s+online|online\s+gratis|gratis\s+hd|ver\s+gratis|descargar\s+gratis)\b/i.test(s)) return true;
+  if (/\b(cuevana|pelisplus|pelisplushd|hackstore|repelis|gnula|seriesyonkis|megadede)\b/i.test(s)) return true;
+  if (/\b(subtitulad[ao]s?|latino|castellano)\b.*\b(online|gratis|hd)\b/i.test(s)) return true;
+  if (/\btemporada\s*\d+\s*episodio\s*\d+\b/i.test(s) && /\b(latino|subtitul|online|gratis|ver)\b/i.test(s)) return true;
+  if (/\|\s*(cuevana|pelis|series|anime)/i.test(s)) return true;
+  if (/^(ver|watch)\s+/i.test(s) && /\b(online|gratis|free|hd)\b/i.test(s)) return true;
+  // "Found Encontrados" / título + SEO mezclado
+  if (/\bencontrados?\b/i.test(s) && /\b(temporada|episodio|online)\b/i.test(s)) return true;
+  // Solo lista de keywords separadas por comas muy corta de contenido narrativo
+  if ((s.match(/,/g) || []).length >= 4 && s.length < 120 && !/[.!?¡¿]/.test(s)) return true;
+  // Placeholder genérico
+  if (/^(pel[ií]cula|serie|anime|documental)\s*[.:]?\s*$/i.test(s)) return true;
+  if (/sin\s+(descripci[oó]n|sinopsis|resumen)/i.test(s)) return true;
+  return false;
+}
+
+/** ¿Se puede usar como sinopsis de usuario? */
+function descripcionValida(txt) {
+  var s = String(txt || '').replace(/\s+/g, ' ').trim();
+  if (!s || s.length < 40) return false;
+  if (esDescripcionBasura(s)) return false;
+  if (pareceIngles(s) && !pareceEspanol(s)) return false;
+  // Debe parecer texto narrativo (al menos un punto o suficiente longitud con palabras ES)
+  if (s.length < 80 && !/[.!?…]/.test(s) && !pareceEspanol(s)) return false;
+  return true;
+}
+
+/** Elige la mejor descripción: fuente > meta ES > meta no-EN */
+function elegirDescripcion(descFuente, descMeta) {
+  var f = String(descFuente || '').replace(/\s+/g, ' ').trim();
+  var m = String(descMeta || '').replace(/\s+/g, ' ').trim();
+  if (descripcionValida(f)) return f;
+  if (descripcionValida(m)) return m;
+  // Fuente no basura aunque corta/inglés dudoso
+  if (f.length >= 40 && !esDescripcionBasura(f) && !pareceIngles(f)) return f;
+  if (m.length >= 40 && !esDescripcionBasura(m) && pareceEspanol(m)) return m;
+  if (m.length >= 40 && !esDescripcionBasura(m) && !pareceIngles(m)) return m;
+  // Preferir fuente limpia a vacío si no es basura total
+  if (f.length >= 50 && !esDescripcionBasura(f)) return f;
+  if (m.length >= 50 && !esDescripcionBasura(m)) return m;
+  return null;
+}
+
 function pareceEspanol(txt) {
   var s = String(txt || '');
   if (!s || s.length < 20) return false;
