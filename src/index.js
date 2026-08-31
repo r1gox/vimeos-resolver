@@ -3892,6 +3892,119 @@ async function scrapeFichaImdbEs(imdbId) {
   return null;
 }
 
+
+/**
+ * Rating oficial IMDb desde datasets públicos (title.ratings.tsv.gz).
+ * Ej: tt39390497 → 6.7 / 4734 votos
+ * Cachea el resultado por título 7 días (Cache API).
+ */
+async function fetchImdbRatingDataset(imdbId) {
+  if (!imdbId || String(imdbId).indexOf('tt') !== 0) return null;
+  var id = String(imdbId).trim();
+
+  // Cache por id
+  try {
+    var cache = typeof caches !== 'undefined' ? caches.default : null;
+    if (cache) {
+      var creq = new Request('https://moviezone.meta.local/imdb-rating/' + id);
+      var chit = await cache.match(creq);
+      if (chit) {
+        var cj = await chit.json();
+        if (cj && cj.calificacion != null) return cj;
+      }
+    }
+  } catch (eC) { /* ok */ }
+
+  try {
+    var res = await fetch('https://datasets.imdbws.com/title.ratings.tsv.gz', {
+      headers: { 'User-Agent': HEADERS['User-Agent'], 'Accept-Encoding': 'identity' }
+    });
+    if (!res || !res.ok || !res.body) return null;
+
+    // Decompress gzip and scan lines for id
+    var stream = res.body;
+    if (typeof DecompressionStream !== 'undefined') {
+      stream = res.body.pipeThrough(new DecompressionStream('gzip'));
+    }
+    var reader = stream.getReader();
+    var decoder = new TextDecoder('utf-8');
+    var buf = '';
+    var found = null;
+    var needle = id + '\t';
+
+    while (true) {
+      var chunk = await reader.read();
+      if (chunk.done) break;
+      buf += decoder.decode(chunk.value, { stream: true });
+      var lines = buf.split('\n');
+      buf = lines.pop() || '';
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (line.indexOf(needle) === 0) {
+          // tconst  averageRating  numVotes
+          var parts = line.split('\t');
+          if (parts.length >= 3) {
+            found = {
+              imdb_id: id,
+              calificacion: normalizarCalificacion(parts[1]),
+              votos: String(parts[2]).replace(/,/g, ''),
+              rating_source: 'imdb'
+            };
+          }
+          break;
+        }
+      }
+      if (found) {
+        try { await reader.cancel(); } catch (eCancel) { /* ok */ }
+        break;
+      }
+      // evitar buffer infinito
+      if (buf.length > 50000) buf = buf.slice(-1000);
+    }
+
+    if (!found) return null;
+
+    // Guardar en cache 7 días
+    try {
+      var cache2 = typeof caches !== 'undefined' ? caches.default : null;
+      if (cache2) {
+        var creq2 = new Request('https://moviezone.meta.local/imdb-rating/' + id);
+        await cache2.put(creq2, new Response(JSON.stringify(found), {
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'public, max-age=604800'
+          }
+        }));
+      }
+    } catch (ePut) { /* ok */ }
+
+    return found;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Tras tener imdb_id, fuerza calificación/votos oficiales IMDb (dataset).
+ * Pisa rating de TMDB (8.8) con el de IMDb (6.7).
+ */
+async function aplicarRatingImdbOficial(meta) {
+  if (!meta || !meta.imdb_id) return meta;
+  // Si ya viene de IMDb/OMDb con calificación, no tocar
+  if (meta.calificacion != null && (meta.rating_source === 'imdb' || meta.rating_source === 'omdb')) {
+    return meta;
+  }
+  try {
+    var r = await fetchImdbRatingDataset(meta.imdb_id);
+    if (r && r.calificacion != null) {
+      meta.calificacion = r.calificacion;
+      if (r.votos) meta.votos = r.votos;
+      meta.rating_source = 'imdb';
+    }
+  } catch (e) { /* ok */ }
+  return meta;
+}
+
 async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
   opts = opts || {};
   var descHint = opts.descripcionHint || opts.descripcion || null;
@@ -4844,6 +4957,11 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
     } catch (eWeb) { /* ok */ }
   }
 
+  // 5) Rating oficial IMDb (datasets.imdbws.com) — pisa TMDB 8.8 con IMDb 6.7
+  if (meta && meta.imdb_id) {
+    meta = await aplicarRatingImdbOficial(meta);
+  }
+
   if (meta) metaCacheSet(cacheKey, meta);
   return meta;
 }
@@ -4912,7 +5030,10 @@ async function enriquecerListaConTmdb(lista, query) {
           await enriquecerDesdeFichaPelisplus(item);
         }
         var meta = await metaTmdbParaTitulo(item.titulo, item.tipo, extraerYearItem(item), item.descripcion);
-        if (meta) aplicarMetaAResultadoBusqueda(item, meta);
+        if (meta) {
+          meta = await aplicarRatingImdbOficial(meta);
+          aplicarMetaAResultadoBusqueda(item, meta);
+        }
         // Forzar rating si sigue vacío
         if ((item.calificacion == null || item.calificacion === '') && meta && meta.calificacion != null) {
           item.calificacion = normalizarCalificacion(meta.calificacion);
