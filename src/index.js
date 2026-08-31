@@ -2158,6 +2158,12 @@ function json(data, status) {
       }
     }
   } catch (eAttach) {}
+  // Compactar: agrupa imdb/tmdb y quita nulls
+  try {
+    if (data && typeof data === 'object' && typeof compactarRespuesta === 'function') {
+      data = compactarRespuesta(data);
+    }
+  } catch (eComp) { /* ok */ }
   var h = Object.assign({ 'Content-Type': 'application/json; charset=utf-8' }, corsHeaders());
   return new Response(JSON.stringify(data, null, 2), { status: status, headers: h });
 }
@@ -5197,22 +5203,122 @@ function normalizarCalificacion(val) {
  * Garantiza el mismo esquema de campos en búsqueda y detalle.
  * No inventa datos: solo asegura claves presentes (null si faltan).
  */
-function normalizarCamposResultado(item) {
+
+/**
+ * Agrupa datos por fuente y elimina nulls.
+ * imdb: { id, rating, votos, portada, generos, duracion, certificacion, descripcion }
+ * tmdb: { id, rating, portada, ... }
+ * omdb: { rating, ... }
+ */
+function compactarItem(item) {
   if (!item || typeof item !== 'object') return item;
-  var campos = [
-    'titulo', 'titulo_original', 'tipo', 'formato', 'fuente', 'source_id', 'slug',
-    'portada', 'backdrop', 'descripcion', 'calificacion', 'votos', 'year', 'fecha_estreno',
-    'generos', 'genero', 'duracion', 'duracion_texto', 'certificacion', 'clasificacion',
-    'estado', 'en_emision', 'finalizado',
-    'imdb_id', 'tmdb_id', 'url_extract', 'poster_source',
-    'portada_imdb', 'portada_tmdb',
+
+  var imdb = {};
+  var tmdb = {};
+  var omdb = {};
+
+  if (item.imdb_id) imdb.id = item.imdb_id;
+  if (item.rating_imdb != null) imdb.rating = item.rating_imdb;
+  if (item.votos_imdb) imdb.votos = item.votos_imdb;
+  if (item.portada_imdb) imdb.portada = item.portada_imdb;
+  if (item.generos_imdb && item.generos_imdb.length) imdb.generos = item.generos_imdb;
+  if (item.duracion_imdb != null) imdb.duracion = item.duracion_imdb;
+  if (item.duracion_texto_imdb) imdb.duracion_texto = item.duracion_texto_imdb;
+  if (item.certificacion_imdb) imdb.certificacion = item.certificacion_imdb;
+  if (item.descripcion_imdb) imdb.descripcion = item.descripcion_imdb;
+
+  if (item.tmdb_id) tmdb.id = item.tmdb_id;
+  if (item.rating_tmdb != null) tmdb.rating = item.rating_tmdb;
+  if (item.votos_tmdb) tmdb.votos = item.votos_tmdb;
+  if (item.portada_tmdb) tmdb.portada = item.portada_tmdb;
+  if (item.generos_tmdb && item.generos_tmdb.length) tmdb.generos = item.generos_tmdb;
+  if (item.duracion_tmdb != null) tmdb.duracion = item.duracion_tmdb;
+  if (item.duracion_texto_tmdb) tmdb.duracion_texto = item.duracion_texto_tmdb;
+  if (item.certificacion_tmdb) tmdb.certificacion = item.certificacion_tmdb;
+  if (item.descripcion_tmdb) tmdb.descripcion = item.descripcion_tmdb;
+  if (item.titulo_tmdb) tmdb.titulo = item.titulo_tmdb;
+  if (item.backdrop) tmdb.backdrop = item.backdrop;
+
+  if (item.rating_omdb != null) omdb.rating = item.rating_omdb;
+  if (item.votos_omdb) omdb.votos = item.votos_omdb;
+  if (item.generos_omdb && item.generos_omdb.length) omdb.generos = item.generos_omdb;
+  if (item.duracion_omdb != null) omdb.duracion = item.duracion_omdb;
+  if (item.duracion_texto_omdb) omdb.duracion_texto = item.duracion_texto_omdb;
+  if (item.certificacion_omdb) omdb.certificacion = item.certificacion_omdb;
+  if (item.descripcion_omdb) omdb.descripcion = item.descripcion_omdb;
+
+  var quitar = [
     'rating_imdb', 'rating_tmdb', 'rating_omdb',
     'votos_imdb', 'votos_tmdb', 'votos_omdb',
     'generos_imdb', 'generos_tmdb', 'generos_omdb',
     'duracion_imdb', 'duracion_tmdb', 'duracion_omdb',
     'duracion_texto_imdb', 'duracion_texto_tmdb', 'duracion_texto_omdb',
     'certificacion_imdb', 'certificacion_tmdb', 'certificacion_omdb',
-    'descripcion_imdb', 'descripcion_tmdb', 'descripcion_omdb'
+    'descripcion_imdb', 'descripcion_tmdb', 'descripcion_omdb',
+    'portada_imdb', 'portada_tmdb',
+    'titulo_tmdb', 'rating_source', 'poster_source',
+    'genero_source', 'duracion_source', 'certificacion_source', 'descripcion_source',
+    'fuentes_meta', 'portada_fuente_raw', 'formato',
+    'estado', 'en_emision', 'finalizado', 'clasificacion'
+  ];
+  for (var i = 0; i < quitar.length; i++) delete item[quitar[i]];
+
+  if (Object.keys(imdb).length) item.imdb = imdb;
+  if (Object.keys(tmdb).length) item.tmdb = tmdb;
+  if (Object.keys(omdb).length) item.omdb = omdb;
+
+  if (imdb.id) item.imdb_id = imdb.id;
+  if (tmdb.id) item.tmdb_id = tmdb.id;
+
+  return limpiarNulls(item);
+}
+
+function limpiarNulls(obj) {
+  if (Array.isArray(obj)) {
+    return obj.map(limpiarNulls).filter(function (x) {
+      return x !== null && x !== undefined;
+    });
+  }
+  if (!obj || typeof obj !== 'object') return obj;
+  var out = {};
+  for (var k in obj) {
+    if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
+    var v = obj[k];
+    if (v === null || v === undefined || v === '') continue;
+    if (Array.isArray(v) && v.length === 0) continue;
+    if (typeof v === 'object' && !Array.isArray(v)) {
+      var nested = limpiarNulls(v);
+      if (nested && Object.keys(nested).length) out[k] = nested;
+      continue;
+    }
+    out[k] = v;
+  }
+  return out;
+}
+
+function compactarRespuesta(payload) {
+  if (!payload || typeof payload !== 'object') return payload;
+  var copy;
+  try {
+    copy = JSON.parse(JSON.stringify(payload));
+  } catch (e) {
+    copy = payload;
+  }
+  if (Array.isArray(copy.resultados)) {
+    copy.resultados = copy.resultados.map(compactarItem);
+  } else if (copy.titulo || copy.slug || copy.imdb_id || copy.tmdb_id) {
+    return compactarItem(copy);
+  }
+  return limpiarNulls(copy);
+}
+
+function normalizarCamposResultado(item) {
+  if (!item || typeof item !== 'object') return item;
+  var campos = [
+    'titulo', 'titulo_original', 'tipo', 'fuente', 'source_id', 'slug',
+    'portada', 'descripcion', 'calificacion', 'votos', 'year', 'fecha_estreno',
+    'generos', 'genero', 'duracion', 'duracion_texto', 'certificacion',
+    'imdb_id', 'tmdb_id', 'url_extract'
   ];
   for (var i = 0; i < campos.length; i++) {
     if (item[campos[i]] === undefined) item[campos[i]] = null;
