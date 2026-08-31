@@ -3103,12 +3103,25 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   if (!item || !meta) return item;
 
   var coincide = metaCoincideConItem(item, meta);
+  var sinPortada = !item.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(item.portada));
 
-  // Si no coincide la obra, solo rellenar texto faltante; NUNCA portada ni IDs
+  // Si no coincide de forma estricta pero el ítem NO tiene portada, permitir
+  // aplicar SOLO poster si los títulos normalizados son idénticos o casi.
   if (!coincide) {
-    if ((!item.descripcion || String(item.descripcion).length < 40) && meta.descripcion) {
-      // Solo si el título base es de la misma franquicia (opcional, conservador)
-      // Mejor no tocar descripción de otra obra
+    if (sinPortada) {
+      var tA = normalizarTituloKey(item.titulo || '');
+      var tB = normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
+      if (tA && tB && (tA === tB || tA.indexOf(tB) === 0 || tB.indexOf(tA) === 0)) {
+        if (meta.portada_imdb && esPortadaUrlValida(meta.portada_imdb)) {
+          item.portada = meta.portada_imdb;
+          item.portada_imdb = meta.portada_imdb;
+          item.poster_source = 'imdb';
+        } else if (meta.portada_tmdb && esPortadaUrlValida(meta.portada_tmdb)) {
+          item.portada = meta.portada_tmdb;
+          item.portada_tmdb = meta.portada_tmdb;
+          item.poster_source = 'tmdb';
+        }
+      }
     }
     return item;
   }
@@ -3433,8 +3446,13 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint) {
   // --- 1) API de sugerencias IMDb (rápida y fiable) ---
   try {
     var letter = (q.replace(/[^a-zA-Z0-9]/g, '') || 'x').charAt(0).toLowerCase();
-    var sugUrl = 'https://v3.sg.media-imdb.com/suggestion/' + letter + '/' +
-      encodeURIComponent(q).replace(/%20/g, '%20') + '.json';
+    // Slug: minúsculas, espacios → _, solo alfanuméricos (formato oficial del typeahead)
+    var slugSug = q.toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_|_$/g, '') || 'x';
+    var sugUrl = 'https://v3.sg.media-imdb.com/suggestion/' + letter + '/' + slugSug + '.json';
     var resSug = await fetch(sugUrl, {
       headers: {
         'User-Agent': HEADERS['User-Agent'],
@@ -3450,8 +3468,8 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint) {
         var it = list[si];
         if (!it || !it.id || String(it.id).indexOf('tt') !== 0) continue;
         var sc = scoreSug(it);
-        // Umbral alto: evita portada de "One Piece" en "One Piece Film Red"
-        if (sc < 100) continue;
+        // Umbral: 70 permite títulos cercanos; scoreSug ya penaliza specials/films
+        if (sc < 70) continue;
         scored.push({ item: it, score: sc });
       }
       scored.sort(function (a, b) { return b.score - a.score; });
@@ -3721,7 +3739,8 @@ function esPortadaUrlValida(url) {
 
 function esPortadaImdb(url) {
   if (!esPortadaUrlValida(url)) return false;
-  return /(?:^|\.)m\.media-amazon\.com|(?:^|\.)images-na\.ssl-images-amazon\.com/i.test(url);
+  // m.media-amazon.com, images-na.ssl-images-amazon.com, ia.media-imdb.com, etc.
+  return /m\.media-amazon\.com|images-na\.ssl-images-amazon\.com|ia\.media-imdb\.com|media-amazon\.com\/images/i.test(url);
 }
 
 function esFuentePelisplus(item) {
@@ -5352,8 +5371,16 @@ async function buscarAnimeAv1(query, limit) {
     var tipo = 'Anime';
     if (/movie|pel[ií]cula/i.test(catName)) tipo = 'Pelicula';
     var portadaAv1 = it.poster || it.image || it.cover || it.thumbnail || it.coverImage || null;
+    // AnimeAV1: covers en CDN por id numérico → https://cdn.animeav1.com/covers/{id}.jpg
+    if (!portadaAv1 && it.id != null && String(it.id).match(/^\d+$/)) {
+      portadaAv1 = 'https://cdn.animeav1.com/covers/' + it.id + '.jpg';
+    }
     if (portadaAv1 && typeof portadaAv1 === 'string' && portadaAv1.indexOf('http') !== 0) {
-      portadaAv1 = ANIMEAV1_BASE + (portadaAv1.charAt(0) === '/' ? portadaAv1 : '/' + portadaAv1);
+      if (/^\/?covers\//i.test(portadaAv1) || /^\d+\.jpe?g$/i.test(portadaAv1)) {
+        portadaAv1 = 'https://cdn.animeav1.com/covers/' + String(portadaAv1).replace(/^.*\//, '');
+      } else {
+        portadaAv1 = ANIMEAV1_BASE + (portadaAv1.charAt(0) === '/' ? portadaAv1 : '/' + portadaAv1);
+      }
     }
     out.push({
       fuente: 'animeav1',
@@ -5425,10 +5452,17 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   var score = media.score || null;
   var malId = media.malId || null;
   var portada = media.poster || media.cover || media.image || null;
-  if (portada && typeof portada === 'string' && portada.indexOf('http') !== 0) {
-    portada = ANIMEAV1_BASE + (portada.charAt(0) === '/' ? portada : '/' + portada);
+  if (!portada && media.id != null && String(media.id).match(/^\d+$/)) {
+    portada = 'https://cdn.animeav1.com/covers/' + media.id + '.jpg';
   }
-  // animeav1 suele traer poster=null → Jikan/MAL
+  if (portada && typeof portada === 'string' && portada.indexOf('http') !== 0) {
+    if (/^\/?covers\//i.test(portada) || /^\d+\.jpe?g$/i.test(portada)) {
+      portada = 'https://cdn.animeav1.com/covers/' + String(portada).replace(/^.*\//, '');
+    } else {
+      portada = ANIMEAV1_BASE + (portada.charAt(0) === '/' ? portada : '/' + portada);
+    }
+  }
+  // Si sigue sin portada → Jikan/MAL
   if (!portada && malId) {
     try {
       portada = await fetchPosterMal(malId);
