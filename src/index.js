@@ -313,6 +313,8 @@ async function handleRequest(request, env) {
             if (itc.calificacion != null && itc.calificacion !== '') {
               itc.calificacion = normalizarCalificacion(itc.calificacion);
             }
+            // Esquema uniforme de campos en todos los resultados
+            normalizarCamposResultado(itc);
             if (itc.slug) {
               var sidFinal = sourceIdFromName(itc.fuente);
               var tipoPathFinal = (itc.tipo === 'Serie' || itc.tipo === 'Anime')
@@ -432,6 +434,7 @@ async function handleRequest(request, env) {
           resultadoPath.poster_source = 'tmdb';
         }
       }
+      if (resultadoPath) normalizarCamposResultado(resultadoPath);
       return json(resultadoPath);
     } catch (err) {
       return json({
@@ -2264,12 +2267,22 @@ function extraerMetas(html) {
   }
   titulo = limpiarTitulo(titulo);
 
-  // Año desde título "Nombre (2026)"
+  // Año desde título "Nombre (2026)", ficha, o año suelto en meta
   var year = null;
-  var ym = titulo.match(/\((\d{4})\)/);
+  var ym = titulo.match(/\(((?:19|20)\d{2})\)/);
   if (ym) year = ym[1];
   if (!year) {
-    ym = html.match(/Ver\s+[^<(]+\((\d{4})\)/i);
+    ym = html.match(/Ver\s+[^<(]+\(((?:19|20)\d{2})\)/i);
+    if (ym) year = ym[1];
+  }
+  if (!year) {
+    ym = html.match(/(?:Año|Year|Estreno|Released?)[:\s]*((?:19|20)\d{2})/i)
+      || html.match(/itemprop=["']datePublished["'][^>]*content=["']((?:19|20)\d{2})/i)
+      || html.match(/content=["']((?:19|20)\d{2})[^"']*["'][^>]*itemprop=["']datePublished["']/i);
+    if (ym) year = ym[1];
+  }
+  if (!year) {
+    ym = html.match(/<span[^>]*class=["'][^"']*year[^"']*["'][^>]*>\s*((?:19|20)\d{2})/i);
     if (ym) year = ym[1];
   }
 
@@ -3097,7 +3110,17 @@ function metaCoincideConItem(item, meta) {
   var tItem = normalizarTituloKey(item.titulo || '');
   var tMeta = normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
   if (!tItem || !tMeta) return false;
-  if (tItem === tMeta) return true;
+
+  var yItem = extraerYearItem(item);
+  var yMeta = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
+
+  // Año de la fuente manda: si difiere, NO es la misma obra
+  if (yItem && yMeta && String(yItem) !== String(yMeta)) return false;
+
+  if (tItem === tMeta) {
+    // Título idéntico + año OK (o sin año en ítem) → coincide
+    return true;
+  }
 
   var STOP = {
     one:1, piece:1, the:1, and:1, film:1, movie:1, special:1, episode:1,
@@ -3109,24 +3132,16 @@ function metaCoincideConItem(item, meta) {
   var eItem = extras(tItem);
   var eMeta = extras(tMeta);
 
-  // Si el ítem tiene extras (red, heroines, stampede…), la meta debe tenerlos
   if (eItem.length) {
     var shared = 0;
     for (var i = 0; i < eItem.length; i++) {
       if (tMeta.indexOf(eItem[i]) !== -1) shared++;
     }
     if (shared === 0) return false;
-    // Al menos la mitad de los tokens distintivos
     if (shared < Math.ceil(eItem.length / 2)) return false;
   } else {
-    // Ítem genérico "one piece": meta no debe ser un special/film
     if (eMeta.length > 0) return false;
   }
-
-  // Año: si ambos existen y difieren, no coincide
-  var yItem = extraerYearItem(item);
-  var yMeta = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
-  if (yItem && yMeta && String(yItem) !== String(yMeta)) return false;
 
   return true;
 }
@@ -3214,43 +3229,48 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   }
   if (meta.votos && !item.votos) item.votos = meta.votos;
 
-  // Descripción: preferir SIEMPRE español. Nunca reemplazar español por inglés.
-  if (meta.descripcion) {
-    var d = item.descripcion || '';
+  // Descripción: la de la FUENTE gana si es válida (>=40 chars).
+  // Meta solo rellena huecos. Preferir español; nunca pisar español con inglés.
+  var descFuente = item.descripcion || '';
+  var descFuenteOk = descFuente.length >= 40 && !/\.\.\.\s*$/.test(descFuente)
+    && !/^(Pel[ií]cula|Serie|Anime)\s/i.test(descFuente);
+  if (meta.descripcion && !descFuenteOk) {
     var metaEs = pareceEspanol(meta.descripcion);
     var metaEn = pareceIngles(meta.descripcion);
-    var dEs = pareceEspanol(d);
-    var dEn = pareceIngles(d);
-    var dIncompleta = !d || d.length < 40 || /\.\.\.\s*$/.test(d) || /^(Pel[ií]cula|Serie|Anime)\s/i.test(d);
-
+    var dEn = pareceIngles(descFuente);
     if (metaEs) {
-      // Meta en español: usar si no hay descripción o la actual es incompleta/inglesa
-      if (dIncompleta || dEn || !dEs) item.descripcion = meta.descripcion;
-    } else if (!metaEn && dIncompleta) {
-      // Meta ambigua (ni claro ES ni EN)
-      if (!d || dIncompleta) item.descripcion = meta.descripcion;
-    } else if (metaEn) {
-      // Meta en inglés: solo si no hay NADA
-      if (!d) item.descripcion = meta.descripcion;
-      // Si la actual es inglesa e incompleta, dejar; cliente puede traducir luego
+      item.descripcion = meta.descripcion;
+    } else if (!metaEn) {
+      item.descripcion = meta.descripcion;
+    } else if (!descFuente || dEn) {
+      // Solo inglés disponible
+      item.descripcion = meta.descripcion;
     }
   }
-  // Si la descripción final sigue en inglés y hay una alternativa española en el ítem, no tocar
 
-  if (meta.generos && meta.generos.length) {
+  if (meta.generos && meta.generos.length && (!item.generos || !item.generos.length) && !item.genero) {
+    item.generos = meta.generos;
+    item.genero = meta.generos.join(', ');
+  } else if (meta.generos && meta.generos.length && !item.genero) {
     item.generos = meta.generos;
     item.genero = meta.generos.join(', ');
   }
 
-  // Año / fecha: rellenar si falta
-  if (meta.fecha_estreno) {
-    item.fecha_estreno = meta.fecha_estreno;
-    if (!item.year) item.year = String(meta.fecha_estreno).slice(0, 4);
-  }
-  if (!item.year && meta.year) item.year = String(meta.year).slice(0, 4);
+  // Año: la FUENTE manda. Meta solo si falta.
   if (!item.year) {
-    var yFlex = extraerYearFlexible(item.titulo, item.slug, null);
-    if (yFlex) item.year = yFlex;
+    if (meta.fecha_estreno) {
+      item.fecha_estreno = meta.fecha_estreno;
+      item.year = String(meta.fecha_estreno).slice(0, 4);
+    } else if (meta.year) {
+      item.year = String(meta.year).slice(0, 4);
+    } else {
+      var yFlex = extraerYearFlexible(item.titulo, item.slug, null);
+      if (yFlex) item.year = yFlex;
+    }
+  } else if (!item.fecha_estreno && meta.fecha_estreno) {
+    // Conservar year fuente; opcionalmente fecha si el año coincide
+    var my = String(meta.fecha_estreno).slice(0, 4);
+    if (String(item.year) === my) item.fecha_estreno = meta.fecha_estreno;
   }
 
   if (meta.duracion) item.duracion = meta.duracion;
@@ -3436,10 +3456,18 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint) {
     var ct = normalizarTituloKey(item.l || item.titulo || '');
     if (!ct) return -999;
     var score = 0;
+    var y = item.y ? String(item.y) : null;
 
     // Título exacto
     if (ct === wantedTitle) {
       score += 200;
+      // Sin año pedido: preferir estrenos recientes (evita remakes viejos tipo "La captura" 2012 vs 2026)
+      if (!wantedYear && y) {
+        var yNum = parseInt(y, 10);
+        if (yNum >= 2020) score += 40;
+        else if (yNum >= 2010) score += 10;
+        else score -= 30;
+      }
     } else {
       var wantExtra = tokensDistintivos(wantedTitle);
       var candExtra = tokensDistintivos(ct);
@@ -3480,7 +3508,6 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint) {
       }
     }
 
-    var y = item.y ? String(item.y) : null;
     if (wantedYear && y) score += wantedYear === y ? 90 : -200;
     var qid = String(item.qid || item.q || '').toLowerCase();
     var isTv = /tvseries|tvminiseries|tvspecial|tvmovie/.test(qid);
@@ -4030,6 +4057,32 @@ function normalizarCalificacion(val) {
   return Math.round(n * 10) / 10;
 }
 
+/**
+ * Garantiza el mismo esquema de campos en búsqueda y detalle.
+ * No inventa datos: solo asegura claves presentes (null si faltan).
+ */
+function normalizarCamposResultado(item) {
+  if (!item || typeof item !== 'object') return item;
+  var campos = [
+    'titulo', 'titulo_original', 'tipo', 'formato', 'fuente', 'source_id', 'slug',
+    'portada', 'backdrop', 'descripcion', 'calificacion', 'votos', 'year', 'fecha_estreno',
+    'generos', 'genero', 'duracion', 'estado', 'en_emision', 'finalizado',
+    'imdb_id', 'tmdb_id', 'url_extract'
+  ];
+  for (var i = 0; i < campos.length; i++) {
+    if (item[campos[i]] === undefined) item[campos[i]] = null;
+  }
+  if (item.calificacion != null) item.calificacion = normalizarCalificacion(item.calificacion);
+  if (item.year != null) {
+    var y = String(item.year).match(/(19|20)\d{2}/);
+    item.year = y ? y[0] : null;
+  }
+  if (Array.isArray(item.generos) && !item.genero) {
+    item.genero = item.generos.join(', ');
+  }
+  return item;
+}
+
 async function enriquecerListaConTmdb(lista, query) {
   if (!lista || !lista.length) return lista;
 
@@ -4447,13 +4500,26 @@ async function buscarPelisplus(query, limit) {
           || chunk.match(/title=["']([^"']{3,80})["']/i);
         if (tm) titulo = limpiarTitulo(limpiarTexto(tm[1]));
 
+        // Año desde HTML cercano o slug (la-captura-2026)
+        var yearPp = null;
+        var ymChunk = chunk.match(/\b((?:19|20)\d{2})\b/);
+        if (ymChunk) yearPp = ymChunk[1];
+        if (!yearPp) {
+          var ymSlug = String(slug).match(/(?:^|-)((?:19|20)\d{2})$/);
+          if (ymSlug) yearPp = ymSlug[1];
+        }
+        // Título tipo "La captura (2026)"
+        var ymTit = String(titulo).match(/\(((?:19|20)\d{2})\)/);
+        if (ymTit) yearPp = ymTit[1];
+
         out.push({
           titulo: titulo,
           tipo: tipo,
           fuente: 'pelisplushd',
           link: full,
           slug: slug,
-          portada: portada
+          portada: portada,
+          year: yearPp
         });
       }
     } catch (e) { /* next variante */ }
