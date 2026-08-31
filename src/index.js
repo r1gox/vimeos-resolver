@@ -4055,30 +4055,62 @@ async function scrapeFichaImdbEs(imdbId) {
  * Ej: tt39390497 → 6.7 / 4734 votos
  * Cachea el resultado por título 7 días (Cache API).
  */
-async function fetchImdbRatingDataset(imdbId) {
-  if (!imdbId || String(imdbId).indexOf('tt') !== 0) return null;
-  var id = String(imdbId).trim();
+/**
+ * Ratings IMDb oficiales sin cargar el TSV entero en memoria.
+ * Una sola descarga compartida resuelve todos los tt* pendientes del lote.
+ */
+var __IMDB_RATING_CACHE_MEM__ = Object.create(null); // id -> {calificacion, votos}
+var __IMDB_RATING_PENDING__ = Object.create(null);   // id -> [resolve, reject]
+var __IMDB_RATING_STREAM__ = null;
 
-  // Cache por id
+function _imdbRatingFromMemOrCaches(id) {
+  if (__IMDB_RATING_CACHE_MEM__[id]) return Promise.resolve(__IMDB_RATING_CACHE_MEM__[id]);
+  return Promise.resolve().then(async function () {
+    try {
+      var cache = typeof caches !== 'undefined' ? caches.default : null;
+      if (!cache) return null;
+      var chit = await cache.match(new Request('https://moviezone.meta.local/imdb-rating/' + id));
+      if (!chit) return null;
+      var cj = await chit.json();
+      if (cj && cj.calificacion != null) {
+        __IMDB_RATING_CACHE_MEM__[id] = cj;
+        return cj;
+      }
+    } catch (e) {}
+    return null;
+  });
+}
+
+async function _persistImdbRating(found) {
+  if (!found || !found.imdb_id) return;
+  __IMDB_RATING_CACHE_MEM__[found.imdb_id] = found;
   try {
     var cache = typeof caches !== 'undefined' ? caches.default : null;
     if (cache) {
-      var creq = new Request('https://moviezone.meta.local/imdb-rating/' + id);
-      var chit = await cache.match(creq);
-      if (chit) {
-        var cj = await chit.json();
-        if (cj && cj.calificacion != null) return cj;
-      }
+      await cache.put(
+        new Request('https://moviezone.meta.local/imdb-rating/' + found.imdb_id),
+        new Response(JSON.stringify(found), {
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=604800' }
+        })
+      );
     }
-  } catch (eC) { /* ok */ }
+  } catch (e) {}
+}
+
+async function _runImdbRatingsStream() {
+  var pendingIds = Object.keys(__IMDB_RATING_PENDING__);
+  if (!pendingIds.length) return;
+
+  var need = Object.create(null);
+  for (var i = 0; i < pendingIds.length; i++) need[pendingIds[i]] = true;
+  var left = pendingIds.length;
 
   try {
     var res = await fetch('https://datasets.imdbws.com/title.ratings.tsv.gz', {
       headers: { 'User-Agent': HEADERS['User-Agent'], 'Accept-Encoding': 'identity' }
     });
-    if (!res || !res.ok || !res.body) return null;
+    if (!res || !res.ok || !res.body) throw new Error('ratings fetch failed');
 
-    // Decompress gzip and scan lines for id
     var stream = res.body;
     if (typeof DecompressionStream !== 'undefined') {
       stream = res.body.pipeThrough(new DecompressionStream('gzip'));
@@ -4086,65 +4118,84 @@ async function fetchImdbRatingDataset(imdbId) {
     var reader = stream.getReader();
     var decoder = new TextDecoder('utf-8');
     var buf = '';
-    var found = null;
-    var needle = id + '\t';
 
-    while (true) {
+    while (left > 0) {
       var chunk = await reader.read();
       if (chunk.done) break;
       buf += decoder.decode(chunk.value, { stream: true });
       var lines = buf.split('\n');
       buf = lines.pop() || '';
-      for (var i = 0; i < lines.length; i++) {
-        var line = lines[i];
-        if (line.indexOf(needle) === 0) {
-          // tconst  averageRating  numVotes
-          var parts = line.split('\t');
-          if (parts.length >= 3) {
-            found = {
-              imdb_id: id,
-              calificacion: normalizarCalificacion(parts[1]),
-              votos: String(parts[2]).replace(/,/g, ''),
-              rating_source: 'imdb'
-            };
-          }
-          break;
+      for (var li = 0; li < lines.length && left > 0; li++) {
+        var line = lines[li];
+        if (!line || line.charAt(0) !== 't') continue;
+        var tab1 = line.indexOf('\t');
+        if (tab1 < 0) continue;
+        var id = line.slice(0, tab1);
+        if (!need[id]) continue;
+        var tab2 = line.indexOf('\t', tab1 + 1);
+        if (tab2 < 0) continue;
+        var found = {
+          imdb_id: id,
+          calificacion: normalizarCalificacion(line.slice(tab1 + 1, tab2)),
+          votos: line.slice(tab2 + 1).replace(/,/g, ''),
+          rating_source: 'imdb'
+        };
+        await _persistImdbRating(found);
+        var waiters = __IMDB_RATING_PENDING__[id];
+        delete __IMDB_RATING_PENDING__[id];
+        delete need[id];
+        left--;
+        if (waiters) {
+          for (var w = 0; w < waiters.length; w++) waiters[w](found);
         }
       }
-      if (found) {
-        try { await reader.cancel(); } catch (eCancel) { /* ok */ }
-        break;
-      }
-      // evitar buffer infinito
-      if (buf.length > 50000) buf = buf.slice(-1000);
+      if (buf.length > 80000) buf = buf.slice(-2000);
     }
+    try { await reader.cancel(); } catch (eCancel) {}
+  } catch (eStream) {
+    // fallthrough: resolve pending with null
+  }
 
-    if (!found) return null;
-
-    // Guardar en cache 7 días
-    try {
-      var cache2 = typeof caches !== 'undefined' ? caches.default : null;
-      if (cache2) {
-        var creq2 = new Request('https://moviezone.meta.local/imdb-rating/' + id);
-        await cache2.put(creq2, new Response(JSON.stringify(found), {
-          headers: {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'public, max-age=604800'
-          }
-        }));
-      }
-    } catch (ePut) { /* ok */ }
-
-    return found;
-  } catch (e) {
-    return null;
+  // Los que no se encontraron
+  var rest = Object.keys(__IMDB_RATING_PENDING__);
+  for (var r = 0; r < rest.length; r++) {
+    var rid = rest[r];
+    var ws = __IMDB_RATING_PENDING__[rid];
+    delete __IMDB_RATING_PENDING__[rid];
+    if (ws) for (var x = 0; x < ws.length; x++) ws[x](null);
   }
 }
 
-/**
- * Tras tener imdb_id, fuerza calificación/votos oficiales IMDb (dataset).
- * Pisa rating de TMDB (8.8) con el de IMDb (6.7).
- */
+async function fetchImdbRatingDataset(imdbId) {
+  if (!imdbId || String(imdbId).indexOf('tt') !== 0) return null;
+  var id = String(imdbId).trim();
+
+  var cached = await _imdbRatingFromMemOrCaches(id);
+  if (cached) return cached;
+
+  return new Promise(function (resolve) {
+    if (!__IMDB_RATING_PENDING__[id]) __IMDB_RATING_PENDING__[id] = [];
+    __IMDB_RATING_PENDING__[id].push(resolve);
+
+    if (!__IMDB_RATING_STREAM__) {
+      __IMDB_RATING_STREAM__ = Promise.race([
+        _runImdbRatingsStream(),
+        new Promise(function (r) { setTimeout(r, 14000); })
+      ]).then(function () {
+        // timeout: pendientes sin resolver → null
+        var left = Object.keys(__IMDB_RATING_PENDING__);
+        for (var i = 0; i < left.length; i++) {
+          var ws = __IMDB_RATING_PENDING__[left[i]];
+          delete __IMDB_RATING_PENDING__[left[i]];
+          if (ws) for (var j = 0; j < ws.length; j++) ws[j](null);
+        }
+      }).finally(function () {
+        __IMDB_RATING_STREAM__ = null;
+      });
+    }
+  });
+}
+
 async function aplicarRatingImdbOficial(meta) {
   if (!meta || !meta.imdb_id) return meta;
   // Si ya viene de IMDb/OMDb con calificación, no tocar
@@ -5111,7 +5162,7 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
   }
 
   // 1) IMDb primero (suggestion + ficha ES)
-  for (var i = 0; i < Math.min(variantes.length, 7); i++) {
+  for (var i = 0; i < Math.min(variantes.length, 3); i++) {
     try {
       var mImdb = await buscarMetaImdb(variantes[i], tipoHint, yearHint, { descripcionHint: descHintMeta });
       if (mImdb) {
@@ -5135,7 +5186,7 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
         if (mById) meta = completar(meta, mById);
       } catch (eId) { /* ok */ }
     }
-    for (var oi = 0; oi < Math.min(variantes.length, 5); oi++) {
+    for (var oi = 0; oi < Math.min(variantes.length, 2); oi++) {
       try {
         var mOmdb = await buscarMetaOmdb(variantes[oi], yearHint, null);
         if (mOmdb) {
@@ -5150,7 +5201,7 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
 
   // 3) TMDB API oficial (secundario — solo rellena huecos)
   if (!meta || meta.calificacion == null || !meta.descripcion || !meta.portada_tmdb || !meta.backdrop) {
-    for (var t = 0; t < Math.min(variantes.length, 3); t++) {
+    for (var t = 0; t < Math.min(variantes.length, 1); t++) {
       try {
         var mTmdb = await buscarMetaTmdbApi(variantes[t], tipoHint, yearHint);
         if (mTmdb) {
@@ -5336,7 +5387,7 @@ function normalizarCamposResultado(item) {
 async function enriquecerListaConTmdb(lista, query) {
   if (!lista || !lista.length) return lista;
 
-  var CONCURRENCY = 3;
+  var CONCURRENCY = Math.min(4, Math.max(1, lista.length));
   var i = 0;
 
   async function worker() {
@@ -5351,13 +5402,18 @@ async function enriquecerListaConTmdb(lista, query) {
       if (!sinPortada && !sinInfo && !sinRating && item.tmdb_id && !esFuentePelisplus(item)) continue;
       try {
         // PelisPlus: leer ficha ANTES de IMDb (año/sinopsis reales evitan cruzar con otra película)
-        if (esFuentePelisplus(item) || String(item.fuente || '').toLowerCase() === 'pelisplushd') {
+        // Ficha PelisPlus solo si falta año o sinopsis (evita request extra)
+        var needFicha = !extraerYearItem(item) || !item.descripcion || String(item.descripcion).length < 40;
+        if (needFicha && (esFuentePelisplus(item) || String(item.fuente || '').toLowerCase() === 'pelisplushd')) {
           await enriquecerDesdeFichaPelisplus(item);
         }
         if (esDescripcionBasura(item.descripcion)) item.descripcion = null;
         var meta = await metaTmdbParaTitulo(item.titulo, item.tipo, extraerYearItem(item), item.descripcion);
         if (meta) {
-          meta = await aplicarRatingImdbOficial(meta);
+          // aplicarRatingImdbOficial ya corre dentro de metaTmdbParaTitulo; solo si faltó
+          if (meta.imdb_id && (meta.calificacion == null || meta.rating_source === 'tmdb')) {
+            meta = await aplicarRatingImdbOficial(meta);
+          }
           aplicarMetaAResultadoBusqueda(item, meta);
         }
         if (esDescripcionBasura(item.descripcion)) item.descripcion = null;
@@ -5527,13 +5583,8 @@ async function buscarUniversal(query, sourceFilter, limit) {
   var q = String(query || '').trim();
   if (!q) throw new Error('Falta el termino de busqueda');
 
-  // Cascada por prioridad + relevancia:
-  // Orden: animeav1 → animedbs → doramasflix → pelisplushd → lamovie → hackstore
-  // Solo se acepta una fuente si tiene al menos 1 resultado RELEVANTE al query
-  // (mismo título/tokens). Así "acaramelados" no se queda en animeav1 con basura
-  // y pasa a doramasflix/lamovie donde sí es un dorama/serie.
-  // Sin fusión entre fuentes → sin duplicados cruzados.
-  // tipo viene de la fuente que ganó (Anime / Serie / Pelicula).
+  // Misma prioridad que antes; las fuentes se consultan en paralelo y se elige
+  // la primera (por orden) que tenga resultados RELEVANTES.
   var cadena = [
     { id: 'animeav1', aliases: ['animeav1', '4'], fn: function () { return buscarAnimeAv1(q, limit); } },
     { id: 'animedbs', aliases: ['animedbs', '5'], fn: function () { return buscarAnimedbs(q, limit); } },
@@ -5543,50 +5594,64 @@ async function buscarUniversal(query, sourceFilter, limit) {
     { id: 'hackstore', aliases: ['hackstore', '2'], fn: function () { return buscarHackstore(q, limit); } }
   ];
 
-  var resultados = [];
-  var fuenteUsada = null;
-
+  var toRun = [];
   for (var i = 0; i < cadena.length; i++) {
     var c = cadena[i];
     if (sourceFilter !== 'all' && c.aliases.indexOf(sourceFilter) === -1) continue;
-    var hits = [];
-    try {
-      hits = await c.fn();
-    } catch (eSrc) {
-      hits = [];
-    }
-    if (!Array.isArray(hits) || !hits.length) continue;
+    toRun.push(c);
+  }
 
-    // Limpiar + etiquetar fuente
+  var settled = await Promise.all(toRun.map(function (c) {
+    return Promise.resolve()
+      .then(function () { return c.fn(); })
+      .then(function (hits) {
+        return { c: c, hits: Array.isArray(hits) ? hits : [] };
+      })
+      .catch(function () {
+        return { c: c, hits: [] };
+      });
+  }));
+
+  // Respetar orden de prioridad original
+  var byId = Object.create(null);
+  for (var s = 0; s < settled.length; s++) {
+    byId[settled[s].c.id] = settled[s];
+  }
+
+  var resultados = [];
+  var fuenteUsada = null;
+
+  for (var j = 0; j < cadena.length; j++) {
+    var cj = cadena[j];
+    var pack = byId[cj.id];
+    if (!pack || !pack.hits.length) continue;
+    var hits = pack.hits;
+
     for (var ti = 0; ti < hits.length; ti++) {
       if (!hits[ti]) continue;
       if (hits[ti].titulo) hits[ti].titulo = limpiarTitulo(hits[ti].titulo);
       delete hits[ti].alternativas;
-      hits[ti].fuente = c.id;
-      hits[ti].fuentes = [c.id];
+      hits[ti].fuente = cj.id;
+      hits[ti].fuentes = [cj.id];
       if (typeof sourceIdFromName === 'function') {
-        hits[ti].source_id = sourceIdFromName(c.id);
+        hits[ti].source_id = sourceIdFromName(cj.id);
       }
-      // Nunca confiar en portada de PelisPlus
-      if (c.id === 'pelisplushd' && hits[ti].portada) {
+      if (cj.id === 'pelisplushd' && hits[ti].portada) {
         hits[ti].portada_fuente_raw = hits[ti].portada;
         hits[ti].portada = null;
       }
     }
 
-    // Filtrar solo relevantes al query
     var relevantes = [];
     for (var ri = 0; ri < hits.length; ri++) {
       if (resultadoRelevanteBusqueda(q, hits[ri])) relevantes.push(hits[ri]);
     }
-    if (!relevantes.length) continue; // esta fuente no sirve → siguiente
+    if (!relevantes.length) continue;
 
-    // Deduplicar solo dentro de esta fuente (mismo slug)
     relevantes = dedupePorSlugFuente(relevantes);
-
     resultados = relevantes;
-    fuenteUsada = c.id;
-    break; // primera fuente con hits RELEVANTES gana
+    fuenteUsada = cj.id;
+    break;
   }
 
   return {
