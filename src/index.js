@@ -2061,17 +2061,38 @@ async function buildStreamwishRichResponse(embedUrl, origin) {
 function attachStreamUrl(origin, rep) {
   if (!rep || !rep.url) return rep;
   var s = String(rep.servidor || '').toLowerCase();
-  var prov = detectarProviderEmbedFull(rep.url);
+  var u = String(rep.url);
+  // Ya es HLS directo
+  if (/\.m3u8(\?|$)/i.test(u) || /master\.txt(\?|$)/i.test(u)) {
+    rep.hls = u;
+    rep.tipo = rep.tipo || 'hls';
+    rep.stream_url = origin + '/proxy?url=' + encodeURIComponent(u);
+    return rep;
+  }
+  var prov = null;
+  try { prov = detectarProviderEmbedFull(u); } catch (e) {}
+  if (!prov) {
+    try { prov = detectarProviderEmbed(u); } catch (e2) {}
+  }
   if (prov === 'streamwish' || s.indexOf('streamwish') !== -1) {
-    rep.stream_url = origin + '/wish/streamurl?url=' + encodeURIComponent(rep.url);
+    rep.stream_url = origin + '/wish/streamurl?url=' + encodeURIComponent(u);
+    rep.hls_resolve = rep.stream_url;
   } else if (prov === 'vidhide' || s.indexOf('vidhide') !== -1) {
-    rep.stream_url = origin + '/vidhide/streamurl?url=' + encodeURIComponent(rep.url);
+    rep.stream_url = origin + '/vidhide/streamurl?url=' + encodeURIComponent(u);
+    rep.hls_resolve = rep.stream_url;
   } else if (prov === 'voe' || s.indexOf('voe') !== -1) {
-    rep.stream_url = origin + '/voe/streamurl?url=' + encodeURIComponent(rep.url);
+    rep.stream_url = origin + '/voe/streamurl?url=' + encodeURIComponent(u);
+    rep.hls_resolve = rep.stream_url;
   } else if (prov === 'goodstream' || s.indexOf('goodstream') !== -1) {
-    rep.stream_url = origin + '/goodstream/streamurl?url=' + encodeURIComponent(rep.url);
+    rep.stream_url = origin + '/goodstream/streamurl?url=' + encodeURIComponent(u);
+    rep.hls_resolve = rep.stream_url;
   } else if (prov === 'vimeos' || s.indexOf('vimeos') !== -1) {
-    rep.stream_url = origin + '/resolve/vimeos?url=' + encodeURIComponent(rep.url) + '&proxy=1';
+    rep.stream_url = origin + '/resolve/vimeos?url=' + encodeURIComponent(u) + '&proxy=1';
+    rep.hls_resolve = rep.stream_url;
+  } else {
+    // Genérico: intentar /resolve automático → m3u8
+    rep.stream_url = origin + '/resolve?url=' + encodeURIComponent(u) + '&proxy=1';
+    rep.hls_resolve = rep.stream_url;
   }
   return rep;
 }
@@ -6062,7 +6083,7 @@ async function buscarDoramasflix(query, limit) {
   var out = [];
   try {
     var data = await doramasflixGql(
-      'query SearchFullDoramas($input: String!, $page: Int, $perPage: Int, $fuzzy: Boolean) { searchFullDoramas(input: $input, page: $page, perPage: $perPage, fuzzy: $fuzzy) { count items { _id slug name name_es original_name poster_path first_air_date isTVShow isFinish premiere seasons { emision uploading pause status } } } }',
+      'query SearchFullDoramas($input: String!, $page: Int, $perPage: Int, $fuzzy: Boolean) { searchFullDoramas(input: $input, page: $page, perPage: $perPage, fuzzy: $fuzzy) { count items { _id slug name name_es original_name poster_path first_air_date isTVShow isFinish premiere rating seasons { emision uploading pause status } } } }',
       { input: q, page: 1, perPage: limit, fuzzy: true }
     );
     var items = (data && data.searchFullDoramas && data.searchFullDoramas.items) || [];
@@ -6079,6 +6100,7 @@ async function buscarDoramasflix(query, limit) {
         link: DORAMASFLIX_BASE + '/doramas/' + it.slug,
         portada: posterTmdbPath(it.poster_path),
         year: it.first_air_date ? String(it.first_air_date).slice(0, 4) : null,
+        calificacion: it.rating != null ? Number(Number(it.rating).toFixed(1)) : null,
         estado: st.estado,
         en_emision: st.en_emision,
         finalizado: st.finalizado,
@@ -6114,6 +6136,97 @@ async function buscarDoramasflix(query, limit) {
   return out.slice(0, limit);
 }
 
+/** Decodifica JWT de embedshortener.co → URL real del player */
+function decodificarEmbedShortener(url) {
+  if (!url) return null;
+  var m = String(url).match(/embedshortener\.co\/e\/([A-Za-z0-9_\-\.]+)/i);
+  if (!m) return url;
+  try {
+    var parts = m[1].split('.');
+    if (parts.length < 2) return url;
+    var payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    while (payload.length % 4) payload += '=';
+    var jsonStr = null;
+    try {
+      if (typeof atob === 'function') jsonStr = atob(payload);
+      else if (typeof Buffer !== 'undefined') jsonStr = Buffer.from(payload, 'base64').toString('utf8');
+    } catch (e1) { return url; }
+    var data = JSON.parse(jsonStr);
+    if (!data || !data.link) return url;
+    var inner = data.link;
+    try {
+      var real = null;
+      if (typeof atob === 'function') real = atob(inner);
+      else if (typeof Buffer !== 'undefined') real = Buffer.from(inner, 'base64').toString('utf8');
+      if (real && /^https?:\/\//i.test(real)) return real;
+    } catch (e2) { /* ok */ }
+    return url;
+  } catch (e) {
+    return url;
+  }
+}
+
+/** Trae TODOS los episodios de un dorama vía GraphQL (paginación completa) */
+async function doramasflixListarEpisodios(serieId, seasonNumber) {
+  var all = [];
+  var page = 1;
+  var maxPages = 40;
+  var conTemporada = seasonNumber != null && !isNaN(seasonNumber);
+  while (page <= maxPages) {
+    var data;
+    if (conTemporada) {
+      data = await doramasflixGql(
+        'query($serie_id:ID!,$page:Int,$limit:Int,$season_number:Int){paginationEpisode(page:$page,limit:$limit,filter:{serie_id:$serie_id,season_number:$season_number}){count items{_id slug name name_es episode_number season_number air_date overview still_path} pageInfo{currentPage pageCount hasNextPage itemCount}}}',
+        { serie_id: serieId, page: page, limit: 50, season_number: Number(seasonNumber) }
+      );
+    } else {
+      data = await doramasflixGql(
+        'query($serie_id:ID!,$page:Int,$limit:Int){paginationEpisode(page:$page,limit:$limit,filter:{serie_id:$serie_id}){count items{_id slug name name_es episode_number season_number air_date overview still_path} pageInfo{currentPage pageCount hasNextPage itemCount}}}',
+        { serie_id: serieId, page: page, limit: 50 }
+      );
+    }
+    var block = data && data.paginationEpisode;
+    if (!block) break;
+    var items = block.items || [];
+    for (var i = 0; i < items.length; i++) all.push(items[i]);
+    if (!block.pageInfo || !block.pageInfo.hasNextPage) break;
+    page++;
+  }
+  return all;
+}
+
+/** Links de un episodio concreto */
+async function doramasflixEpisodeLinks(episodeId) {
+  if (!episodeId) return [];
+  try {
+    var data = await doramasflixGql(
+      'query($episode_id:ID!){getEpisodeLinks(id:$episode_id,app:"android"){links_online{server lang link _id is_recommended}}}',
+      { episode_id: episodeId }
+    );
+    var links = (data && data.getEpisodeLinks && data.getEpisodeLinks.links_online) || [];
+    var out = [];
+    for (var i = 0; i < links.length; i++) {
+      var L = links[i];
+      if (!L || !L.link) continue;
+      var real = decodificarEmbedShortener(L.link) || L.link;
+      var lang = String(L.lang || '');
+      var idioma = (lang === '38' || /lat|es/i.test(lang)) ? 'Latino'
+        : (lang === '13109' || /sub/i.test(lang)) ? 'Subtitulado' : 'Otro';
+      out.push({
+        url: real,
+        servidor: extraerServidor(real) || ('server-' + (L.server || '')),
+        idioma: idioma,
+        lang: lang,
+        tipo: 'reproductor',
+        fuente: 'doramasflix'
+      });
+    }
+    return out;
+  } catch (e) {
+    return [];
+  }
+}
+
 async function scrapearDoramasflix(pageUrl, opts) {
   opts = opts || {};
   var u = String(pageUrl || '');
@@ -6140,112 +6253,196 @@ async function scrapearDoramasflix(pageUrl, opts) {
     ? (DORAMASFLIX_BASE + '/peliculas/' + slug)
     : (DORAMASFLIX_BASE + '/doramas/' + slug);
 
-  // Meta desde búsqueda GQL + HTML schema
-  var metaHit = null;
+  // Detalle completo vía GraphQL (rating, temporadas, episodios, overview…)
+  var detail = null;
   try {
-    var hits = await buscarDoramasflix(slug.replace(/-/g, ' '), 8);
-    for (var h = 0; h < (hits || []).length; h++) {
-      if (hits[h].slug === slug) { metaHit = hits[h]; break; }
-    }
-    if (!metaHit && hits && hits[0]) metaHit = hits[0];
-  } catch (e) { /* ok */ }
+    var dData = await doramasflixGql(
+      'query($slug:String!){detailDorama(filter:{slug:$slug}){_id name slug name_es original_name overview rating rating_count number_of_episodes number_of_seasons poster_path backdrop_path first_air_date last_air_date isFinish tmdb_id genres{name} labels{name}}}',
+      { slug: slug }
+    );
+    detail = dData && dData.detailDorama;
+  } catch (eDet) { /* ok */ }
 
-  var res = await fetch(detailUrl, {
-    headers: Object.assign({}, HEADERS, { Referer: DORAMASFLIX_BASE + '/', Accept: 'text/html' })
-  });
-  if (!res.ok) throw new Error('Doramasflix HTTP ' + res.status);
-  var html = await res.text();
-
-  var titulo = (metaHit && metaHit.titulo) || slug;
-  var descripcion = (metaHit && metaHit.descripcion) || null;
-  var portada = (metaHit && metaHit.portada) || null;
-  var year = metaHit && metaHit.year;
-  var generos = [];
-  var totalEps = 0;
-  var totalSeasons = 1;
-
-  // JSON-LD TVSeries
-  var ldRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-  var ld;
-  while ((ld = ldRe.exec(html)) !== null) {
+  // Fallback película
+  if (!detail && isMovie) {
     try {
-      var j = JSON.parse(ld[1]);
-      if (j['@type'] === 'TVSeries' || j['@type'] === 'Movie') {
-        if (j.name) titulo = j.name;
-        if (j.description) descripcion = j.description;
-        if (j.image) portada = Array.isArray(j.image) ? j.image[0] : j.image;
-        if (j.datePublished) year = String(j.datePublished).slice(0, 4);
-        if (j.numberOfEpisodes) totalEps = parseInt(j.numberOfEpisodes, 10) || totalEps;
-        if (j.numberOfSeasons) totalSeasons = parseInt(j.numberOfSeasons, 10) || totalSeasons;
-        if (Array.isArray(j.genre)) generos = j.genre;
-      }
-    } catch (e) { /* ok */ }
+      var mData = await doramasflixGql(
+        'query($slug:String!){detailMovie(filter:{slug:$slug}){_id name slug name_es original_name overview rating rating_count poster_path backdrop_path release_date tmdb_id genres{name}}}',
+        { slug: slug }
+      );
+      detail = mData && mData.detailMovie;
+      if (detail) isMovie = true;
+    } catch (eMov) { /* ok */ }
   }
 
-  var estadoInfo = metaHit
-    ? { estado: metaHit.estado, en_emision: metaHit.en_emision, finalizado: metaHit.finalizado }
-    : { estado: null, en_emision: null, finalizado: null };
+  if (!detail) {
+    // Último recurso: búsqueda
+    try {
+      var hits = await buscarDoramasflix(slug.replace(/-/g, ' '), 8);
+      for (var h = 0; h < (hits || []).length; h++) {
+        if (hits[h].slug === slug) {
+          detail = {
+            _id: hits[h].doramasflix_id,
+            name: hits[h].titulo,
+            slug: hits[h].slug,
+            poster_path: hits[h].portada,
+            first_air_date: hits[h].year,
+            isFinish: hits[h].finalizado
+          };
+          break;
+        }
+      }
+    } catch (eH) { /* ok */ }
+  }
 
-  // Capítulos desde HTML
-  var caps = [];
-  var seenC = Object.create(null);
-  var cre = /href=["'](\/capitulos\/([^"'\/]+))["']/gi;
-  var cm2;
-  while ((cm2 = cre.exec(html)) !== null) {
-    var cslug = cm2[2];
-    if (seenC[cslug]) continue;
-    seenC[cslug] = true;
-    var pm = cslug.match(/-(\d+)x(\d+)$/i);
-    if (pm) {
-      caps.push({
-        temporada: parseInt(pm[1], 10),
-        episodio: parseInt(pm[2], 10),
-        slug: cslug,
-        link: DORAMASFLIX_BASE + cm2[1],
-        titulo: 'T' + pm[1] + 'E' + pm[2],
-        reproductores: [],
-        embeds: []
-      });
+  if (!detail) throw new Error('Doramasflix: no se encontró "' + slug + '"');
+
+  var titulo = detail.name_es || detail.name || slug;
+  var tituloOrig = detail.original_name || null;
+  var descripcion = detail.overview || null;
+  var portada = posterTmdbPath(detail.poster_path || detail.poster);
+  var backdrop = posterTmdbPath(detail.backdrop_path || detail.backdrop);
+  var year = detail.first_air_date
+    ? String(detail.first_air_date).slice(0, 4)
+    : (detail.release_date ? String(detail.release_date).slice(0, 4) : null);
+  var calificacion = detail.rating != null ? Number(Number(detail.rating).toFixed(1)) : null;
+  var generos = [];
+  if (Array.isArray(detail.genres)) {
+    for (var gi = 0; gi < detail.genres.length; gi++) {
+      if (detail.genres[gi] && detail.genres[gi].name) generos.push(detail.genres[gi].name);
     }
   }
-  caps.sort(function (a, b) {
-    if (a.temporada !== b.temporada) return a.temporada - b.temporada;
-    return a.episodio - b.episodio;
-  });
-  if (!totalEps) totalEps = caps.length;
+  var totalSeasons = detail.number_of_seasons || 1;
+  var totalEpsMeta = detail.number_of_episodes || 0;
+  var estadoInfo = estadoDesdeDoramasflix(detail);
+  var serieId = detail._id;
 
-  // Capítulo concreto: sin GQL de links (requiere episode_id); devolver meta + link
+  // ——— Capítulo concreto ———
   if (isCap || (season && episode)) {
     var sN = season || 1;
     var eN = episode || 1;
-    var found = null;
-    for (var ci = 0; ci < caps.length; ci++) {
-      if (caps[ci].temporada === sN && caps[ci].episodio === eN) { found = caps[ci]; break; }
+    var epId = null;
+    var epSlug = slug + '-' + sN + 'x' + eN;
+    // Buscar episode_id en la página de episodios de esa temporada
+    try {
+      var epsSeason = await doramasflixListarEpisodios(serieId, sN);
+      for (var ei = 0; ei < epsSeason.length; ei++) {
+        if (Number(epsSeason[ei].episode_number) === eN) {
+          epId = epsSeason[ei]._id;
+          epSlug = epsSeason[ei].slug || epSlug;
+          break;
+        }
+      }
+    } catch (eEp) { /* ok */ }
+
+    var reproductores = epId ? await doramasflixEpisodeLinks(epId) : [];
+    // Intentar resolver a HLS los que se puedan (vimeos/streamwish/vidhide/voe)
+    for (var ri = 0; ri < reproductores.length; ri++) {
+      var rp = reproductores[ri];
+      if (!rp || !rp.url) continue;
+      if (/\.m3u8(\?|$)/i.test(rp.url)) {
+        rp.hls = rp.url;
+        rp.tipo = 'hls';
+        continue;
+      }
+      try {
+        var prov = null;
+        if (typeof detectarProviderEmbedFull === 'function') prov = detectarProviderEmbedFull(rp.url);
+        if (!prov && typeof detectarProviderEmbed === 'function') prov = detectarProviderEmbed(rp.url);
+        if (prov && typeof resolveByProvider === 'function') {
+          var resolved = await resolveByProvider(rp.url, prov, null);
+          if (resolved && (resolved.url || resolved.master)) {
+            rp.hls = resolved.master || resolved.url;
+            rp.tipo = 'hls';
+            if (resolved.qualities) rp.qualities = resolved.qualities;
+          }
+        }
+      } catch (eRes) { /* dejar embed */ }
     }
-    var capLink = found ? found.link : (DORAMASFLIX_BASE + '/capitulos/' + slug + '-' + sN + 'x' + eN);
+
     return {
       success: true,
       fuente: 'doramasflix',
       source_id: '6',
       tipo: 'Capitulo',
-      link: capLink,
+      link: DORAMASFLIX_BASE + '/capitulos/' + epSlug,
       slug: slug,
       titulo: titulo + ' — ' + sN + 'x' + eN,
       titulo_serie: titulo,
       portada: portada,
+      backdrop: backdrop,
       descripcion: descripcion,
       year: year,
+      calificacion: calificacion,
       estado: estadoInfo.estado,
       temporada: sN,
       episodio: eN,
-      reproductores: [],
-      embeds: [],
-      total: 0,
-      nota: 'Doramasflix: listado de capítulo OK. Los embeds suelen requerir sesión; usa alternativas de otras fuentes.'
+      reproductores: reproductores,
+      embeds: reproductores.map(function (r) { return r.url; }),
+      total: reproductores.length
     };
   }
 
-  // Agrupar por temporada
+  // ——— Serie / listado: todos los episodios de todas las temporadas ———
+  var caps = [];
+  if (serieId && !isMovie) {
+    try {
+      // Traer por temporada para cubrir todas (evita límites del API)
+      var seasonsToFetch = [];
+      for (var sn = 1; sn <= Math.max(totalSeasons, 1); sn++) seasonsToFetch.push(sn);
+      // Si no sabemos cuántas, también pedir sin filtro de temporada
+      if (!totalSeasons || totalSeasons < 1) seasonsToFetch = [null];
+
+      var seenEp = Object.create(null);
+      for (var si = 0; si < seasonsToFetch.length; si++) {
+        var list = await doramasflixListarEpisodios(serieId, seasonsToFetch[si]);
+        for (var li = 0; li < list.length; li++) {
+          var ep = list[li];
+          if (!ep) continue;
+          var key = (ep.season_number || 1) + 'x' + (ep.episode_number || 0);
+          if (seenEp[key]) continue;
+          seenEp[key] = true;
+          caps.push({
+            temporada: Number(ep.season_number) || 1,
+            episodio: Number(ep.episode_number) || 0,
+            slug: ep.slug || (slug + '-' + key),
+            link: DORAMASFLIX_BASE + '/capitulos/' + (ep.slug || (slug + '-' + key)),
+            titulo: ep.name_es || ep.name || ('T' + (ep.season_number || 1) + 'E' + (ep.episode_number || 0)),
+            episode_id: ep._id,
+            air_date: ep.air_date || null,
+            still: posterTmdbPath(ep.still_path),
+            reproductores: [],
+            embeds: []
+          });
+        }
+      }
+      // Si por temporada no trajo nada, intentar sin filtro
+      if (!caps.length) {
+        var allEps = await doramasflixListarEpisodios(serieId, null);
+        for (var ai = 0; ai < allEps.length; ai++) {
+          var ep2 = allEps[ai];
+          if (!ep2) continue;
+          caps.push({
+            temporada: Number(ep2.season_number) || 1,
+            episodio: Number(ep2.episode_number) || 0,
+            slug: ep2.slug,
+            link: DORAMASFLIX_BASE + '/capitulos/' + ep2.slug,
+            titulo: ep2.name_es || ep2.name || '',
+            episode_id: ep2._id,
+            still: posterTmdbPath(ep2.still_path),
+            reproductores: [],
+            embeds: []
+          });
+        }
+      }
+    } catch (eList) { /* ok */ }
+  }
+
+  caps.sort(function (a, b) {
+    if (a.temporada !== b.temporada) return a.temporada - b.temporada;
+    return a.episodio - b.episodio;
+  });
+
   var byT = Object.create(null);
   for (var k = 0; k < caps.length; k++) {
     var t = caps[k].temporada;
@@ -6264,16 +6461,20 @@ async function scrapearDoramasflix(pageUrl, opts) {
     link: detailUrl,
     slug: slug,
     titulo: titulo,
-    titulo_original: (metaHit && metaHit.titulo_original) || null,
+    titulo_original: tituloOrig,
     portada: portada,
+    backdrop: backdrop,
     descripcion: descripcion,
     year: year,
+    calificacion: calificacion,
+    votos: detail.rating_count || null,
+    tmdb_id: detail.tmdb_id || null,
     estado: estadoInfo.estado,
     en_emision: estadoInfo.en_emision,
     finalizado: estadoInfo.finalizado,
     generos: generos,
     genero: generos.length ? generos.join(', ') : null,
-    total_episodios: totalEps || caps.length,
+    total_episodios: totalEpsMeta || caps.length,
     total_temporadas: Math.max(totalSeasons, temps.length || 1),
     temporadas: temps.length ? temps : [{ temporada: 1, total_episodios: 0, episodios: [] }],
     total: 0,
