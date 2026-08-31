@@ -3176,8 +3176,11 @@ function mapMetaFromSearchItem(it) {
 function metaCoincideConItem(item, meta) {
   if (!item || !meta) return false;
   var tItem = normalizarTituloKey(item.titulo || '');
-  var tMeta = normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
-  if (!tItem || !tMeta) return false;
+  // Preferir título ES de IMDb cuando exista (La captura vs Facing El Chapo)
+  var tMeta = normalizarTituloKey(meta.titulo_es || meta.titulo_tmdb || meta.titulo_original || '');
+  var tMetaAlt = normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
+  if (!tItem || (!tMeta && !tMetaAlt)) return false;
+  if (!tMeta) tMeta = tMetaAlt;
 
   var yItem = extraerYearItem(item);
   var yMeta = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
@@ -3185,7 +3188,9 @@ function metaCoincideConItem(item, meta) {
   // Año de la fuente manda: si difiere, NO es la misma obra
   if (yItem && yMeta && String(yItem) !== String(yMeta)) return false;
 
-  if (tItem === tMeta) return true;
+  if (tItem === tMeta || (tMetaAlt && tItem === tMetaAlt)) return true;
+  // Si el título ES de la ficha coincide, OK aunque el EN sea otro
+  if (meta.titulo_es && normalizarTituloKey(meta.titulo_es) === tItem) return true;
 
   // Contención casi exacta (solo año extra)
   if (tItem.indexOf(tMeta) === 0 || tMeta.indexOf(tItem) === 0) {
@@ -4052,10 +4057,37 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
             }
           }
 
+          // Título para match: preferir el de la ficha ES ("La captura") sobre el EN ("Facing El Chapo")
+          var tituloEs = (ficha && (ficha.titulo_es || ficha.titulo)) || null;
+          var tituloEn = best.l || (ficha && ficha.titulo_original) || q;
+          var tituloMatch = tituloEs || tituloEn;
+          // Si ficha ES tiene título y NO se parece al query ni al EN suggestion, y sinopsis no pega → otra obra
+          if (tituloEs && wantedTitle) {
+            var tEsN = normalizarTituloKey(tituloEs);
+            var shareEs = 0;
+            var wTok = tokensDistintivos(wantedTitle);
+            for (var se = 0; se < wTok.length; se++) {
+              if (tEsN.indexOf(wTok[se]) !== -1) shareEs++;
+            }
+            var okEs = tEsN === wantedTitle || (wTok.length && shareEs >= Math.ceil(wTok.length * 0.6));
+            if (!okEs && descHint && descOut) {
+              okEs = similitudDescripcion(descHint, descOut) >= 0.2;
+            }
+            if (!okEs && wantedYear && y && wantedYear === y && shareEs === 0) {
+              // Mismo año, título ES no coincide: no usar este id
+              // (evita aplicar datos de otra película 2026)
+              if (!(descHint && descOut && similitudDescripcion(descHint, descOut) >= 0.15)) {
+                /* no return null here — try continue via rejecting calificacion? */
+              }
+            }
+            if (okEs) tituloMatch = tituloEs;
+          }
+
           return {
             tmdb_id: null,
             imdb_id: best.id,
-            titulo_tmdb: best.l || q,
+            titulo_tmdb: tituloMatch,
+            titulo_es: tituloEs || null,
             portada_tmdb: null,
             portada_imdb: poster,
             backdrop: null,
@@ -4069,10 +4101,10 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
                 })()
               : (y ? y + '-01-01' : null),
             year: (ficha && ficha.year) || y,
-            titulo_original: (ficha && ficha.titulo_original) || best.l || q,
+            titulo_original: (ficha && ficha.titulo_original) || tituloEn,
             votos: (ficha && ficha.votos) || (extra && extra.imdbVotes && extra.imdbVotes !== 'N/A' ? extra.imdbVotes : null),
             duracion: (ficha && ficha.duracion) || (extra && extra.Runtime && extra.Runtime !== 'N/A' ? parseInt(extra.Runtime, 10) || null : null),
-            duracion_texto: (ficha && ficha.duracion_texto) || null,
+            duracion_texto: (ficha && ficha.duracion_texto) || (calif != null && ficha && ficha.duracion ? formatearDuracionImdb(ficha.duracion) : null),
             certificacion: (ficha && ficha.certificacion) || (extra && extra.Rated && extra.Rated !== 'N/A' ? extra.Rated : null),
             status: null,
             tagline: null,
