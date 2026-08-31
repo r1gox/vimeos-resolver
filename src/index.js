@@ -3634,22 +3634,84 @@ function generosAEspanol(lista) {
  */
 async function scrapeFichaImdbEs(imdbId) {
   if (!imdbId || String(imdbId).indexOf('tt') !== 0) return null;
+
   var urls = [
     'https://www.imdb.com/es/title/' + imdbId + '/',
-    'https://www.imdb.com/title/' + imdbId + '/?languages=es-ES'
+    'https://www.imdb.com/title/' + imdbId + '/',
+    'https://www.imdb.com/es-es/title/' + imdbId + '/'
   ];
   var headersImdb = {
-    'User-Agent': HEADERS['User-Agent'],
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'Accept-Language': 'es-ES,es;q=0.9,en;q=0.5',
-    'Accept': 'text/html,application/xhtml+xml',
-    'Referer': 'https://www.imdb.com/es/'
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Referer': 'https://www.imdb.com/es/',
+    'Cache-Control': 'no-cache',
+    'Upgrade-Insecure-Requests': '1'
   };
+
+  function parseIsoDuration(iso) {
+    if (!iso) return null;
+    var m = String(iso).match(/PT(?:(\d+)H)?(?:(\d+)M)?/i);
+    if (!m) return null;
+    return (parseInt(m[1] || '0', 10) * 60) + parseInt(m[2] || '0', 10) || null;
+  }
+
+  function fromNextData(html) {
+    var m = html.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+    if (!m) return null;
+    try {
+      var nd = JSON.parse(m[1]);
+      // Buscar nodo title en el árbol
+      var raw = JSON.stringify(nd);
+      var out = {};
+      var rRating = raw.match(/"aggregateRating"\s*:\s*([0-9.]+)/);
+      var rVotes = raw.match(/"voteCount"\s*:\s*(\d+)/);
+      var rCert = raw.match(/"certificate"\s*:\s*\{[^}]*"rating"\s*:\s*"([^"]+)"/);
+      if (!rCert) rCert = raw.match(/"ratingCertificate"\s*:\s*"([^"]+)"/);
+      var rRuntime = raw.match(/"runtime"\s*:\s*\{[^}]*"seconds"\s*:\s*(\d+)/);
+      var rYear = raw.match(/"releaseYear"\s*:\s*\{[^}]*"year"\s*:\s*(\d{4})/);
+      var rName = raw.match(/"titleText"\s*:\s*\{[^}]*"text"\s*:\s*"([^"]+)"/);
+      var rOrig = raw.match(/"originalTitleText"\s*:\s*\{[^}]*"text"\s*:\s*"([^"]+)"/);
+      var rPlot = raw.match(/"plotText"\s*:\s*\{[^}]*"plainText"\s*:\s*"((?:\\.|[^"\\])*)"/);
+      if (rRating) out.calificacion = normalizarCalificacion(rRating[1]);
+      if (rVotes) out.votos = rVotes[1];
+      if (rCert) out.certificacion = rCert[1];
+      if (rRuntime) {
+        out.duracion = Math.round(parseInt(rRuntime[1], 10) / 60);
+        out.duracion_texto = formatearDuracionImdb(out.duracion);
+      }
+      if (rYear) out.year = rYear[1];
+      if (rName) { out.titulo = rName[1]; out.titulo_es = rName[1]; }
+      if (rOrig) out.titulo_original = rOrig[1];
+      if (rPlot) {
+        try {
+          out.descripcion = JSON.parse('"' + rPlot[1] + '"');
+        } catch (eP) {
+          out.descripcion = rPlot[1].replace(/\\n/g, ' ').replace(/\\"/g, '"');
+        }
+      }
+      // géneros
+      var gens = [];
+      var gre = /"genres"\s*:\s*\{[^}]*"text"\s*:\s*"([^"]+)"/g;
+      var gm;
+      while ((gm = gre.exec(raw)) !== null && gens.length < 10) {
+        if (gens.indexOf(gm[1]) === -1) gens.push(gm[1]);
+      }
+      if (gens.length) out.generos = generosAEspanol(gens);
+      return out;
+    } catch (e) {
+      return null;
+    }
+  }
+
   for (var u = 0; u < urls.length; u++) {
     try {
-      var res = await fetchWithTimeout(urls[u], { headers: headersImdb, redirect: 'follow' }, 10000);
+      var res = await fetchWithTimeout(urls[u], { headers: headersImdb, redirect: 'follow' }, 12000);
       if (!res || !res.ok) continue;
       var html = await res.text();
-      if (!html || html.length < 800) continue;
+      if (!html || html.length < 2000) continue;
+      // WAF challenge
+      if (/awsWafCookieDomainList|captcha|gokuProps/i.test(html) && html.length < 5000) continue;
 
       var out = {
         imdb_id: imdbId,
@@ -3661,17 +3723,27 @@ async function scrapeFichaImdbEs(imdbId) {
         generos: [],
         descripcion: null,
         year: null,
-        titulo_original: null
+        titulo_original: null,
+        titulo_es: null,
+        titulo: null
       };
 
-      // JSON-LD
+      // 1) __NEXT_DATA__ (IMDb moderno)
+      var nd = fromNextData(html);
+      if (nd) {
+        for (var k in nd) {
+          if (nd[k] != null && nd[k] !== '') out[k] = nd[k];
+        }
+      }
+
+      // 2) JSON-LD
       var ldMatch = html.match(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/i);
       if (ldMatch) {
         try {
           var ld = JSON.parse(ldMatch[1]);
           if (Array.isArray(ld)) {
             for (var li = 0; li < ld.length; li++) {
-              if (ld[li] && (ld[li]['@type'] === 'Movie' || ld[li]['@type'] === 'TVSeries' || ld[li].aggregateRating)) {
+              if (ld[li] && (ld[li]['@type'] === 'Movie' || ld[li]['@type'] === 'TVSeries' || ld[li].aggregateRating || ld[li].name)) {
                 ld = ld[li];
                 break;
               }
@@ -3679,107 +3751,128 @@ async function scrapeFichaImdbEs(imdbId) {
           }
           if (ld) {
             if (ld.aggregateRating) {
-              if (ld.aggregateRating.ratingValue != null) {
+              if (out.calificacion == null && ld.aggregateRating.ratingValue != null) {
                 out.calificacion = normalizarCalificacion(ld.aggregateRating.ratingValue);
               }
-              if (ld.aggregateRating.ratingCount != null) {
+              if (!out.votos && ld.aggregateRating.ratingCount != null) {
                 out.votos = String(ld.aggregateRating.ratingCount);
               }
             }
-            if (ld.duration) {
-              // PT1H31M → minutos
-              var dm = String(ld.duration).match(/PT(?:(\d+)H)?(?:(\d+)M)?/i);
-              if (dm) {
-                var mins = (parseInt(dm[1] || 0, 10) * 60) + parseInt(dm[2] || 0, 10);
-                if (mins > 0) {
-                  out.duracion = mins;
-                  var h = Math.floor(mins / 60);
-                  var m = mins % 60;
-                  out.duracion_texto = h > 0 ? (h + 'h ' + m + 'min') : (m + 'min');
-                }
-              }
+            if (ld.name && !out.titulo) {
+              out.titulo = String(ld.name).trim();
+              out.titulo_es = out.titulo;
             }
-            if (ld.contentRating) out.certificacion = String(ld.contentRating).trim();
-            if (ld.genre) {
-              var gens = Array.isArray(ld.genre) ? ld.genre : [ld.genre];
-              out.generos = generosAEspanol(gens);
+            if (ld.alternateName && !out.titulo_original) {
+              out.titulo_original = String(ld.alternateName).trim();
             }
-            if (ld.description) out.descripcion = limpiarTexto(ld.description);
-            if (ld.datePublished) {
-              var yld = String(ld.datePublished).match(/(19|20)\d{2}/);
-              if (yld) out.year = yld[0];
+            if (ld.duration && !out.duracion) {
+              out.duracion = parseIsoDuration(ld.duration);
+              if (out.duracion) out.duracion_texto = formatearDuracionImdb(out.duracion);
             }
-            if (ld.alternateName) out.titulo_original = ld.alternateName;
-            else if (ld.name) out.titulo_original = ld.name;
+            if (ld.contentRating && !out.certificacion) {
+              out.certificacion = String(ld.contentRating).trim();
+            }
+            if (ld.genre && (!out.generos || !out.generos.length)) {
+              var g = Array.isArray(ld.genre) ? ld.genre : [ld.genre];
+              out.generos = generosAEspanol(g);
+            }
+            if (ld.description && !out.descripcion) {
+              out.descripcion = String(ld.description).trim();
+            }
+            if (ld.datePublished && !out.year) {
+              var yp = String(ld.datePublished).match(/(19|20)\d{2}/);
+              if (yp) out.year = yp[0];
+            }
           }
         } catch (eLd) { /* ok */ }
       }
 
-      // Rating visible: data-testid / hero-rating
+      // 3) DOM data-testid (IMDb ES)
       if (out.calificacion == null) {
-        var rm = html.match(/hero-rating-bar__aggregate-rating__score[^>]*>[\s\S]*?<span[^>]*>\s*(\d+[.,]\d+)\s*</i)
-          || html.match(/"ratingValue"\s*:\s*"?(\d+\.?\d*)"?/i)
-          || html.match(/aggregateRating[\s\S]{0,120}"ratingValue"\s*:\s*"?(\d+\.?\d*)"?/i);
+        var rm = html.match(/data-testid=["']hero-rating-bar__aggregate-rating__score["'][^>]*>\s*<span[^>]*>\s*([0-9.,]+)\s*</i)
+          || html.match(/hero-rating-bar__aggregate-rating__score[^>]*>[\s\S]*?<span[^>]*>\s*([0-9.,]+)/i)
+          || html.match(/AggregateRating[^>]*>[\s\S]{0,120}?([0-9]\.[0-9])/i);
         if (rm) out.calificacion = normalizarCalificacion(rm[1]);
       }
       if (!out.votos) {
-        var vm = html.match(/"ratingCount"\s*:\s*"?(\d+)"?/i)
-          || html.match(/([\d\.,]+)\s*(?:votos|votes)/i);
-        if (vm) out.votos = String(vm[1]).replace(/[^\d]/g, '');
+        var vm = html.match(/data-testid=["']hero-rating-bar__aggregate-rating__score["'][\s\S]{0,400}?([0-9][0-9.,\s]*[kKmM]?)\s*(?:votos|votes|calificaciones)/i)
+          || html.match(/([\d.,]+)\s*(?:mil\s*)?votos/i);
+        if (vm) out.votos = limpiarTexto(vm[1]);
       }
 
-      // Certificación: B15, PG-13, R, TV-MA…
+      // Certificación B15 / PG-13 / TV-MA en metadata del hero
       if (!out.certificacion) {
-        var cm = html.match(/data-testid=["']storyline-certificate["'][^>]*>[\s\S]*?<a[^>]*>\s*([^<]+)/i)
-          || html.match(/["']certificate["']\s*:\s*\{\s*["']rating["']\s*:\s*["']([^"']+)["']/i)
-          || html.match(/class=["'][^"']*ipc-metadata-list-item__list-content-item[^"']*["'][^>]*>\s*((?:B\d+|AA|A|C|D|PG-?13?|R|NC-?17|TV-[\w-]+|G|NR))\s*</i);
+        var cm = html.match(/data-testid=["']hero-title-block__metadata["'][\s\S]{0,800}?>(B\d{1,2}|AA|A|C|D|PG-13|PG|R|NC-17|TV-MA|TV-14|TV-PG|TV-Y7|TV-G|G|18\+|16\+|13\+|12\+|NR)[\s<]/i)
+          || html.match(/class=["'][^"']*ipc-inline-list__item[^"']*["'][^>]*>\s*(B\d{1,2}|PG-13|PG|R|TV-MA|TV-14|TV-PG)\s*</i)
+          || html.match(/contentRating["']?\s*:\s*["']([^"']+)["']/i);
         if (cm) out.certificacion = limpiarTexto(cm[1]);
       }
 
-      // Duración texto: 1h 31min
-      if (!out.duracion_texto) {
-        var tm = html.match(/data-testid=["']title-techspec_runtime["'][\s\S]{0,200}?(\d+\s*h(?:oras?)?\s*\d+\s*min)/i)
+      // Duración 1h 31min
+      if (!out.duracion) {
+        var tm = html.match(/data-testid=["']hero-title-block__metadata["'][\s\S]{0,800}?(\d+\s*h(?:\s*\d+\s*min)?|\d+\s*min)/i)
           || html.match(/>(\d+\s*h\s*\d+\s*min)</i)
-          || html.match(/"duration"\s*:\s*"PT(\d+)H(\d+)M"/i);
+          || html.match(/runtime["']?\s*:\s*["']?PT(\d+H)?(\d+M)?/i);
         if (tm) {
-          if (tm[2] != null && tm[0].indexOf('PT') !== -1) {
-            out.duracion = parseInt(tm[1], 10) * 60 + parseInt(tm[2], 10);
-            out.duracion_texto = tm[1] + 'h ' + tm[2] + 'min';
+          if (tm[0] && /PT/i.test(tm[0])) {
+            out.duracion = parseIsoDuration('PT' + (tm[1] || '') + (tm[2] || ''));
           } else {
             out.duracion_texto = limpiarTexto(tm[1] || tm[0]);
-            var pm = out.duracion_texto.match(/(\d+)\s*h.*?(\d+)\s*min/i);
-            if (pm) out.duracion = parseInt(pm[1], 10) * 60 + parseInt(pm[2], 10);
+            var pm = out.duracion_texto.match(/(?:(\d+)\s*h)?\s*(?:(\d+)\s*min)?/i);
+            if (pm) {
+              out.duracion = (parseInt(pm[1] || '0', 10) * 60) + parseInt(pm[2] || '0', 10) || null;
+            }
           }
+          if (out.duracion && !out.duracion_texto) out.duracion_texto = formatearDuracionImdb(out.duracion);
         }
       }
 
-      // Géneros desde chips
-      if (!out.generos.length) {
-        var gre = /href=["']\/search\/title\/\?genres=([^"'&]+)[^"']*["'][^>]*>([^<]+)</gi;
-        var gm;
+      // Año
+      if (!out.year) {
+        var ym = html.match(/data-testid=["']hero-title-block__metadata["'][\s\S]{0,400}?>(19|20)\d{2}</i)
+          || html.match(/href=["']\/title\/tt\d+\/releaseinfo[^"']*["'][^>]*>\s*((?:19|20)\d{2})/i);
+        if (ym) out.year = (ym[1].length === 4 ? ym[1] : ym[0].match(/(19|20)\d{2}/)[0]);
+      }
+
+      // Título h1
+      if (!out.titulo) {
+        var hm = html.match(/data-testid=["']hero__pageTitle["'][^>]*>[\s\S]*?<span[^>]*>([^<]+)</i)
+          || html.match(/<h1[^>]*data-testid=["']hero-title-block__title["'][^>]*>([^<]+)/i)
+          || html.match(/<h1[^>]*class=["'][^"']*hero__[^"']*["'][^>]*>\s*([^<]+)/i);
+        if (hm) {
+          out.titulo = limpiarTexto(hm[1]);
+          out.titulo_es = out.titulo;
+        }
+      }
+
+      // Géneros chips
+      if (!out.generos || !out.generos.length) {
+        var gre2 = /href=["']\/search\/title\/\?genres=([^"'&]+)[^"']*["'][^>]*>([^<]+)</gi;
+        var gm2;
         var seenG = {};
-        while ((gm = gre.exec(html)) !== null && out.generos.length < 8) {
-          var gn = limpiarTexto(gm[2]);
+        var gens2 = [];
+        while ((gm2 = gre2.exec(html)) !== null && gens2.length < 8) {
+          var gn = limpiarTexto(gm2[2]);
           var gk = gn.toLowerCase();
-          if (!gn || seenG[gk]) continue;
+          if (!gn || seenG[gk] || /more|más|see all/i.test(gn)) continue;
           seenG[gk] = true;
-          out.generos.push(gn);
+          gens2.push(gn);
         }
-        if (out.generos.length) out.generos = generosAEspanol(out.generos);
+        if (gens2.length) out.generos = generosAEspanol(gens2);
       }
 
-      // Plot / sinopsis en español
-      if (!out.descripcion || pareceIngles(out.descripcion)) {
+      // Plot ES
+      if (!out.descripcion || (typeof pareceIngles === 'function' && pareceIngles(out.descripcion))) {
         var pm2 = html.match(/data-testid=["']plot-l["'][^>]*>([\s\S]*?)<\//i)
           || html.match(/data-testid=["']plot-xl["'][^>]*>([\s\S]*?)<\//i)
-          || html.match(/class=["'][^"']*ipc-html-content-inner-div[^"']*["'][^>]*>([\s\S]{40,600}?)<\//i);
+          || html.match(/data-testid=["']plot-xs_to_l["'][^>]*>([\s\S]*?)<\//i);
         if (pm2) {
           var plot = limpiarTexto(pm2[1].replace(/<[^>]+>/g, ' '));
-          if (plot.length >= 40) out.descripcion = plot;
+          if (plot.length >= 30) out.descripcion = plot;
         }
       }
 
-      if (out.calificacion != null || out.descripcion || out.duracion || out.certificacion) {
+      if (out.calificacion != null || out.descripcion || out.duracion || out.certificacion || out.titulo) {
         return out;
       }
     } catch (eSc) { /* next url */ }
@@ -3787,11 +3880,6 @@ async function scrapeFichaImdbEs(imdbId) {
   return null;
 }
 
-/**
- * IMDb vía API de sugerencias (JSON público) + ficha ES + OMDb.
- * opts.descripcionHint: sinopsis de la fuente para elegir el tt correcto (homónimos).
- * Prioridad de portadas: imageUrl de suggestion → OMDb → ficha.
- */
 async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
   opts = opts || {};
   var descHint = opts.descripcionHint || opts.descripcion || null;
@@ -3916,13 +4004,18 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
   var candidates = [];
   var seen = Object.create(null);
 
-  function addCand(id, sugTitle, sugYear) {
+  function addCand(id, sugTitle, sugYear, imgUrl) {
     if (!id || String(id).indexOf('tt') !== 0) return;
     if (seen[id]) return;
     // Filtro duro por año de la sugerencia
     if (wantedYear && sugYear && String(sugYear) !== String(wantedYear)) return;
     seen[id] = true;
-    candidates.push({ id: id, title: sugTitle || '', year: sugYear ? String(sugYear) : null });
+    candidates.push({
+      id: id,
+      title: sugTitle || '',
+      year: sugYear ? String(sugYear) : null,
+      image: imgUrl || null
+    });
   }
 
   // --- 1) Suggestion API IMDb ---
@@ -3948,7 +4041,8 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
         if (wantedIsTv && /movie|feature|video|short/.test(qid) && !/tv/.test(qid)) {
           // bajar prioridad pero no excluir del todo
         }
-        addCand(it.id, it.l || it.titulo, it.y || null);
+        var imgSug = (it.i && it.i.imageUrl) ? it.i.imageUrl : null;
+        addCand(it.id, it.l || it.titulo, it.y || null, imgSug);
       }
     }
   } catch (eSug) { /* ok */ }
@@ -3991,6 +4085,11 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
 
     var meta = buildMetaFromFicha(c.id, ficha, omdb, c.title, c.year || (omdb && omdb.Year));
     if (!meta) continue;
+    if (!meta.portada_imdb && c.image) {
+      meta.portada_imdb = normalizarPosterImdb(c.image);
+    }
+    // Si ficha no trajo año, usar suggestion
+    if (!meta.year && c.year) meta.year = c.year;
 
     // Si el título ES/EN no pega NADA y la sinopsis tampoco, descartar
     var ov = Math.max(
@@ -4021,7 +4120,15 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
     }
   }
 
-  if (best && bestScore >= 50) return best;
+  // Un solo candidato del año pedido (Facing El Chapo 2026) → aceptar aunque score bajo
+  if (best && wantedYear) {
+    var sameY = 0;
+    for (var cyi = 0; cyi < candidates.length; cyi++) {
+      if (candidates[cyi].year && String(candidates[cyi].year) === String(wantedYear)) sameY++;
+    }
+    if (sameY === 1 && String(best.year) === String(wantedYear)) return best;
+  }
+  if (best && bestScore >= 30) return best;
 
   // --- 4) OMDb search por título + año ---
   if (wantedYear) {
@@ -4061,9 +4168,18 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
     } catch (eOs) { /* ok */ }
   }
 
-  if (best && bestScore >= 40) return best;
+  if (best && bestScore >= 20) return best;
+  // Último recurso: primer candidato del año correcto aunque falte ficha
+  if (wantedYear) {
+    for (var li = 0; li < candidates.length; li++) {
+      if (candidates[li].year && String(candidates[li].year) === String(wantedYear)) {
+        return buildMetaFromFicha(candidates[li].id, null, null, candidates[li].title, candidates[li].year);
+      }
+    }
+  }
   return null;
 }
+
 
 /** TMDB oficial si hay TMDB_API_KEY en el Worker */
 async function buscarMetaTmdbApi(titulo, tipoHint, yearHint) {
