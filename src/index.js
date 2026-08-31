@@ -3218,6 +3218,13 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   if (!item || !meta) return item;
 
   var coincide = metaCoincideConItem(item, meta);
+  // Si IMDb ya filtró por año (year fuente = year meta) y trajo imdb_id,
+  // confiar en el match aunque el título IMDb sea distinto ("La captura" vs "Facing El Chapo")
+  var yIt0 = extraerYearItem(item);
+  var yMt0 = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
+  if (!coincide && meta.imdb_id && yIt0 && yMt0 && String(yIt0) === String(yMt0)) {
+    coincide = true;
+  }
   var sinPortada = !item.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(item.portada));
 
   // Soft poster: solo si NO hay conflicto de año (evita portada 2012 en película 2026)
@@ -3270,20 +3277,31 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   if (meta.titulo_tmdb) item.titulo_tmdb = meta.titulo_tmdb;
   if (meta.titulo_original) item.titulo_original = meta.titulo_original;
 
-  // Solo asignar portadas de meta si la obra coincide
-  if (coincide) {
+  // Portada: preferir IMDb cuando el match es válido (año OK)
+  var yItemP = extraerYearItem(item);
+  var yMetaP = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
+  var yearOkPoster = !yItemP || !yMetaP || String(yItemP) === String(yMetaP);
+  if (coincide && yearOkPoster) {
     if (meta.portada_imdb && esPortadaUrlValida(meta.portada_imdb)) {
       item.portada_imdb = meta.portada_imdb;
+      // IMDb portada prioritaria
+      item.portada = meta.portada_imdb;
+      item.poster_source = 'imdb';
     }
     if (meta.portada_tmdb && esPortadaUrlValida(meta.portada_tmdb) && !esPortadaSospechosa(meta.portada_tmdb)) {
       item.portada_tmdb = meta.portada_tmdb;
+      if (!item.portada || esPortadaSospechosa(item.portada)) {
+        item.portada = meta.portada_tmdb;
+        item.poster_source = 'tmdb';
+      }
     }
-
-    var portadaPreferida = elegirPortadaPreferida(item, meta);
-    if (portadaPreferida) {
-      item.portada = portadaPreferida;
-      item.poster_source = esPortadaImdb(portadaPreferida) ? 'imdb' :
-        (/image\.tmdb\.org/i.test(portadaPreferida) ? 'tmdb' : String(item.fuente || 'fuente'));
+    if (!item.portada || esPortadaSospechosa(item.portada)) {
+      var portadaPreferida = elegirPortadaPreferida(item, meta);
+      if (portadaPreferida) {
+        item.portada = portadaPreferida;
+        item.poster_source = esPortadaImdb(portadaPreferida) ? 'imdb' :
+          (/image\.tmdb\.org/i.test(portadaPreferida) ? 'tmdb' : String(item.fuente || 'fuente'));
+      }
     }
   }
 
@@ -3291,47 +3309,55 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
     item.backdrop = meta.backdrop;
   }
 
-  // Rating IMDb: solo si no hay conflicto de año (fuente 2026 vs meta 2012)
+  // Match OK → datos IMDb tienen prioridad (rating, votos, id)
   var yItemA = extraerYearItem(item);
   var yMetaA = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
   var yearOkMeta = !yItemA || !yMetaA || String(yItemA) === String(yMetaA);
-  // Si hay sinopsis fuente y meta, exigir algo de similitud antes de copiar rating
   var simOk = true;
   if (item.descripcion && meta.descripcion && String(item.descripcion).length > 50 && String(meta.descripcion).length > 50) {
     var simD = similitudDescripcion(item.descripcion, meta.descripcion);
-    if (simD < 0.12) simOk = false;
+    // Si hay año coincidente, ser más permisivo (título IMDb puede diferir)
+    if (yearOkMeta && yItemA) simOk = simD >= 0.05 || !meta.descripcion;
+    else if (simD < 0.12) simOk = false;
   }
-  if (yearOkMeta && simOk && meta.calificacion != null && !isNaN(Number(meta.calificacion))) {
-    if (item.calificacion == null || item.calificacion === '' || item.calificacion === 0 || item.calificacion === '0') {
+  if (yearOkMeta && simOk) {
+    // Calificación IMDb: preferir siempre la de IMDb cuando hay match
+    if (meta.calificacion != null && !isNaN(Number(meta.calificacion))) {
       item.calificacion = normalizarCalificacion(meta.calificacion);
     }
+    if (meta.votos) item.votos = meta.votos;
+    if (meta.imdb_id) item.imdb_id = meta.imdb_id;
   }
-  if (yearOkMeta && simOk && meta.votos && !item.votos) item.votos = meta.votos;
-  if (yearOkMeta && meta.imdb_id && !item.imdb_id) item.imdb_id = meta.imdb_id;
 
-  // Descripción: la de la FUENTE gana si es válida (>=40 chars).
-  // Meta solo rellena huecos. Preferir español; nunca pisar español con inglés.
+  // Descripción: si la FUENTE tiene español válido → conservar.
+  // Si no → IMDb ES / TMDB ES. NUNCA dejar sinopsis solo en inglés.
   var descFuente = item.descripcion || '';
+  var descFuenteEs = descFuente.length >= 40 && pareceEspanol(descFuente)
+    && !/\.\.\.\s*$/.test(descFuente) && !/^(Pel[ií]cula|Serie|Anime)\s/i.test(descFuente);
   var descFuenteOk = descFuente.length >= 40 && !/\.\.\.\s*$/.test(descFuente)
-    && !/^(Pel[ií]cula|Serie|Anime)\s/i.test(descFuente);
-  if (meta.descripcion && !descFuenteOk) {
-    var metaEs = pareceEspanol(meta.descripcion);
-    var metaEn = pareceIngles(meta.descripcion);
-    var dEn = pareceIngles(descFuente);
-    if (metaEs) {
+    && !/^(Pel[ií]cula|Serie|Anime)\s/i.test(descFuente) && !pareceIngles(descFuente);
+  if (descFuenteEs || descFuenteOk) {
+    // conservar fuente
+  } else if (meta.descripcion) {
+    if (pareceEspanol(meta.descripcion)) {
       item.descripcion = meta.descripcion;
-    } else if (!metaEn) {
+    } else if (!pareceIngles(meta.descripcion)) {
       item.descripcion = meta.descripcion;
-    } else if (!descFuente || dEn) {
-      // Solo inglés disponible
-      item.descripcion = meta.descripcion;
+    } else if (!descFuente) {
+      // Solo inglés disponible: no asignar (evitar sinopsis en inglés)
+      // item.descripcion se deja vacío o la de fuente corta
     }
   }
+  // Si la fuente era inglesa y meta trae español, reemplazar
+  if (pareceIngles(descFuente) && meta.descripcion && pareceEspanol(meta.descripcion)) {
+    item.descripcion = meta.descripcion;
+  }
 
-  if (meta.generos && meta.generos.length && (!item.generos || !item.generos.length) && !item.genero) {
+  // Géneros: preferir IMDb (ya en español) si el match es bueno
+  if (yearOkMeta && simOk && meta.generos && meta.generos.length) {
     item.generos = meta.generos;
     item.genero = meta.generos.join(', ');
-  } else if (meta.generos && meta.generos.length && !item.genero) {
+  } else if (meta.generos && meta.generos.length && (!item.generos || !item.generos.length) && !item.genero) {
     item.generos = meta.generos;
     item.genero = meta.generos.join(', ');
   }
@@ -3827,28 +3853,37 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
         var it = list[si];
         if (!it || !it.id || String(it.id).indexOf('tt') !== 0) continue;
         var sc = scoreSug(it);
-        // Umbral: 70 permite títulos cercanos; scoreSug ya penaliza specials/films
-        if (sc < 70) continue;
-        scored.push({ item: it, score: sc });
+        var sameYear = wantedYear && it.y && String(it.y) === String(wantedYear);
+        // Título débil pero mismo año: incluir (ej. "La captura" → "Facing El Chapo" 2026)
+        if (sc < 70 && !sameYear) continue;
+        if (sc < -500 && !sameYear) continue;
+        scored.push({ item: it, score: sameYear && sc < 70 ? Math.max(sc, 40) : sc, sameYear: !!sameYear });
       }
       scored.sort(function (a, b) { return b.score - a.score; });
 
       if (scored.length) {
-        // Evaluar top candidatos: año + similitud de sinopsis (evita "La captura" 2012 vs 2026)
-        var topN = scored.slice(0, Math.min(5, scored.length));
-        var bestPick = topN[0];
+        // Top por score + todos los del mismo año (homónimos / título distinto en IMDb)
+        var topN = scored.slice(0, Math.min(6, scored.length));
+        for (var sy = 0; sy < scored.length; sy++) {
+          if (scored[sy].sameYear) {
+            var already = false;
+            for (var ak = 0; ak < topN.length; ak++) {
+              if (topN[ak].item.id === scored[sy].item.id) { already = true; break; }
+            }
+            if (!already) topN.push(scored[sy]);
+          }
+        }
+        var bestPick = null;
         var bestSim = 0;
 
         for (var ti = 0; ti < topN.length; ti++) {
           var cand = topN[ti];
           var cy = cand.item.y ? String(cand.item.y) : null;
           var adj = cand.score;
-          // Si hay yearHint y no coincide → descartar
           if (wantedYear && cy && wantedYear !== cy) {
             cand._skip = true;
             continue;
           }
-          // OMDb plot para similitud
           var plotCand = null;
           var omdbCand = null;
           try {
@@ -3861,24 +3896,35 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
               }
             }
           } catch (eOc) { /* ok */ }
+          // Si OMDb falla, usar ficha ES para plot
+          if (!plotCand) {
+            try {
+              var fTmp = await scrapeFichaImdbEs(cand.item.id);
+              if (fTmp) {
+                cand._ficha = fTmp;
+                plotCand = fTmp.descripcion || null;
+              }
+            } catch (eFt) { /* ok */ }
+          }
           cand._omdb = omdbCand;
           cand._plot = plotCand;
 
           if (descHint && plotCand) {
             var sim = similitudDescripcion(descHint, plotCand);
             cand._sim = sim;
-            // Bonus fuerte si la sinopsis de la fuente se parece a la de IMDb
-            if (sim >= 0.35) adj += 80 + Math.round(sim * 40);
-            else if (sim < 0.12 && descHint.length > 60) adj -= 50;
+            if (sim >= 0.25) adj += 100 + Math.round(sim * 50);
+            else if (sim >= 0.12) adj += 40;
+            else if (descHint.length > 50 && sim < 0.08) adj -= 40;
           }
-          // Preferir año reciente si no hay yearHint y hay descHint (estrenos en streaming)
+          // Mismo año que la fuente: bonus (título local ≠ título IMDb)
+          if (cand.sameYear) adj += 60;
           if (!wantedYear && cy && descHint) {
             var yn = parseInt(cy, 10);
             if (yn >= 2023) adj += 25;
             else if (yn < 2015) adj -= 20;
           }
           cand._adj = adj;
-          if (!bestPick._adj || adj > bestPick._adj) {
+          if (!bestPick || adj > (bestPick._adj || -9999)) {
             bestPick = cand;
             bestSim = cand._sim || 0;
           }
