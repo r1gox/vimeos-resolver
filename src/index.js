@@ -3759,17 +3759,83 @@ function esPortadaSospechosa(url) {
   if (!esPortadaUrlValida(url)) return true;
   var u = String(url).toLowerCase();
   if (esPortadaImdb(url)) return false;
+  // PelisPlus / mirrors: portadas suelen venir rotas o genéricas
+  if (/pelisplushd|pelisplus|image\.tmdb\.org\/t\/p\/w300/i.test(u)) return true;
   if (/media-amazon|amazon\.com/.test(u)) return true;
   if (/placeholder|no[-_ ]?poster|default[-_ ]?poster|poster[-_ ]?not[-_ ]?found/.test(u)) return true;
   return false;
 }
 
 /**
+ * ¿El resultado de una fuente realmente corresponde a la búsqueda?
+ * Evita que animeav1 “gane” con títulos irrelevantes cuando el query es un dorama/serie.
+ * - Título normalizado idéntico → sí
+ * - Todos los tokens del query (len>=3) aparecen en el título/slug → sí
+ * - Prefijo del título con resto vacío o año → sí
+ */
+function resultadoRelevanteBusqueda(query, item) {
+  if (!item) return false;
+  var qKey = normalizarTituloKey(query || '');
+  var tKey = normalizarTituloKey(item.titulo || '');
+  var sKey = normalizarTituloKey(String(item.slug || '').replace(/-/g, ' '));
+  if (!qKey) return false;
+  if (tKey && tKey === qKey) return true;
+  if (sKey && sKey === qKey) return true;
+
+  var qTokens = qKey.split(/\s+/).filter(function (w) { return w.length >= 3; });
+  if (!qTokens.length) {
+    // query muy corto: exigir contención
+    return (tKey && tKey.indexOf(qKey) !== -1) || (sKey && sKey.indexOf(qKey) !== -1);
+  }
+  function contieneTodos(txt) {
+    if (!txt) return false;
+    for (var i = 0; i < qTokens.length; i++) {
+      if (txt.indexOf(qTokens[i]) === -1) return false;
+    }
+    return true;
+  }
+  if (contieneTodos(tKey) || contieneTodos(sKey)) return true;
+
+  // Prefijo casi exacto (solo año residual)
+  if (tKey && (tKey.indexOf(qKey) === 0 || qKey.indexOf(tKey) === 0)) {
+    var longer = tKey.length >= qKey.length ? tKey : qKey;
+    var shorter = tKey.length >= qKey.length ? qKey : tKey;
+    var rest = longer.slice(shorter.length).trim();
+    if (!rest || /^\d{4}$/.test(rest)) return true;
+  }
+  return false;
+}
+
+/** Deduplica resultados de UNA sola fuente por slug normalizado */
+function dedupePorSlugFuente(items) {
+  if (!items || !items.length) return [];
+  var seen = Object.create(null);
+  var out = [];
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    if (!it) continue;
+    var k = normalizarSlugKey(it.slug || '') || normalizarTituloKey(it.titulo || '');
+    if (!k) { out.push(it); continue; }
+    if (seen[k] !== undefined) {
+      // Conservar el que tenga portada
+      var prev = out[seen[k]];
+      if (prev && (!prev.portada || esPortadaSospechosa(prev.portada)) && it.portada && !esPortadaSospechosa(it.portada)) {
+        out[seen[k]] = it;
+      }
+      continue;
+    }
+    seen[k] = out.length;
+    out.push(it);
+  }
+  return out;
+}
+
+/**
  * Prioridad de portadas (todas las fuentes):
- * 1) IMDb (scrape) — la más fiable
- * 2) animeav1 / lamovie (si ya traen poster bueno)
- * 3) TMDB
- * 4) pelisplushd / hackstore (últimas; a veces rotas)
+ * 1) IMDb — la más fiable
+ * 2) animeav1 / lamovie / animedbs / doramasflix (poster bueno de la fuente)
+ * 3) TMDB (image.tmdb.org w500+)
+ * NUNCA usar portadas de PelisPlus (vienen rotas).
  */
 function elegirPortadaPreferida(item, meta) {
   if (!meta && !item) return null;
@@ -3778,21 +3844,27 @@ function elegirPortadaPreferida(item, meta) {
   var actual = item && item.portada ? item.portada : null;
   var fuente = String((item && item.fuente) || '').toLowerCase();
 
+  // PelisPlus: ignorar su portada de origen
+  if (fuente === 'pelisplushd' || fuente === 'pelisplus' || esFuentePelisplus(item)) {
+    actual = null;
+  }
+
   // 1) IMDb siempre gana si es válida
   if (esPortadaImdb(imdb)) return imdb;
 
-  // 2) Si la fuente actual es animeav1 o lamovie y tiene poster bueno, usarlo
-  if ((fuente === 'animeav1' || fuente === 'lamovie') && actual && !esPortadaSospechosa(actual)) {
+  // 2) Poster de fuentes fiables
+  if ((fuente === 'animeav1' || fuente === 'lamovie' || fuente === 'animedbs' || fuente === 'doramasflix') &&
+      actual && !esPortadaSospechosa(actual)) {
     return actual;
   }
 
-  // 3) TMDB
+  // 3) TMDB (preferir w500+)
   if (esPortadaUrlValida(tmdb) && !esPortadaSospechosa(tmdb)) return tmdb;
 
-  // 4) Poster actual si no es sospechoso
+  // 4) Poster actual si no es sospechoso ni de pelisplus
   if (actual && !esPortadaSospechosa(actual)) return actual;
 
-  // 5) Último recurso: cualquier imdb/tmdb que haya
+  // 5) Último recurso
   if (esPortadaUrlValida(imdb)) return imdb;
   if (esPortadaUrlValida(tmdb)) return tmdb;
   return null;
@@ -4037,9 +4109,13 @@ async function buscarUniversal(query, sourceFilter, limit) {
   var q = String(query || '').trim();
   if (!q) throw new Error('Falta el termino de busqueda');
 
-  // Cascada por prioridad: si una fuente ya trajo resultados, NO se consulta el resto.
+  // Cascada por prioridad + relevancia:
   // Orden: animeav1 → animedbs → doramasflix → pelisplushd → lamovie → hackstore
-  // Sin fusión ni deduplicación entre fuentes.
+  // Solo se acepta una fuente si tiene al menos 1 resultado RELEVANTE al query
+  // (mismo título/tokens). Así "acaramelados" no se queda en animeav1 con basura
+  // y pasa a doramasflix/lamovie donde sí es un dorama/serie.
+  // Sin fusión entre fuentes → sin duplicados cruzados.
+  // tipo viene de la fuente que ganó (Anime / Serie / Pelicula).
   var cadena = [
     { id: 'animeav1', aliases: ['animeav1', '4'], fn: function () { return buscarAnimeAv1(q, limit); } },
     { id: 'animedbs', aliases: ['animedbs', '5'], fn: function () { return buscarAnimedbs(q, limit); } },
@@ -4063,23 +4139,36 @@ async function buscarUniversal(query, sourceFilter, limit) {
     }
     if (!Array.isArray(hits) || !hits.length) continue;
 
+    // Limpiar + etiquetar fuente
     for (var ti = 0; ti < hits.length; ti++) {
-      if (hits[ti] && hits[ti].titulo) {
-        hits[ti].titulo = limpiarTitulo(hits[ti].titulo);
+      if (!hits[ti]) continue;
+      if (hits[ti].titulo) hits[ti].titulo = limpiarTitulo(hits[ti].titulo);
+      delete hits[ti].alternativas;
+      hits[ti].fuente = c.id;
+      hits[ti].fuentes = [c.id];
+      if (typeof sourceIdFromName === 'function') {
+        hits[ti].source_id = sourceIdFromName(c.id);
       }
-      // Sin alternativas cruzadas: cada resultado es solo de esta fuente
-      if (hits[ti]) {
-        delete hits[ti].alternativas;
-        hits[ti].fuente = c.id;
-        hits[ti].fuentes = [c.id];
-        if (typeof sourceIdFromName === 'function') {
-          hits[ti].source_id = sourceIdFromName(c.id);
-        }
+      // Nunca confiar en portada de PelisPlus
+      if (c.id === 'pelisplushd' && hits[ti].portada) {
+        hits[ti].portada_fuente_raw = hits[ti].portada;
+        hits[ti].portada = null;
       }
     }
-    resultados = hits;
+
+    // Filtrar solo relevantes al query
+    var relevantes = [];
+    for (var ri = 0; ri < hits.length; ri++) {
+      if (resultadoRelevanteBusqueda(q, hits[ri])) relevantes.push(hits[ri]);
+    }
+    if (!relevantes.length) continue; // esta fuente no sirve → siguiente
+
+    // Deduplicar solo dentro de esta fuente (mismo slug)
+    relevantes = dedupePorSlugFuente(relevantes);
+
+    resultados = relevantes;
     fuenteUsada = c.id;
-    break; // primera fuente con resultados gana
+    break; // primera fuente con hits RELEVANTES gana
   }
 
   return {
