@@ -3233,13 +3233,21 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   if (!item || !meta) return item;
 
   var coincide = metaCoincideConItem(item, meta);
-  // NUNCA forzar coincide solo por año: "La captura" 2026 ≠ "Facing El Chapo" 2026
-  // Solo permitir rescue si la sinopsis es muy parecida (>= 0.28)
-  if (!coincide && meta.imdb_id && item.descripcion && meta.descripcion) {
-    var yIt0 = extraerYearItem(item);
-    var yMt0 = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
+  var yIt0 = extraerYearItem(item);
+  var yMt0 = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
+  // Si años conflictúan → no aplicar NUNCA rating/id de otra obra
+  if (yIt0 && yMt0 && String(yIt0) !== String(yMt0)) {
+    coincide = false;
+  }
+  // Rescue: mismo año + sinopsis parecida O título ES igual (Facing El Chapo ↔ La captura)
+  if (!coincide && meta.imdb_id) {
     var yearOk0 = !yIt0 || !yMt0 || String(yIt0) === String(yMt0);
-    if (yearOk0 && similitudDescripcion(item.descripcion, meta.descripcion) >= 0.28) {
+    var tEs = normalizarTituloKey(meta.titulo_es || '');
+    var tIt = normalizarTituloKey(item.titulo || '');
+    if (yearOk0 && tEs && tIt && tEs === tIt) {
+      coincide = true;
+    } else if (yearOk0 && item.descripcion && meta.descripcion &&
+        similitudDescripcion(item.descripcion, meta.descripcion) >= 0.18) {
       coincide = true;
     }
   }
@@ -3796,486 +3804,265 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
   var wantedType = normalizarTipoKey(tipoHint);
   var wantedIsTv = wantedType === 'serie' || wantedType === 'anime';
 
-  // Tokens de franquicia genéricos: NO bastan para asignar portada
-  var FRANQUICIA_STOP = {
-    one:1, piece:1, the:1, and:1, film:1, movie:1, special:1, episode:1,
-    anime:1, series:1, season:1, part:1, vol:1, volume:1
-  };
-
-  function tokensDistintivos(t) {
+  function tokensDist(t) {
+    var STOP = {
+      one:1, piece:1, the:1, and:1, film:1, movie:1, special:1, episode:1,
+      anime:1, series:1, season:1, part:1, el:1, la:1, los:1, las:1, de:1, del:1, un:1, una:1
+    };
     return String(t || '').split(/\s+/).filter(function (w) {
-      return w.length >= 3 && !FRANQUICIA_STOP[w];
+      return w.length >= 3 && !STOP[w];
     });
   }
 
-  function scoreSug(item) {
-    if (!item || !item.id || String(item.id).indexOf('tt') !== 0) return -999;
-    var ct = normalizarTituloKey(item.l || item.titulo || '');
-    if (!ct) return -999;
+  function tituloOverlap(a, b) {
+    var na = normalizarTituloKey(a || '');
+    var nb = normalizarTituloKey(b || '');
+    if (!na || !nb) return 0;
+    if (na === nb) return 1;
+    var ta = tokensDist(na);
+    if (!ta.length) return 0;
+    var hit = 0;
+    for (var i = 0; i < ta.length; i++) {
+      if (nb.indexOf(ta[i]) !== -1) hit++;
+    }
+    return hit / ta.length;
+  }
+
+  function buildMetaFromFicha(imdbId, ficha, omdb, sugTitle, sugYear) {
+    if (!imdbId) return null;
+    var calif = null;
+    if (ficha && ficha.calificacion != null) calif = ficha.calificacion;
+    else if (omdb && omdb.imdbRating && omdb.imdbRating !== 'N/A') calif = normalizarCalificacion(omdb.imdbRating);
+
+    var generos = [];
+    if (ficha && ficha.generos && ficha.generos.length) generos = ficha.generos;
+    else if (omdb && omdb.Genre) {
+      generos = generosAEspanol(omdb.Genre.split(',').map(function (g) { return g.trim(); }));
+    }
+
+    var poster = null;
+    if (omdb && omdb.Poster && omdb.Poster !== 'N/A') poster = normalizarPosterImdb(omdb.Poster);
+    if (!poster && ficha && ficha.portada) poster = ficha.portada;
+
+    var tituloEs = (ficha && (ficha.titulo_es || ficha.titulo)) || null;
+    var tituloEn = (omdb && omdb.Title) || sugTitle || tituloEs || q;
+    var y = (ficha && ficha.year) || (omdb && omdb.Year ? String(omdb.Year).slice(0, 4) : null) || (sugYear ? String(sugYear) : null);
+
+    var descOut = null;
+    if (ficha && ficha.descripcion) descOut = ficha.descripcion;
+    else if (omdb && omdb.Plot && omdb.Plot !== 'N/A') descOut = omdb.Plot;
+
+    var dur = (ficha && ficha.duracion) || (omdb && omdb.Runtime && omdb.Runtime !== 'N/A' ? parseInt(omdb.Runtime, 10) || null : null);
+    var durTxt = (ficha && ficha.duracion_texto) || (dur ? formatearDuracionImdb(dur) : null);
+    var cert = (ficha && ficha.certificacion) || (omdb && omdb.Rated && omdb.Rated !== 'N/A' ? String(omdb.Rated).trim() : null);
+
+    return {
+      tmdb_id: null,
+      imdb_id: imdbId,
+      titulo_tmdb: tituloEs || tituloEn,
+      titulo_es: tituloEs,
+      portada_tmdb: null,
+      portada_imdb: poster,
+      backdrop: null,
+      calificacion: calif,
+      descripcion: descOut,
+      generos: generos,
+      fecha_estreno: y ? y + '-01-01' : null,
+      year: y,
+      titulo_original: (ficha && ficha.titulo_original) || tituloEn,
+      votos: (ficha && ficha.votos) || (omdb && omdb.imdbVotes && omdb.imdbVotes !== 'N/A' ? omdb.imdbVotes : null),
+      duracion: dur,
+      duracion_texto: durTxt,
+      certificacion: cert,
+      status: null,
+      tagline: null,
+      slug_tmdb: null
+    };
+  }
+
+  function scoreMetaCandidate(meta) {
+    if (!meta || !meta.imdb_id) return -9999;
     var score = 0;
-    var y = item.y ? String(item.y) : null;
+    var y = meta.year ? String(meta.year).slice(0, 4) : null;
 
-    // Título exacto
-    if (ct === wantedTitle) {
-      score += 200;
-      // Sin año pedido: preferir estrenos recientes (evita remakes viejos tipo "La captura" 2012 vs 2026)
-      if (!wantedYear && y) {
-        var yNum = parseInt(y, 10);
-        if (yNum >= 2020) score += 40;
-        else if (yNum >= 2010) score += 10;
-        else score -= 30;
-      }
-    } else {
-      var wantExtra = tokensDistintivos(wantedTitle);
-      var candExtra = tokensDistintivos(ct);
-
-      // Si el pedido tiene palabras distintivas (red, heroines, 3d2y, stampede…)
-      // el candidato DEBE compartirlas; si no → rechazo fuerte
-      if (wantExtra.length) {
-        var shared = 0;
-        for (var wi = 0; wi < wantExtra.length; wi++) {
-          if (ct.indexOf(wantExtra[wi]) !== -1) shared++;
-        }
-        if (shared === 0) {
-          // Ej: pedido "one piece film red" vs candidato "one piece" → NO
-          return -500;
-        }
-        score += shared * 50;
-        // Penalizar si el candidato tiene extras que el pedido no tiene
-        for (var ci = 0; ci < candExtra.length; ci++) {
-          if (wantedTitle.indexOf(candExtra[ci]) === -1) score -= 25;
-        }
-      } else {
-        // Pedido genérico "one piece": preferir candidato SIN extras de obra
-        if (candExtra.length === 0 && ct === wantedTitle) score += 200;
-        else if (candExtra.length === 0 || ct === wantedTitle) score += 120;
-        else {
-          // Candidato es un special/film → no usar para el título base
-          score -= 80;
-        }
-      }
-
-      // Prefijo solo si es casi el mismo título (diferencia mínima)
-      if (ct.indexOf(wantedTitle) === 0 || wantedTitle.indexOf(ct) === 0) {
-        var longer = ct.length >= wantedTitle.length ? ct : wantedTitle;
-        var shorter = ct.length >= wantedTitle.length ? wantedTitle : ct;
-        var rest = longer.slice(shorter.length).trim();
-        if (!rest || /^\d{4}$/.test(rest)) score += 40;
-        else score -= 30; // "one piece" vs "one piece film red"
-      }
+    // Año: prioritario
+    if (wantedYear) {
+      if (y && y === wantedYear) score += 300;
+      else if (y && y !== wantedYear) return -9999; // NUNCA otra obra de otro año
+      else score -= 20;
     }
 
-    if (wantedYear && y) {
-      if (wantedYear === y) score += 120;
-      else return -999; // año distinto = otra obra (La captura 2012 ≠ 2026)
+    // Título ES o EN vs query
+    var ovEs = tituloOverlap(wantedTitle, meta.titulo_es || '');
+    var ovEn = tituloOverlap(wantedTitle, meta.titulo_tmdb || meta.titulo_original || '');
+    var ov = Math.max(ovEs, ovEn);
+    score += Math.round(ov * 200);
+
+    // Sinopsis
+    if (descHint && meta.descripcion) {
+      var sim = similitudDescripcion(descHint, meta.descripcion);
+      score += Math.round(sim * 150);
     }
-    var qid = String(item.qid || item.q || '').toLowerCase();
-    var isTv = /tvseries|tvminiseries|tvspecial|tvmovie/.test(qid);
-    var isMovie = /movie|feature|video|short/.test(qid);
-    if (wantedIsTv && isTv) score += 30;
-    if (wantedIsTv && isMovie) score -= 60;
-    if (wantedType === 'pelicula' && isMovie) score += 30;
-    if (wantedType === 'pelicula' && isTv) score -= 60;
-    if (item.rank && item.rank < 5000) score += 10;
+
+    // Bonus datos completos
+    if (meta.calificacion != null) score += 15;
+    if (meta.certificacion) score += 10;
+    if (meta.duracion) score += 5;
+    if (meta.portada_imdb) score += 5;
+
     return score;
   }
 
-  // --- 1) API de sugerencias IMDb (rápida y fiable) ---
+  var candidates = [];
+  var seen = Object.create(null);
+
+  function addCand(id, sugTitle, sugYear) {
+    if (!id || String(id).indexOf('tt') !== 0) return;
+    if (seen[id]) return;
+    // Filtro duro por año de la sugerencia
+    if (wantedYear && sugYear && String(sugYear) !== String(wantedYear)) return;
+    seen[id] = true;
+    candidates.push({ id: id, title: sugTitle || '', year: sugYear ? String(sugYear) : null });
+  }
+
+  // --- 1) Suggestion API IMDb ---
   try {
-    var letter = (q.replace(/[^a-zA-Z0-9]/g, '') || 'x').charAt(0).toLowerCase();
-    // Slug: minúsculas, espacios → _, solo alfanuméricos (formato oficial del typeahead)
-    var slugSug = q.toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .replace(/\s+/g, '_')
-      .replace(/_+/g, '_')
-      .replace(/^_|_$/g, '') || 'x';
-    var sugUrl = 'https://v3.sg.media-imdb.com/suggestion/' + letter + '/' + slugSug + '.json';
+    var qPath = encodeURIComponent(q).replace(/%20/g, '%20');
+    var first = encodeURIComponent(q.charAt(0).toLowerCase());
+    var sugUrl = 'https://v3.sg.media-imdb.com/suggestion/' + first + '/' + encodeURIComponent(q) + '.json';
     var resSug = await fetch(sugUrl, {
       headers: {
         'User-Agent': HEADERS['User-Agent'],
         'Accept': 'application/json',
-        'Accept-Language': 'en-US,en;q=0.9'
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
       }
     });
     if (resSug.ok) {
       var sugData = await resSug.json();
       var list = (sugData && Array.isArray(sugData.d)) ? sugData.d : [];
-      var scored = [];
       for (var si = 0; si < list.length; si++) {
         var it = list[si];
-        if (!it || !it.id || String(it.id).indexOf('tt') !== 0) continue;
-        var sc = scoreSug(it);
-        var sameYear = wantedYear && it.y && String(it.y) === String(wantedYear);
-        // Título débil pero mismo año: incluir (ej. "La captura" → "Facing El Chapo" 2026)
-        if (sc < 70 && !sameYear) continue;
-        if (sc < -500 && !sameYear) continue;
-        scored.push({ item: it, score: sameYear && sc < 70 ? Math.max(sc, 40) : sc, sameYear: !!sameYear });
-      }
-      scored.sort(function (a, b) { return b.score - a.score; });
-
-      if (scored.length) {
-        // Top por score + todos los del mismo año (homónimos / título distinto en IMDb)
-        var topN = scored.slice(0, Math.min(6, scored.length));
-        for (var sy = 0; sy < scored.length; sy++) {
-          if (scored[sy].sameYear) {
-            var already = false;
-            for (var ak = 0; ak < topN.length; ak++) {
-              if (topN[ak].item.id === scored[sy].item.id) { already = true; break; }
-            }
-            if (!already) topN.push(scored[sy]);
-          }
+        if (!it || !it.id) continue;
+        var qid = String(it.qid || it.q || '').toLowerCase();
+        // Preferir feature/movie/tv según tipo
+        if (wantedIsTv && /movie|feature|video|short/.test(qid) && !/tv/.test(qid)) {
+          // bajar prioridad pero no excluir del todo
         }
-        var bestPick = null;
-        var bestSim = 0;
-
-        for (var ti = 0; ti < topN.length; ti++) {
-          var cand = topN[ti];
-          var cy = cand.item.y ? String(cand.item.y) : null;
-          var adj = cand.score;
-          if (wantedYear && cy && wantedYear !== cy) {
-            cand._skip = true;
-            continue;
-          }
-          var plotCand = null;
-          var omdbCand = null;
-          try {
-            var oUrl = 'https://www.omdbapi.com/?i=' + encodeURIComponent(cand.item.id) + '&apikey=trilogy&plot=full';
-            var oRes = await fetch(oUrl, { headers: { Accept: 'application/json' } });
-            if (oRes.ok) {
-              omdbCand = await oRes.json();
-              if (omdbCand && omdbCand.Response !== 'False') {
-                plotCand = omdbCand.Plot && omdbCand.Plot !== 'N/A' ? omdbCand.Plot : null;
-              }
-            }
-          } catch (eOc) { /* ok */ }
-          // Si OMDb falla, usar ficha ES para plot
-          if (!plotCand) {
-            try {
-              var fTmp = await scrapeFichaImdbEs(cand.item.id);
-              if (fTmp) {
-                cand._ficha = fTmp;
-                plotCand = fTmp.descripcion || null;
-              }
-            } catch (eFt) { /* ok */ }
-          }
-          cand._omdb = omdbCand;
-          cand._plot = plotCand;
-
-          if (descHint && plotCand) {
-            var sim = similitudDescripcion(descHint, plotCand);
-            cand._sim = sim;
-            if (sim >= 0.25) adj += 100 + Math.round(sim * 50);
-            else if (sim >= 0.12) adj += 40;
-            else if (descHint.length > 50 && sim < 0.08) adj -= 40;
-          }
-          // Título debe compartir tokens (evita La captura → Facing El Chapo)
-          var ctN = normalizarTituloKey(cand.item.l || cand.item.titulo || '');
-          var shareT = 0;
-          var wantTok = tokensDistintivos(wantedTitle);
-          for (var sti = 0; sti < wantTok.length; sti++) {
-            if (ctN.indexOf(wantTok[sti]) !== -1) shareT++;
-          }
-          if (wantTok.length && shareT === 0) {
-            adj -= 500; // rechazo fuerte: ningún token en común
-            cand._skip = true;
-          } else if (wantTok.length && shareT < Math.ceil(wantTok.length * 0.6)) {
-            adj -= 200;
-          }
-          // Mismo año que la fuente: bonus solo si hay overlap de título
-          if (cand.sameYear && shareT > 0) adj += 60;
-          if (!wantedYear && cy && descHint) {
-            var yn = parseInt(cy, 10);
-            if (yn >= 2023) adj += 25;
-            else if (yn < 2015) adj -= 20;
-          }
-          cand._adj = adj;
-          if (!bestPick || adj > (bestPick._adj || -9999)) {
-            bestPick = cand;
-            bestSim = cand._sim || 0;
-          }
-        }
-
-        if (bestPick && !bestPick._skip) {
-          var best = bestPick.item;
-          var extra = bestPick._omdb || null;
-          var poster = null;
-          if (best.i && best.i.imageUrl) poster = normalizarPosterImdb(best.i.imageUrl);
-          if ((!poster || /N\/A/i.test(poster)) && extra && extra.Poster && extra.Poster !== 'N/A') {
-            poster = normalizarPosterImdb(extra.Poster);
-          }
-          var y = best.y ? String(best.y) : (extra && extra.Year ? String(extra.Year).slice(0, 4) : null);
-
-          // Ficha IMDb ES: rating oficial, B15, 1h 31min, géneros, plot español
-          var ficha = null;
-          try {
-            ficha = await scrapeFichaImdbEs(best.id);
-          } catch (eF) { ficha = null; }
-
-          var generos = [];
-          if (ficha && ficha.generos && ficha.generos.length) generos = ficha.generos;
-          else if (extra && extra.Genre) {
-            generos = generosAEspanol(extra.Genre.split(',').map(function (g) { return g.trim(); }));
-          }
-
-          var calif = null;
-          if (ficha && ficha.calificacion != null) calif = ficha.calificacion;
-          else if (extra && extra.imdbRating && extra.imdbRating !== 'N/A') calif = normalizarCalificacion(extra.imdbRating);
-
-          var descOut = null;
-          if (ficha && ficha.descripcion && pareceEspanol(ficha.descripcion)) descOut = ficha.descripcion;
-          else if (ficha && ficha.descripcion) descOut = ficha.descripcion;
-          else if (extra && extra.Plot && extra.Plot !== 'N/A') descOut = extra.Plot;
-
-          // Si la fuente ya tiene sinopsis y no se parece al plot IMDb → no pisar datos de otra obra
-          if (descHint && descOut && similitudDescripcion(descHint, descOut) < 0.12 && descHint.length > 60) {
-            // Mantener rating/cert solo si year coincide; si yearHint no hay, desconfiar
-            if (wantedYear && y && wantedYear === y) {
-              /* ok mismo año */
-            } else if (!wantedYear && bestSim < 0.12) {
-              // Homónimo dudoso: devolver solo portada si hay, sin rating/year equivocado
-              return {
-                tmdb_id: null,
-                imdb_id: best.id,
-                titulo_tmdb: best.l || q,
-                portada_tmdb: null,
-                portada_imdb: poster,
-                backdrop: null,
-                calificacion: null,
-                descripcion: null,
-                generos: [],
-                fecha_estreno: null,
-                year: null,
-                titulo_original: best.l || q,
-                votos: null,
-                duracion: null,
-                duracion_texto: null,
-                certificacion: null,
-                status: null,
-                tagline: null,
-                slug_tmdb: null
-              };
-            }
-          }
-
-          // Título para match: preferir el de la ficha ES ("La captura") sobre el EN ("Facing El Chapo")
-          var tituloEs = (ficha && (ficha.titulo_es || ficha.titulo)) || null;
-          var tituloEn = best.l || (ficha && ficha.titulo_original) || q;
-          var tituloMatch = tituloEs || tituloEn;
-          // Si ficha ES tiene título y NO se parece al query ni al EN suggestion, y sinopsis no pega → otra obra
-          if (tituloEs && wantedTitle) {
-            var tEsN = normalizarTituloKey(tituloEs);
-            var shareEs = 0;
-            var wTok = tokensDistintivos(wantedTitle);
-            for (var se = 0; se < wTok.length; se++) {
-              if (tEsN.indexOf(wTok[se]) !== -1) shareEs++;
-            }
-            var okEs = tEsN === wantedTitle || (wTok.length && shareEs >= Math.ceil(wTok.length * 0.6));
-            if (!okEs && descHint && descOut) {
-              okEs = similitudDescripcion(descHint, descOut) >= 0.2;
-            }
-            if (!okEs && wantedYear && y && wantedYear === y && shareEs === 0) {
-              // Mismo año, título ES no coincide: no usar este id
-              // (evita aplicar datos de otra película 2026)
-              if (!(descHint && descOut && similitudDescripcion(descHint, descOut) >= 0.15)) {
-                /* no return null here — try continue via rejecting calificacion? */
-              }
-            }
-            if (okEs) tituloMatch = tituloEs;
-          }
-
-          return {
-            tmdb_id: null,
-            imdb_id: best.id,
-            titulo_tmdb: tituloMatch,
-            titulo_es: tituloEs || null,
-            portada_tmdb: null,
-            portada_imdb: poster,
-            backdrop: null,
-            calificacion: calif,
-            descripcion: descOut,
-            generos: generos,
-            fecha_estreno: (extra && extra.Released && extra.Released !== 'N/A')
-              ? (function () {
-                  var dt = new Date(extra.Released);
-                  return !isNaN(dt.getTime()) ? dt.toISOString().slice(0, 10) : (y ? y + '-01-01' : null);
-                })()
-              : (y ? y + '-01-01' : null),
-            year: (ficha && ficha.year) || y,
-            titulo_original: (ficha && ficha.titulo_original) || tituloEn,
-            votos: (ficha && ficha.votos) || (extra && extra.imdbVotes && extra.imdbVotes !== 'N/A' ? extra.imdbVotes : null),
-            duracion: (ficha && ficha.duracion) || (extra && extra.Runtime && extra.Runtime !== 'N/A' ? parseInt(extra.Runtime, 10) || null : null),
-            duracion_texto: (ficha && ficha.duracion_texto) || (calif != null && ficha && ficha.duracion ? formatearDuracionImdb(ficha.duracion) : null),
-            certificacion: (ficha && ficha.certificacion) || (extra && extra.Rated && extra.Rated !== 'N/A' ? extra.Rated : null),
-            status: null,
-            tagline: null,
-            slug_tmdb: null
-          };
-        }
+        addCand(it.id, it.l || it.titulo, it.y || null);
       }
     }
-  } catch (eSug) { /* fallback HTML abajo */ }
+  } catch (eSug) { /* ok */ }
 
-  // --- 1b) OMDb por título + año (cubre "La captura" 2026 indexada con otro nombre) ---
+  // --- 2) Si hay año y pocos candidatos, ampliar búsqueda sin filtrar título EN ---
+  // (Facing El Chapo ya entra por año 2026 en suggestion)
+
+  // --- 3) Evaluar candidatos: ficha ES + OMDb ---
+  var best = null;
+  var bestScore = -9999;
+  var maxEval = Math.min(candidates.length, 5);
+
+  for (var ci = 0; ci < maxEval; ci++) {
+    var c = candidates[ci];
+    var omdb = null;
+    try {
+      var oRes = await fetch('https://www.omdbapi.com/?i=' + encodeURIComponent(c.id) + '&apikey=trilogy&plot=full', {
+        headers: { Accept: 'application/json' }
+      });
+      if (oRes.ok) {
+        omdb = await oRes.json();
+        if (omdb && omdb.Response === 'False') omdb = null;
+      }
+    } catch (eO) { omdb = null; }
+
+    // Año OMDb también debe cuadrar
+    if (wantedYear && omdb && omdb.Year) {
+      var oy = String(omdb.Year).slice(0, 4);
+      if (oy && oy !== wantedYear) continue;
+    }
+
+    var ficha = null;
+    try {
+      ficha = await scrapeFichaImdbEs(c.id);
+    } catch (eF) { ficha = null; }
+
+    if (wantedYear && ficha && ficha.year) {
+      if (String(ficha.year).slice(0, 4) !== wantedYear) continue;
+    }
+
+    var meta = buildMetaFromFicha(c.id, ficha, omdb, c.title, c.year || (omdb && omdb.Year));
+    if (!meta) continue;
+
+    // Si el título ES/EN no pega NADA y la sinopsis tampoco, descartar
+    var ov = Math.max(
+      tituloOverlap(wantedTitle, meta.titulo_es || ''),
+      tituloOverlap(wantedTitle, meta.titulo_tmdb || ''),
+      tituloOverlap(wantedTitle, meta.titulo_original || '')
+    );
+    var simD = (descHint && meta.descripcion) ? similitudDescripcion(descHint, meta.descripcion) : 0;
+    // Caso especial: título EN distinto, mismo año, sinopsis parecida → OK (Facing El Chapo)
+    if (ov < 0.3 && simD < 0.12 && !(wantedYear && meta.year && String(meta.year) === wantedYear && simD >= 0.08)) {
+      // mismo año sin overlap: aún permitir si es el ÚNICO del año en suggestion
+      var sameYearCount = 0;
+      for (var zj = 0; zj < candidates.length; zj++) {
+        if (candidates[zj].year && wantedYear && String(candidates[zj].year) === wantedYear) sameYearCount++;
+      }
+      if (!(wantedYear && sameYearCount === 1 && String(meta.year) === wantedYear)) {
+        continue;
+      }
+    }
+
+    var sc = scoreMetaCandidate(meta);
+    // Bonus posición en suggestion (primero = más relevante)
+    sc += Math.max(0, 30 - ci * 8);
+
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = meta;
+    }
+  }
+
+  if (best && bestScore >= 50) return best;
+
+  // --- 4) OMDb search por título + año ---
   if (wantedYear) {
     try {
-      var omdbByYear = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) +
-        '&y=' + encodeURIComponent(wantedYear) + '&apikey=trilogy&plot=full';
-      var oY = await fetch(omdbByYear, { headers: { Accept: 'application/json' } });
-      if (oY.ok) {
-        var odY = await oY.json();
-        if (odY && odY.Response !== 'False' && odY.imdbID) {
-          var yOd = odY.Year ? String(odY.Year).slice(0, 4) : null;
-          if (!yOd || yOd === wantedYear) {
-            var fichaY = null;
-            try { fichaY = await scrapeFichaImdbEs(odY.imdbID); } catch (eFy) { fichaY = null; }
-            var posterY = odY.Poster && odY.Poster !== 'N/A' ? normalizarPosterImdb(odY.Poster) : null;
-            return {
-              tmdb_id: null,
-              imdb_id: odY.imdbID,
-              titulo_tmdb: odY.Title || q,
-              portada_tmdb: null,
-              portada_imdb: posterY,
-              backdrop: null,
-              calificacion: (fichaY && fichaY.calificacion != null)
-                ? fichaY.calificacion
-                : (odY.imdbRating && odY.imdbRating !== 'N/A' ? normalizarCalificacion(odY.imdbRating) : null),
-              descripcion: (fichaY && fichaY.descripcion) || (odY.Plot && odY.Plot !== 'N/A' ? odY.Plot : null),
-              generos: (fichaY && fichaY.generos && fichaY.generos.length)
-                ? fichaY.generos
-                : generosAEspanol(odY.Genre ? odY.Genre.split(',').map(function (g) { return g.trim(); }) : []),
-              fecha_estreno: null,
-              year: yOd || wantedYear,
-              titulo_original: odY.Title || null,
-              votos: (fichaY && fichaY.votos) || (odY.imdbVotes && odY.imdbVotes !== 'N/A' ? odY.imdbVotes : null),
-              duracion: (fichaY && fichaY.duracion) || (odY.Runtime && odY.Runtime !== 'N/A' ? parseInt(odY.Runtime, 10) || null : null),
-              duracion_texto: (fichaY && fichaY.duracion_texto) || null,
-              certificacion: (fichaY && fichaY.certificacion) || (odY.Rated && odY.Rated !== 'N/A' ? odY.Rated : null),
-              status: null,
-              tagline: null,
-              slug_tmdb: null
-            };
-          }
-        }
-      }
-      // Búsqueda listado OMDb filtrada por año
-      var omdbSearch = 'https://www.omdbapi.com/?s=' + encodeURIComponent(q) + '&type=movie&apikey=trilogy';
+      var omdbSearch = 'https://www.omdbapi.com/?s=' + encodeURIComponent(q) +
+        '&y=' + encodeURIComponent(wantedYear) + '&type=movie&apikey=trilogy';
       var oS = await fetch(omdbSearch, { headers: { Accept: 'application/json' } });
       if (oS.ok) {
-        var odS = await oS.json();
-        var listS = (odS && Array.isArray(odS.Search)) ? odS.Search : [];
-        for (var si2 = 0; si2 < listS.length; si2++) {
-          var row = listS[si2];
+        var sd = await oS.json();
+        var rows = (sd && Array.isArray(sd.Search)) ? sd.Search : [];
+        for (var ri = 0; ri < Math.min(rows.length, 4); ri++) {
+          var row = rows[ri];
           if (!row || !row.imdbID) continue;
           var yr = row.Year ? String(row.Year).slice(0, 4) : null;
           if (yr && yr !== wantedYear) continue;
-          var omdbUrl3 = 'https://www.omdbapi.com/?i=' + encodeURIComponent(row.imdbID) + '&apikey=trilogy&plot=full';
-          var oR3 = await fetch(omdbUrl3, { headers: { Accept: 'application/json' } });
-          if (!oR3.ok) continue;
-          var od3 = await oR3.json();
-          if (!od3 || od3.Response === 'False') continue;
-          var ficha3 = null;
-          try { ficha3 = await scrapeFichaImdbEs(row.imdbID); } catch (e3) { ficha3 = null; }
-          var poster3 = od3.Poster && od3.Poster !== 'N/A' ? normalizarPosterImdb(od3.Poster) : null;
-          return {
-            tmdb_id: null,
-            imdb_id: row.imdbID,
-            titulo_tmdb: od3.Title || row.Title || q,
-            portada_tmdb: null,
-            portada_imdb: poster3,
-            backdrop: null,
-            calificacion: (ficha3 && ficha3.calificacion != null)
-              ? ficha3.calificacion
-              : (od3.imdbRating && od3.imdbRating !== 'N/A' ? normalizarCalificacion(od3.imdbRating) : null),
-            descripcion: (ficha3 && ficha3.descripcion) || (od3.Plot && od3.Plot !== 'N/A' ? od3.Plot : null),
-            generos: (ficha3 && ficha3.generos && ficha3.generos.length)
-              ? ficha3.generos
-              : generosAEspanol(od3.Genre ? od3.Genre.split(',').map(function (g) { return g.trim(); }) : []),
-            fecha_estreno: null,
-            year: yr || wantedYear,
-            titulo_original: od3.Title || null,
-            votos: (ficha3 && ficha3.votos) || (od3.imdbVotes && od3.imdbVotes !== 'N/A' ? od3.imdbVotes : null),
-            duracion: (ficha3 && ficha3.duracion) || (od3.Runtime && od3.Runtime !== 'N/A' ? parseInt(od3.Runtime, 10) || null : null),
-            duracion_texto: (ficha3 && ficha3.duracion_texto) || null,
-            certificacion: (ficha3 && ficha3.certificacion) || (od3.Rated && od3.Rated !== 'N/A' ? od3.Rated : null),
-            status: null,
-            tagline: null,
-            slug_tmdb: null
-          };
+          var fichaR = null;
+          try { fichaR = await scrapeFichaImdbEs(row.imdbID); } catch (eR) { fichaR = null; }
+          var omdbR = null;
+          try {
+            var oR = await fetch('https://www.omdbapi.com/?i=' + encodeURIComponent(row.imdbID) + '&apikey=trilogy&plot=full', {
+              headers: { Accept: 'application/json' }
+            });
+            if (oR.ok) {
+              omdbR = await oR.json();
+              if (omdbR && omdbR.Response === 'False') omdbR = null;
+            }
+          } catch (eOR) { omdbR = null; }
+          var metaR = buildMetaFromFicha(row.imdbID, fichaR, omdbR, row.Title, yr);
+          if (!metaR) continue;
+          var scR = scoreMetaCandidate(metaR);
+          if (scR > bestScore) {
+            bestScore = scR;
+            best = metaR;
+          }
         }
       }
-    } catch (eOy) { /* ok */ }
+    } catch (eOs) { /* ok */ }
   }
 
-  // --- 2) Fallback HTML (puede fallar en Workers por bloqueo IMDb) ---
-  var headersImdb = {
-    'User-Agent': HEADERS['User-Agent'],
-    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.5',
-    'Accept': 'text/html,application/xhtml+xml'
-  };
-
-  function limpiarHtmlTexto(s) {
-    return String(s || '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-      .replace(/&#x27;/gi, "'").replace(/&nbsp;/g, ' ')
-      .replace(/\s+/g, ' ').trim();
-  }
-
-  try {
-    var findUrl = 'https://www.imdb.com/find/?q=' + encodeURIComponent(q) + '&s=tt';
-    var resFind = await fetchWithTimeout(findUrl, { headers: headersImdb, redirect: 'follow' }, 8000);
-    if (!resFind || !resFind.ok) return null;
-    var htmlFind = await resFind.text();
-    if (!htmlFind || htmlFind.length < 200) return null;
-
-    var candidates = [];
-    var seenIds = Object.create(null);
-    var re = /\/title\/(tt\d+)\//gi;
-    var m;
-    while ((m = re.exec(htmlFind)) !== null && candidates.length < 15) {
-      if (seenIds[m[1]]) continue;
-      seenIds[m[1]] = true;
-      candidates.push({ imdbId: m[1], titulo: q, year: null, isTv: null });
-    }
-    if (!candidates.length) return null;
-
-    var cand = candidates[0];
-    // Usar OMDb con el primer tt encontrado
-    try {
-      var omdbUrl2 = 'https://www.omdbapi.com/?i=' + encodeURIComponent(cand.imdbId) + '&apikey=trilogy&plot=full';
-      var omdbRes2 = await fetch(omdbUrl2, { headers: { Accept: 'application/json' } });
-      if (omdbRes2.ok) {
-        var od2 = await omdbRes2.json();
-        if (od2 && od2.Response !== 'False') {
-          var poster2 = od2.Poster && od2.Poster !== 'N/A' ? normalizarPosterImdb(od2.Poster) : null;
-          var y2 = od2.Year ? String(od2.Year).slice(0, 4) : null;
-          if (wantedYear && y2 && wantedYear !== y2) return null;
-          return {
-            tmdb_id: null,
-            imdb_id: od2.imdbID || cand.imdbId,
-            titulo_tmdb: od2.Title || q,
-            portada_tmdb: null,
-            portada_imdb: poster2,
-            backdrop: null,
-            calificacion: od2.imdbRating && od2.imdbRating !== 'N/A' ? Number(od2.imdbRating) : null,
-            descripcion: od2.Plot && od2.Plot !== 'N/A' ? od2.Plot : null,
-            generos: od2.Genre ? od2.Genre.split(',').map(function (g) { return g.trim(); }) : [],
-            fecha_estreno: null,
-            year: y2,
-            titulo_original: od2.Title || null,
-            votos: od2.imdbVotes && od2.imdbVotes !== 'N/A' ? od2.imdbVotes : null,
-            duracion: od2.Runtime && od2.Runtime !== 'N/A' ? parseInt(od2.Runtime, 10) || null : null,
-            status: null,
-            tagline: null,
-            slug_tmdb: null
-          };
-        }
-      }
-    } catch (e2) { /* ok */ }
-    return null;
-  } catch (e) {
-    return null;
-  }
+  if (best && bestScore >= 40) return best;
+  return null;
 }
 
 /** TMDB oficial si hay TMDB_API_KEY en el Worker */
