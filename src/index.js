@@ -23,6 +23,9 @@ var LAMOVIE_BASE = 'https://lamovie.org';
 var HACKSTORE_BASE = 'https://www.hackstore.fo';
 var PELISPLUS_BASE = 'https://www.pelisplushd.la';
 var ANIMEAV1_BASE = 'https://animeav1.com';
+var ANIMEDBS_BASE = 'https://www.animedbs.online';
+var DORAMASFLIX_BASE = 'https://doramasflix.io';
+var DORAMASFLIX_GQL = 'https://user-api.fluxcedene.net/graphql';
 // Metadatos TMDB vía worker público (no cambia el flujo de embeds/fuentes)
 var TMDB_META_API = ''; // desactivado: meta solo de la página fuente (+ TMDB key si hay)
 
@@ -201,7 +204,9 @@ async function handleRequest(request, env) {
         '1': 'lamovie',
         '2': 'hackstore',
         '3': 'pelisplushd',
-        '4': 'animeav1'
+        '4': 'animeav1',
+        '5': 'animedbs',
+        '6': 'doramasflix'
       },
       endpoints: {
         search: origin + '/search?q={texto}',
@@ -439,7 +444,7 @@ async function handleRequest(request, env) {
         hackstore: origin + '/2/serie/asi-aprenderas-2026/1/1',
         search: origin + '/search?q=matrix'
       },
-      sources: { '1': 'lamovie', '2': 'hackstore', '3': 'pelisplushd', '4': 'animeav1' }
+      sources: { '1': 'lamovie', '2': 'hackstore', '3': 'pelisplushd', '4': 'animeav1', '5': 'animedbs', '6': 'doramasflix' }
     }, 400);
   }
 
@@ -454,6 +459,10 @@ async function handleRequest(request, env) {
       resultado = await scrapearHackstore(targetUrl, commonOpts);
     } else if (source === 'animeav1') {
       resultado = await scrapearAnimeAv1(targetUrl, commonOpts);
+    } else if (source === 'animedbs') {
+      resultado = await scrapearAnimedbs(targetUrl, commonOpts);
+    } else if (source === 'doramasflix') {
+      resultado = await scrapearDoramasflix(targetUrl, commonOpts);
     } else {
       resultado = await scrapearLamovie(targetUrl, commonOpts);
     }
@@ -471,13 +480,15 @@ async function handleRequest(request, env) {
   }
 }
 
-/** 1=lamovie, 2=hackstore, 3=pelisplushd (también acepta nombres) */
+/** 1=lamovie, 2=hackstore, 3=pelisplushd, 4=animeav1, 5=animedbs, 6=doramasflix */
 function normalizarSourceId(s) {
   s = String(s || '').toLowerCase().trim();
   if (s === '1' || s === 'lamovie' || s === 'lm') return 'lamovie';
   if (s === '2' || s === 'hackstore' || s === 'hs') return 'hackstore';
   if (s === '3' || s === 'pelisplushd' || s === 'pelisplus' || s === 'pp') return 'pelisplushd';
   if (s === '4' || s === 'animeav1' || s === 'av1' || s === 'aa1') return 'animeav1';
+  if (s === '5' || s === 'animedbs' || s === 'adbs' || s === 'dbs') return 'animedbs';
+  if (s === '6' || s === 'doramasflix' || s === 'doramas' || s === 'dfx') return 'doramasflix';
   return '';
 }
 
@@ -486,6 +497,8 @@ function sourceIdFromName(name) {
   if (name === 'hackstore') return '2';
   if (name === 'pelisplushd') return '3';
   if (name === 'animeav1') return '4';
+  if (name === 'animedbs') return '5';
+  if (name === 'doramasflix') return '6';
   return '1'; // lamovie default
 }
 
@@ -494,6 +507,8 @@ function sourceNameFromId(id) {
   if (id === '2' || id === 'hackstore' || id === 'hs') return 'hackstore';
   if (id === '3' || id === 'pelisplushd' || id === 'pp') return 'pelisplushd';
   if (id === '4' || id === 'animeav1' || id === 'av1') return 'animeav1';
+  if (id === '5' || id === 'animedbs' || id === 'adbs') return 'animedbs';
+  if (id === '6' || id === 'doramasflix' || id === 'dfx') return 'doramasflix';
   if (id === '1' || id === 'lamovie' || id === 'lm') return 'lamovie';
   return id || '';
 }
@@ -531,24 +546,31 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
   for (var si = 0; si < slugsTry.length; si++) {
     var s = slugsTry[si];
     if (tipoRuta === 'pelicula') {
-      add('lamovie', LAMOVIE_BASE + '/peliculas/' + s + '/');
+      add('animeav1', ANIMEAV1_BASE + '/media/' + s);
+      add('animedbs', ANIMEDBS_BASE + '/anime/' + s + '/');
+      add('doramasflix', DORAMASFLIX_BASE + '/peliculas/' + s);
       add('pelisplushd', PELISPLUS_BASE + '/pelicula/' + s + '/');
+      add('lamovie', LAMOVIE_BASE + '/peliculas/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/peliculas/' + s + '/');
     } else if (tipoRuta === 'anime') {
-      // Anime: animeav1 primero (más actualizado: One Piece, Wistoria T2…)
+      // Orden: animeav1 → animedbs → doramasflix → pelisplus → lamovie → hackstore
       add('animeav1', ANIMEAV1_BASE + '/media/' + s);
+      add('animedbs', ANIMEDBS_BASE + '/anime/' + s + '/');
+      add('doramasflix', DORAMASFLIX_BASE + '/doramas/' + s);
       add('pelisplushd', PELISPLUS_BASE + '/anime/' + s + '/');
       add('pelisplushd', PELISPLUS_BASE + '/serie/' + s + '/');
       add('lamovie', LAMOVIE_BASE + '/animes/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/animes/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/series/' + s + '/');
     } else {
-      add('lamovie', LAMOVIE_BASE + '/series/' + s + '/');
+      add('animeav1', ANIMEAV1_BASE + '/media/' + s);
+      add('animedbs', ANIMEDBS_BASE + '/anime/' + s + '/');
+      add('doramasflix', DORAMASFLIX_BASE + '/doramas/' + s);
       add('pelisplushd', PELISPLUS_BASE + '/serie/' + s + '/');
       add('pelisplushd', PELISPLUS_BASE + '/anime/' + s + '/');
+      add('lamovie', LAMOVIE_BASE + '/series/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/series/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/animes/' + s + '/');
-      add('animeav1', ANIMEAV1_BASE + '/media/' + s);
     }
   }
 
@@ -616,12 +638,9 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     // preferred (source forzado en ruta) primero
     var p = (b.preferred ? 1 : 0) - (a.preferred ? 1 : 0);
     if (p !== 0) return p;
-    // Anime: animeav1 antes que hackstore/lamovie
-    if (tipoRuta === 'anime') {
-      var order = { animeav1: 0, pelisplushd: 1, lamovie: 2, hackstore: 3 };
-      return (order[a.fuente] != null ? order[a.fuente] : 9) - (order[b.fuente] != null ? order[b.fuente] : 9);
-    }
-    return 0;
+    // Orden global de fuentes
+    var order = { animeav1: 0, animedbs: 1, doramasflix: 2, pelisplushd: 3, lamovie: 4, hackstore: 5 };
+    return (order[a.fuente] != null ? order[a.fuente] : 9) - (order[b.fuente] != null ? order[b.fuente] : 9);
   });
 
   // Fetch en paralelo (lotes de 4) para no timeout
@@ -636,6 +655,8 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
       var o2 = Object.assign({}, opts);
       if (c.fuente === 'pelisplushd') r = await scrapearPelisplus(c.url, o2);
       else if (c.fuente === 'animeav1') r = await scrapearAnimeAv1(c.url, o2);
+      else if (c.fuente === 'animedbs') r = await scrapearAnimedbs(c.url, o2);
+      else if (c.fuente === 'doramasflix') r = await scrapearDoramasflix(c.url, o2);
       else if (c.fuente === 'hackstore') r = await scrapearHackstore(c.url, o2);
       else r = await scrapearLamovie(c.url, o2);
       if (r && r.success !== false) {
@@ -1246,11 +1267,14 @@ function normalizarUrlEntrada(u) {
 function detectarFuente(u) {
   u = (u || '').toLowerCase();
   if (u.indexOf('animeav1') !== -1) return 'animeav1';
+  if (u.indexOf('animedbs') !== -1) return 'animedbs';
+  if (u.indexOf('doramasflix') !== -1) return 'doramasflix';
   if (u.indexOf('pelisplushd') !== -1) return 'pelisplushd';
   if (u.indexOf('hackstore') !== -1) return 'hackstore';
   if (u.indexOf('lamovie') !== -1) return 'lamovie';
   if (/\/(pelicula|serie|anime)\//i.test(u)) return 'pelisplushd';
   if (/\/media\//i.test(u)) return 'animeav1';
+  if (/\/doramas\//i.test(u) || /\/capitulos\//i.test(u)) return 'doramasflix';
   return 'lamovie';
 }
 
@@ -2576,12 +2600,18 @@ function claveDeduplicacion(item) {
  * 1) animeav1 (4)  2) pelisplushd (3)  3) lamovie (1)  4) hackstore (2)
  * Si animeav1 tiene la obra, es la fuente principal; el resto va a alternativas.
  */
+/**
+ * Orden de fuentes (búsqueda / fusión / detalle):
+ * 1 animeav1 → 2 animedbs → 3 doramasflix → 4 pelisplushd → 5 lamovie → 6 hackstore
+ */
 function prioridadFuente(nombre) {
   var f = String(nombre || '').toLowerCase();
   if (f === 'animeav1' || f === '4') return 0;
-  if (f === 'pelisplushd' || f === 'pelisplus' || f === '3') return 1;
-  if (f === 'lamovie' || f === '1') return 2;
-  if (f === 'hackstore' || f === '2') return 3;
+  if (f === 'animedbs' || f === '5') return 1;
+  if (f === 'doramasflix' || f === '6') return 2;
+  if (f === 'pelisplushd' || f === 'pelisplus' || f === '3') return 3;
+  if (f === 'lamovie' || f === '1') return 4;
+  if (f === 'hackstore' || f === '2') return 5;
   return 9;
 }
 
@@ -2596,9 +2626,11 @@ function ordenarFuentesLista(fuentes) {
 function scoreItemBusqueda(item) {
   if (!item) return 0;
   var s = 0;
-  // PRIORIDAD #1: animeav1 siempre gana como base si está presente
+  // Prioridad de fuente (alineada con prioridadFuente)
   var f = String(item.fuente || '').toLowerCase();
   if (f === 'animeav1') s += 200;
+  else if (f === 'animedbs') s += 160;
+  else if (f === 'doramasflix') s += 140;
   else if (f === 'pelisplushd') s += 30;
   else if (f === 'lamovie') s += 20;
   else if (f === 'hackstore') s += 10;
@@ -3074,29 +3106,68 @@ function mapMetaFromSearchItem(it) {
  * Para PelisPlus, IMDb es la fuente preferida de portada; TMDB queda como
  * respaldo. Para las demás fuentes solo reemplaza portadas ausentes/sospechosas.
  */
+/**
+ * ¿La meta de IMDb/OMDb corresponde al ítem?
+ * Evita poner el poster de "One Piece" en "One Piece Film: Red" / Heroines / 3D2Y.
+ */
+function metaCoincideConItem(item, meta) {
+  if (!item || !meta) return false;
+  var tItem = normalizarTituloKey(item.titulo || '');
+  var tMeta = normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
+  if (!tItem || !tMeta) return false;
+  if (tItem === tMeta) return true;
+
+  var STOP = {
+    one:1, piece:1, the:1, and:1, film:1, movie:1, special:1, episode:1,
+    anime:1, series:1, season:1, part:1
+  };
+  function extras(t) {
+    return t.split(/\s+/).filter(function (w) { return w.length >= 3 && !STOP[w]; });
+  }
+  var eItem = extras(tItem);
+  var eMeta = extras(tMeta);
+
+  // Si el ítem tiene extras (red, heroines, stampede…), la meta debe tenerlos
+  if (eItem.length) {
+    var shared = 0;
+    for (var i = 0; i < eItem.length; i++) {
+      if (tMeta.indexOf(eItem[i]) !== -1) shared++;
+    }
+    if (shared === 0) return false;
+    // Al menos la mitad de los tokens distintivos
+    if (shared < Math.ceil(eItem.length / 2)) return false;
+  } else {
+    // Ítem genérico "one piece": meta no debe ser un special/film
+    if (eMeta.length > 0) return false;
+  }
+
+  // Año: si ambos existen y difieren, no coincide
+  var yItem = extraerYearItem(item);
+  var yMeta = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
+  if (yItem && yMeta && String(yItem) !== String(yMeta)) return false;
+
+  return true;
+}
+
 function aplicarMetaAResultadoBusqueda(item, meta) {
   if (!item || !meta) return item;
 
-  // Evitar cruzar metadata de obras con años distintos (ej. One Piece 1999 vs live-action 2023)
+  var coincide = metaCoincideConItem(item, meta);
+
+  // Si no coincide la obra, solo rellenar texto faltante; NUNCA portada ni IDs
+  if (!coincide) {
+    if ((!item.descripcion || String(item.descripcion).length < 40) && meta.descripcion) {
+      // Solo si el título base es de la misma franquicia (opcional, conservador)
+      // Mejor no tocar descripción de otra obra
+    }
+    return item;
+  }
+
+  // Evitar cruzar metadata de obras con años distintos (remakes)
   var itemYear = extraerYearItem(item);
   var metaYear = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
   var yearConflict = itemYear && metaYear && String(itemYear) !== String(metaYear);
   if (yearConflict) {
-    var tItem = normalizarTituloKey(item.titulo || '');
-    var tMeta = normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
-    // Si el título normalizado no es idéntico, no aplicar IDs ni portadas de meta
-    if (tItem && tMeta && tItem !== tMeta) {
-      // Solo permitir completar descripción/géneros si faltan
-      if ((!item.descripcion || String(item.descripcion).length < 40) && meta.descripcion) {
-        item.descripcion = meta.descripcion;
-      }
-      if ((!item.generos || !item.generos.length) && meta.generos && meta.generos.length) {
-        item.generos = meta.generos;
-        item.genero = meta.generos.join(', ');
-      }
-      return item;
-    }
-    // Título igual pero año distinto (remake): no copiar IDs ni portadas
     meta = {
       descripcion: meta.descripcion,
       generos: meta.generos,
@@ -3119,18 +3190,21 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   if (meta.titulo_tmdb) item.titulo_tmdb = meta.titulo_tmdb;
   if (meta.titulo_original) item.titulo_original = meta.titulo_original;
 
-  if (meta.portada_imdb && esPortadaUrlValida(meta.portada_imdb)) {
-    item.portada_imdb = meta.portada_imdb;
-  }
-  if (meta.portada_tmdb && esPortadaUrlValida(meta.portada_tmdb) && !esPortadaSospechosa(meta.portada_tmdb)) {
-    item.portada_tmdb = meta.portada_tmdb;
-  }
+  // Solo asignar portadas de meta si la obra coincide
+  if (coincide) {
+    if (meta.portada_imdb && esPortadaUrlValida(meta.portada_imdb)) {
+      item.portada_imdb = meta.portada_imdb;
+    }
+    if (meta.portada_tmdb && esPortadaUrlValida(meta.portada_tmdb) && !esPortadaSospechosa(meta.portada_tmdb)) {
+      item.portada_tmdb = meta.portada_tmdb;
+    }
 
-  var portadaPreferida = elegirPortadaPreferida(item, meta);
-  if (portadaPreferida) {
-    item.portada = portadaPreferida;
-    item.poster_source = esPortadaImdb(portadaPreferida) ? 'imdb' :
-      (/image\.tmdb\.org/i.test(portadaPreferida) ? 'tmdb' : String(item.fuente || 'fuente'));
+    var portadaPreferida = elegirPortadaPreferida(item, meta);
+    if (portadaPreferida) {
+      item.portada = portadaPreferida;
+      item.poster_source = esPortadaImdb(portadaPreferida) ? 'imdb' :
+        (/image\.tmdb\.org/i.test(portadaPreferida) ? 'tmdb' : String(item.fuente || 'fuente'));
+    }
   }
 
   if (meta.backdrop && esPortadaUrlValida(meta.backdrop) && !/media-amazon|amazon\.com/i.test(meta.backdrop)) {
@@ -3332,32 +3406,77 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint) {
   var wantedType = normalizarTipoKey(tipoHint);
   var wantedIsTv = wantedType === 'serie' || wantedType === 'anime';
 
+  // Tokens de franquicia genéricos: NO bastan para asignar portada
+  var FRANQUICIA_STOP = {
+    one:1, piece:1, the:1, and:1, film:1, movie:1, special:1, episode:1,
+    anime:1, series:1, season:1, part:1, vol:1, volume:1
+  };
+
+  function tokensDistintivos(t) {
+    return String(t || '').split(/\s+/).filter(function (w) {
+      return w.length >= 3 && !FRANQUICIA_STOP[w];
+    });
+  }
+
   function scoreSug(item) {
     if (!item || !item.id || String(item.id).indexOf('tt') !== 0) return -999;
     var ct = normalizarTituloKey(item.l || item.titulo || '');
+    if (!ct) return -999;
     var score = 0;
-    if (ct === wantedTitle) score += 150;
-    else if (ct && (ct.indexOf(wantedTitle) === 0 || wantedTitle.indexOf(ct) === 0)) score += 70;
-    else if (ct && (ct.indexOf(wantedTitle) !== -1 || wantedTitle.indexOf(ct) !== -1)) score += 40;
-    else {
-      var wa = wantedTitle.split(' ').filter(function (x) { return x.length > 2; });
-      var wb = ct.split(' ');
-      var common = 0;
-      for (var i = 0; i < wa.length; i++) if (wb.indexOf(wa[i]) !== -1) common++;
-      score += common * 12;
+
+    // Título exacto
+    if (ct === wantedTitle) {
+      score += 200;
+    } else {
+      var wantExtra = tokensDistintivos(wantedTitle);
+      var candExtra = tokensDistintivos(ct);
+
+      // Si el pedido tiene palabras distintivas (red, heroines, 3d2y, stampede…)
+      // el candidato DEBE compartirlas; si no → rechazo fuerte
+      if (wantExtra.length) {
+        var shared = 0;
+        for (var wi = 0; wi < wantExtra.length; wi++) {
+          if (ct.indexOf(wantExtra[wi]) !== -1) shared++;
+        }
+        if (shared === 0) {
+          // Ej: pedido "one piece film red" vs candidato "one piece" → NO
+          return -500;
+        }
+        score += shared * 50;
+        // Penalizar si el candidato tiene extras que el pedido no tiene
+        for (var ci = 0; ci < candExtra.length; ci++) {
+          if (wantedTitle.indexOf(candExtra[ci]) === -1) score -= 25;
+        }
+      } else {
+        // Pedido genérico "one piece": preferir candidato SIN extras de obra
+        if (candExtra.length === 0 && ct === wantedTitle) score += 200;
+        else if (candExtra.length === 0 || ct === wantedTitle) score += 120;
+        else {
+          // Candidato es un special/film → no usar para el título base
+          score -= 80;
+        }
+      }
+
+      // Prefijo solo si es casi el mismo título (diferencia mínima)
+      if (ct.indexOf(wantedTitle) === 0 || wantedTitle.indexOf(ct) === 0) {
+        var longer = ct.length >= wantedTitle.length ? ct : wantedTitle;
+        var shorter = ct.length >= wantedTitle.length ? wantedTitle : ct;
+        var rest = longer.slice(shorter.length).trim();
+        if (!rest || /^\d{4}$/.test(rest)) score += 40;
+        else score -= 30; // "one piece" vs "one piece film red"
+      }
     }
+
     var y = item.y ? String(item.y) : null;
-    if (wantedYear && y) score += wantedYear === y ? 90 : -130;
+    if (wantedYear && y) score += wantedYear === y ? 90 : -200;
     var qid = String(item.qid || item.q || '').toLowerCase();
-    var isTv = /tvseries|tvminiseries|tvspecial|tvmovie|tv/.test(qid);
+    var isTv = /tvseries|tvminiseries|tvspecial|tvmovie/.test(qid);
     var isMovie = /movie|feature|video|short/.test(qid);
-    if (wantedIsTv && isTv) score += 40;
-    if (wantedIsTv && isMovie) score -= 80;
-    if (wantedType === 'pelicula' && isMovie) score += 40;
-    if (wantedType === 'pelicula' && isTv) score -= 80;
-    // Preferir ranks mejores (número más bajo)
-    if (item.rank && item.rank < 5000) score += 15;
-    else if (item.rank && item.rank < 20000) score += 5;
+    if (wantedIsTv && isTv) score += 30;
+    if (wantedIsTv && isMovie) score -= 60;
+    if (wantedType === 'pelicula' && isMovie) score += 30;
+    if (wantedType === 'pelicula' && isTv) score -= 60;
+    if (item.rank && item.rank < 5000) score += 10;
     return score;
   }
 
@@ -3381,7 +3500,8 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint) {
         var it = list[si];
         if (!it || !it.id || String(it.id).indexOf('tt') !== 0) continue;
         var sc = scoreSug(it);
-        if (sc < 50) continue;
+        // Umbral alto: evita portada de "One Piece" en "One Piece Film Red"
+        if (sc < 100) continue;
         scored.push({ item: it, score: sc });
       }
       scored.sort(function (a, b) { return b.score - a.score; });
@@ -3928,13 +4048,20 @@ async function buscarUniversal(query, sourceFilter, limit) {
   var q = String(query || '').trim();
   if (!q) throw new Error('Falta el termino de busqueda');
 
-  // Orden de búsqueda prioritario: animeav1 → pelisplushd → lamovie → hackstore
-  // (Promise.all sigue en paralelo; el orden solo afecta concatenación / desempate)
+  // Orden: animeav1 → animedbs → doramasflix → pelisplushd → lamovie → hackstore
   var promesas = [];
   var labels = [];
   if (sourceFilter === 'all' || sourceFilter === 'animeav1' || sourceFilter === '4') {
     promesas.push(buscarAnimeAv1(q, limit).catch(function () { return []; }));
     labels.push('animeav1');
+  }
+  if (sourceFilter === 'all' || sourceFilter === 'animedbs' || sourceFilter === '5') {
+    promesas.push(buscarAnimedbs(q, limit).catch(function () { return []; }));
+    labels.push('animedbs');
+  }
+  if (sourceFilter === 'all' || sourceFilter === 'doramasflix' || sourceFilter === '6') {
+    promesas.push(buscarDoramasflix(q, limit).catch(function () { return []; }));
+    labels.push('doramasflix');
   }
   if (sourceFilter === 'all' || sourceFilter === 'pelisplushd') {
     promesas.push(buscarPelisplus(q, limit).catch(function () { return []; }));
@@ -5544,5 +5671,527 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     descargas: [],
     temporadas: temporadas,
     nota: 'T1=' + slug + '. Temporadas extra en slug-season-N. Players: /4/anime/' + slug + '/{temp}/{ep}. DUB=Latino se prioriza.'
+  };
+}
+// ======================================================
+// ANIMEDBS (WordPress) — source_id 5
+// ======================================================
+async function buscarAnimedbs(query, limit) {
+  limit = limit || 15;
+  var q = normalizarQueryBusqueda(query) || String(query || '').trim();
+  if (!q) return [];
+  try {
+    var url = ANIMEDBS_BASE + '/?s=' + encodeURIComponent(q);
+    var res = await fetch(url, {
+      headers: Object.assign({}, HEADERS, { Referer: ANIMEDBS_BASE + '/' })
+    });
+    if (!res.ok) return [];
+    var html = await res.text();
+    var out = [];
+    var seen = Object.create(null);
+    var re = /href=["'](https?:\/\/(?:www\.)?animedbs\.online\/anime\/([^"'\/\?]+))\/?["']/gi;
+    var m;
+    while ((m = re.exec(html)) !== null && out.length < limit) {
+      var slug = decodeURIComponent(m[2] || '').toLowerCase();
+      if (!slug || seen[slug] || slug.indexOf('?') === 0) continue;
+      if (PALABRAS_BLOQUEADAS_BUSQUEDA.some(function (w) { return slug.indexOf(w) !== -1; })) continue;
+      seen[slug] = true;
+      var chunk = html.slice(Math.max(0, m.index - 300), m.index + 500);
+      var portada = null;
+      var im = chunk.match(/(?:data-src|src)=["'](https?:\/\/[^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/i);
+      if (im && !/logo|favicon|avatar/i.test(im[1])) portada = im[1];
+      var titulo = tituloDesdeSlug(slug);
+      var tm = chunk.match(/alt=["']([^"']{2,80})["']/i) || chunk.match(/title=["']([^"']{2,80})["']/i);
+      if (tm) titulo = limpiarTitulo(limpiarTexto(tm[1]));
+      out.push({
+        titulo: titulo,
+        tipo: 'Anime',
+        fuente: 'animedbs',
+        slug: slug,
+        link: ANIMEDBS_BASE + '/anime/' + slug + '/',
+        portada: portada,
+        year: null
+      });
+    }
+    return out;
+  } catch (e) {
+    return [];
+  }
+}
+
+function extraerPlayersAnimedbs(html) {
+  var reps = [];
+  var seen = Object.create(null);
+  var opts = html.match(/<option[^>]+value=["']([A-Za-z0-9+/=]{20,})["'][^>]*>([^<]*)/gi) || [];
+  for (var i = 0; i < opts.length; i++) {
+    var om = opts[i].match(/value=["']([A-Za-z0-9+/=]+)["'][^>]*>([\s\S]*?)$/i);
+    if (!om) continue;
+    var label = limpiarTexto(om[2] || '').replace(/^>/, '').trim() || ('Opción ' + (i + 1));
+    try {
+      var raw = om[1];
+      // atob in workers
+      var bin = '';
+      if (typeof atob === 'function') bin = atob(raw);
+      else {
+        // fallback minimal base64
+        var BufferRef = typeof Buffer !== 'undefined' ? Buffer : null;
+        if (BufferRef) bin = BufferRef.from(raw, 'base64').toString('utf8');
+      }
+      if (!bin) continue;
+      var srcs = bin.match(/(?:src|href)=["']([^"']+)["']/gi) || [];
+      var plain = bin.match(/https?:\/\/[^\s"'<>]+/gi) || [];
+      var urls = [];
+      for (var s = 0; s < srcs.length; s++) {
+        var um = srcs[s].match(/["']([^"']+)["']/);
+        if (um) urls.push(um[1]);
+      }
+      for (var p = 0; p < plain.length; p++) urls.push(plain[p]);
+      for (var u = 0; u < urls.length; u++) {
+        var href = urls[u];
+        if (!href) continue;
+        if (href.indexOf('//') === 0) href = 'https:' + href;
+        if (!/^https?:\/\//i.test(href)) continue;
+        var key = normalizarUrlEmbed(href);
+        if (seen[key]) continue;
+        if (!esReproductorValido(href) && !/\.mp4(\?|$)/i.test(href) && href.indexOf('mega.nz') === -1) continue;
+        seen[key] = true;
+        var idioma = /LAT|Latino|DUB/i.test(label) ? 'Latino' : (/SUB/i.test(label) ? 'Subtitulado' : 'Desconocido');
+        reps.push({
+          url: href,
+          servidor: extraerServidor(href),
+          idioma: idioma,
+          calidad: /1080|720|480|HD|CAM/i.test(label) ? (label.match(/1080|720|480|HD|CAM/i) || [])[0] : null,
+          label: label,
+          fuente: 'animedbs',
+          tipo: 'reproductor'
+        });
+      }
+    } catch (e) { /* skip */ }
+  }
+  return reps;
+}
+
+async function scrapearAnimedbs(pageUrl, opts) {
+  opts = opts || {};
+  var u = String(pageUrl || '');
+  var slugM = u.match(/\/anime\/([^\/\?#]+)/i);
+  var slug = slugM ? decodeURIComponent(slugM[1]) : null;
+  var epFromUrl = u.match(/episodio[_-]?(\d+)/i);
+  var epNum = opts.episode ? parseInt(opts.episode, 10) : (epFromUrl ? parseInt(epFromUrl[1], 10) : null);
+
+  // Página de episodio directo
+  if (/episodio/i.test(u) && !slugM) {
+    var resEp = await fetch(u, { headers: Object.assign({}, HEADERS, { Referer: ANIMEDBS_BASE + '/' }) });
+    if (!resEp.ok) throw new Error('Animedbs episodio HTTP ' + resEp.status);
+    var htmlEp = await resEp.text();
+    var reps = extraerPlayersAnimedbs(htmlEp);
+    var tit = '';
+    var mt = htmlEp.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
+    if (mt) tit = limpiarTitulo(mt[1]);
+    return {
+      success: true,
+      fuente: 'animedbs',
+      source_id: '5',
+      tipo: 'Capitulo',
+      link: u,
+      slug: slug,
+      titulo: tit || ('Episodio ' + (epNum || '')),
+      temporada: opts.season || 1,
+      episodio: epNum,
+      reproductores: reps,
+      embeds: reps.map(function (r) { return r.url; }),
+      total: reps.length
+    };
+  }
+
+  if (!slug) throw new Error('Animedbs: no se pudo extraer slug de ' + pageUrl);
+  var detailUrl = ANIMEDBS_BASE + '/anime/' + encodeURIComponent(slug) + '/';
+  var res = await fetch(detailUrl, { headers: Object.assign({}, HEADERS, { Referer: ANIMEDBS_BASE + '/' }) });
+  if (!res.ok) throw new Error('Animedbs HTTP ' + res.status);
+  var html = await res.text();
+
+  var titulo = '';
+  var m = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
+  if (m) titulo = limpiarTitulo(m[1].replace(/\s*[-|].*Anime\s*DBS.*/i, ''));
+  if (!titulo) titulo = tituloDesdeSlug(slug);
+
+  var portada = null;
+  m = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i);
+  if (m) portada = m[1];
+
+  var descripcion = '';
+  m = html.match(/property=["']og:description["']\s+content=["']([^"']+)["']/i)
+    || html.match(/name=["']description["']\s+content=["']([^"']+)["']/i);
+  if (m) descripcion = limpiarTexto(m[1]);
+
+  var estado = null;
+  m = html.match(/<b>\s*Estado:\s*<\/b>\s*([^<]+)/i);
+  if (m) estado = limpiarTexto(m[1]);
+  var year = null;
+  m = html.match(/<b>\s*Publicado:\s*<\/b>\s*(\d{4})/i);
+  if (m) year = m[1];
+  var tipoLabel = 'Anime';
+  m = html.match(/<b>\s*Tipo:\s*<\/b>\s*([^<]+)/i);
+  if (m) {
+    var tl = limpiarTexto(m[1]).toLowerCase();
+    if (/movie|pel[ií]cula/.test(tl)) tipoLabel = 'Pelicula';
+    else if (/ova|ona|special|especial/.test(tl)) tipoLabel = 'Anime';
+  }
+  var calidad = null;
+  m = html.match(/<b>\s*Calidad:\s*<\/b>\s*([^<]+)/i);
+  if (m) calidad = limpiarTexto(m[1]);
+
+  // Episodios
+  var epLinks = [];
+  var seenEp = Object.create(null);
+  var ere = /href=["'](https?:\/\/(?:www\.)?animedbs\.online\/([^"'\/]+-episodio-(\d+)[^"']*))["']/gi;
+  var em;
+  while ((em = ere.exec(html)) !== null) {
+    var en = parseInt(em[3], 10);
+    if (!en || seenEp[en]) continue;
+    seenEp[en] = true;
+    epLinks.push({ n: en, url: em[1].replace(/\/$/, '') + (em[1].slice(-1) === '/' ? '' : '/') });
+  }
+  epLinks.sort(function (a, b) { return a.n - b.n; });
+
+  // Capítulo concreto
+  if (epNum && epNum > 0) {
+    var target = null;
+    for (var i = 0; i < epLinks.length; i++) {
+      if (epLinks[i].n === epNum) { target = epLinks[i]; break; }
+    }
+    if (!target) {
+      // construir URL típica
+      target = { n: epNum, url: ANIMEDBS_BASE + '/' + slug + '-episodio-' + epNum + '-sub-espanol/' };
+    }
+    var r2 = await fetch(target.url, { headers: Object.assign({}, HEADERS, { Referer: detailUrl }) });
+    var html2 = r2.ok ? await r2.text() : '';
+    var reps2 = extraerPlayersAnimedbs(html2);
+    return {
+      success: true,
+      fuente: 'animedbs',
+      source_id: '5',
+      tipo: 'Capitulo',
+      link: target.url,
+      slug: slug,
+      titulo: titulo + ' — Episodio ' + epNum,
+      titulo_serie: titulo,
+      portada: portada,
+      descripcion: descripcion,
+      year: year,
+      estado: estado,
+      calidad: calidad,
+      temporada: opts.season || 1,
+      episodio: epNum,
+      reproductores: reps2,
+      embeds: reps2.map(function (r) { return r.url; }),
+      total: reps2.length
+    };
+  }
+
+  var episodios = epLinks.map(function (e) {
+    return {
+      temporada: 1,
+      episodio: e.n,
+      titulo: 'Episodio ' + e.n,
+      link: e.url,
+      reproductores: [],
+      embeds: []
+    };
+  });
+
+  return {
+    success: true,
+    fuente: 'animedbs',
+    source_id: '5',
+    tipo: tipoLabel,
+    link: detailUrl,
+    slug: slug,
+    titulo: titulo,
+    portada: portada,
+    descripcion: descripcion,
+    year: year,
+    estado: estado || null,
+    en_emision: estado ? /emisi[oó]n/i.test(estado) : null,
+    finalizado: estado ? /finaliz/i.test(estado) : null,
+    calidad: calidad,
+    total_episodios: episodios.length,
+    total_temporadas: 1,
+    temporadas: [{ temporada: 1, total_episodios: episodios.length, episodios: episodios }],
+    total: 0,
+    embeds: [],
+    reproductores: [],
+    descargas: []
+  };
+}
+
+// ======================================================
+// DORAMASFLIX (GraphQL fluxcedene + HTML) — source_id 6
+// ======================================================
+async function doramasflixGql(query, variables) {
+  var res = await fetch(DORAMASFLIX_GQL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'User-Agent': HEADERS['User-Agent'],
+      'Origin': DORAMASFLIX_BASE,
+      'Referer': DORAMASFLIX_BASE + '/'
+    },
+    body: JSON.stringify({ query: query, variables: variables || {} })
+  });
+  if (!res.ok) throw new Error('Doramasflix GQL HTTP ' + res.status);
+  var data = await res.json();
+  if (data.errors && data.errors.length) {
+    throw new Error(data.errors[0].message || 'GQL error');
+  }
+  return data.data;
+}
+
+function posterTmdbPath(path) {
+  if (!path) return null;
+  if (String(path).indexOf('http') === 0) return path;
+  return 'https://image.tmdb.org/t/p/w500' + (path.charAt(0) === '/' ? path : '/' + path);
+}
+
+function estadoDesdeDoramasflix(item) {
+  if (!item) return { estado: null, en_emision: null, finalizado: null };
+  if (item.isFinish) return { estado: 'Finalizado', en_emision: false, finalizado: true };
+  var seasons = item.seasons || [];
+  for (var i = 0; i < seasons.length; i++) {
+    if (seasons[i].emision || seasons[i].uploading) {
+      return { estado: 'En emisión', en_emision: true, finalizado: false };
+    }
+    if (seasons[i].pause) return { estado: 'Pausado', en_emision: false, finalizado: false };
+  }
+  if (item.premiere || item.commingSoon) return { estado: 'Próximamente', en_emision: false, finalizado: false };
+  return { estado: item.isFinish === false ? 'En emisión' : null, en_emision: item.isFinish === false, finalizado: !!item.isFinish };
+}
+
+async function buscarDoramasflix(query, limit) {
+  limit = limit || 15;
+  var q = String(query || '').trim();
+  if (!q) return [];
+  var out = [];
+  try {
+    var data = await doramasflixGql(
+      'query SearchFullDoramas($input: String!, $page: Int, $perPage: Int, $fuzzy: Boolean) { searchFullDoramas(input: $input, page: $page, perPage: $perPage, fuzzy: $fuzzy) { count items { _id slug name name_es original_name poster_path first_air_date isTVShow isFinish premiere seasons { emision uploading pause status } } } }',
+      { input: q, page: 1, perPage: limit, fuzzy: true }
+    );
+    var items = (data && data.searchFullDoramas && data.searchFullDoramas.items) || [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (!it || !it.slug) continue;
+      var st = estadoDesdeDoramasflix(it);
+      out.push({
+        titulo: it.name_es || it.name || it.slug,
+        titulo_original: it.original_name || null,
+        tipo: 'Serie',
+        fuente: 'doramasflix',
+        slug: it.slug,
+        link: DORAMASFLIX_BASE + '/doramas/' + it.slug,
+        portada: posterTmdbPath(it.poster_path),
+        year: it.first_air_date ? String(it.first_air_date).slice(0, 4) : null,
+        estado: st.estado,
+        en_emision: st.en_emision,
+        finalizado: st.finalizado,
+        doramasflix_id: it._id
+      });
+    }
+  } catch (eD) { /* ok */ }
+
+  try {
+    var dataM = await doramasflixGql(
+      'query SearchFullMovies($input: String!, $page: Int, $perPage: Int, $fuzzy: Boolean) { searchFullMovies(input: $input, page: $page, perPage: $perPage, fuzzy: $fuzzy) { count items { _id slug name name_es original_name poster_path release_date status } } }',
+      { input: q, page: 1, perPage: Math.min(limit, 10), fuzzy: true }
+    );
+    var movies = (dataM && dataM.searchFullMovies && dataM.searchFullMovies.items) || [];
+    for (var j = 0; j < movies.length && out.length < limit * 2; j++) {
+      var mv = movies[j];
+      if (!mv || !mv.slug) continue;
+      out.push({
+        titulo: mv.name_es || mv.name || mv.slug,
+        titulo_original: mv.original_name || null,
+        tipo: 'Pelicula',
+        fuente: 'doramasflix',
+        slug: mv.slug,
+        link: DORAMASFLIX_BASE + '/peliculas/' + mv.slug,
+        portada: posterTmdbPath(mv.poster_path),
+        year: mv.release_date ? String(mv.release_date).slice(0, 4) : null,
+        estado: mv.status || null,
+        doramasflix_id: mv._id
+      });
+    }
+  } catch (eM) { /* ok */ }
+
+  return out.slice(0, limit);
+}
+
+async function scrapearDoramasflix(pageUrl, opts) {
+  opts = opts || {};
+  var u = String(pageUrl || '');
+  var isMovie = /\/peliculas?\//i.test(u);
+  var isCap = /\/capitulos?\//i.test(u);
+  var slug = null;
+  var m = u.match(/\/(?:doramas|peliculas|pelicula)\/([^\/\?#]+)/i);
+  if (m) slug = decodeURIComponent(m[1]);
+  var capM = u.match(/\/capitulos\/([^\/\?#]+)/i);
+  var season = opts.season ? parseInt(opts.season, 10) : null;
+  var episode = opts.episode ? parseInt(opts.episode, 10) : null;
+  if (capM) {
+    var cm = capM[1].match(/^(.*)-(\d+)x(\d+)$/i);
+    if (cm) {
+      slug = cm[1];
+      season = parseInt(cm[2], 10);
+      episode = parseInt(cm[3], 10);
+      isCap = true;
+    }
+  }
+  if (!slug) throw new Error('Doramasflix: no se pudo extraer slug de ' + pageUrl);
+
+  var detailUrl = isMovie
+    ? (DORAMASFLIX_BASE + '/peliculas/' + slug)
+    : (DORAMASFLIX_BASE + '/doramas/' + slug);
+
+  // Meta desde búsqueda GQL + HTML schema
+  var metaHit = null;
+  try {
+    var hits = await buscarDoramasflix(slug.replace(/-/g, ' '), 8);
+    for (var h = 0; h < (hits || []).length; h++) {
+      if (hits[h].slug === slug) { metaHit = hits[h]; break; }
+    }
+    if (!metaHit && hits && hits[0]) metaHit = hits[0];
+  } catch (e) { /* ok */ }
+
+  var res = await fetch(detailUrl, {
+    headers: Object.assign({}, HEADERS, { Referer: DORAMASFLIX_BASE + '/', Accept: 'text/html' })
+  });
+  if (!res.ok) throw new Error('Doramasflix HTTP ' + res.status);
+  var html = await res.text();
+
+  var titulo = (metaHit && metaHit.titulo) || slug;
+  var descripcion = (metaHit && metaHit.descripcion) || null;
+  var portada = (metaHit && metaHit.portada) || null;
+  var year = metaHit && metaHit.year;
+  var generos = [];
+  var totalEps = 0;
+  var totalSeasons = 1;
+
+  // JSON-LD TVSeries
+  var ldRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  var ld;
+  while ((ld = ldRe.exec(html)) !== null) {
+    try {
+      var j = JSON.parse(ld[1]);
+      if (j['@type'] === 'TVSeries' || j['@type'] === 'Movie') {
+        if (j.name) titulo = j.name;
+        if (j.description) descripcion = j.description;
+        if (j.image) portada = Array.isArray(j.image) ? j.image[0] : j.image;
+        if (j.datePublished) year = String(j.datePublished).slice(0, 4);
+        if (j.numberOfEpisodes) totalEps = parseInt(j.numberOfEpisodes, 10) || totalEps;
+        if (j.numberOfSeasons) totalSeasons = parseInt(j.numberOfSeasons, 10) || totalSeasons;
+        if (Array.isArray(j.genre)) generos = j.genre;
+      }
+    } catch (e) { /* ok */ }
+  }
+
+  var estadoInfo = metaHit
+    ? { estado: metaHit.estado, en_emision: metaHit.en_emision, finalizado: metaHit.finalizado }
+    : { estado: null, en_emision: null, finalizado: null };
+
+  // Capítulos desde HTML
+  var caps = [];
+  var seenC = Object.create(null);
+  var cre = /href=["'](\/capitulos\/([^"'\/]+))["']/gi;
+  var cm2;
+  while ((cm2 = cre.exec(html)) !== null) {
+    var cslug = cm2[2];
+    if (seenC[cslug]) continue;
+    seenC[cslug] = true;
+    var pm = cslug.match(/-(\d+)x(\d+)$/i);
+    if (pm) {
+      caps.push({
+        temporada: parseInt(pm[1], 10),
+        episodio: parseInt(pm[2], 10),
+        slug: cslug,
+        link: DORAMASFLIX_BASE + cm2[1],
+        titulo: 'T' + pm[1] + 'E' + pm[2],
+        reproductores: [],
+        embeds: []
+      });
+    }
+  }
+  caps.sort(function (a, b) {
+    if (a.temporada !== b.temporada) return a.temporada - b.temporada;
+    return a.episodio - b.episodio;
+  });
+  if (!totalEps) totalEps = caps.length;
+
+  // Capítulo concreto: sin GQL de links (requiere episode_id); devolver meta + link
+  if (isCap || (season && episode)) {
+    var sN = season || 1;
+    var eN = episode || 1;
+    var found = null;
+    for (var ci = 0; ci < caps.length; ci++) {
+      if (caps[ci].temporada === sN && caps[ci].episodio === eN) { found = caps[ci]; break; }
+    }
+    var capLink = found ? found.link : (DORAMASFLIX_BASE + '/capitulos/' + slug + '-' + sN + 'x' + eN);
+    return {
+      success: true,
+      fuente: 'doramasflix',
+      source_id: '6',
+      tipo: 'Capitulo',
+      link: capLink,
+      slug: slug,
+      titulo: titulo + ' — ' + sN + 'x' + eN,
+      titulo_serie: titulo,
+      portada: portada,
+      descripcion: descripcion,
+      year: year,
+      estado: estadoInfo.estado,
+      temporada: sN,
+      episodio: eN,
+      reproductores: [],
+      embeds: [],
+      total: 0,
+      nota: 'Doramasflix: listado de capítulo OK. Los embeds suelen requerir sesión; usa alternativas de otras fuentes.'
+    };
+  }
+
+  // Agrupar por temporada
+  var byT = Object.create(null);
+  for (var k = 0; k < caps.length; k++) {
+    var t = caps[k].temporada;
+    if (!byT[t]) byT[t] = [];
+    byT[t].push(caps[k]);
+  }
+  var temps = Object.keys(byT).map(Number).sort(function (a, b) { return a - b; }).map(function (tn) {
+    return { temporada: tn, total_episodios: byT[tn].length, episodios: byT[tn] };
+  });
+
+  return {
+    success: true,
+    fuente: 'doramasflix',
+    source_id: '6',
+    tipo: isMovie ? 'Pelicula' : 'Serie',
+    link: detailUrl,
+    slug: slug,
+    titulo: titulo,
+    titulo_original: (metaHit && metaHit.titulo_original) || null,
+    portada: portada,
+    descripcion: descripcion,
+    year: year,
+    estado: estadoInfo.estado,
+    en_emision: estadoInfo.en_emision,
+    finalizado: estadoInfo.finalizado,
+    generos: generos,
+    genero: generos.length ? generos.join(', ') : null,
+    total_episodios: totalEps || caps.length,
+    total_temporadas: Math.max(totalSeasons, temps.length || 1),
+    temporadas: temps.length ? temps : [{ temporada: 1, total_episodios: 0, episodios: [] }],
+    total: 0,
+    embeds: [],
+    reproductores: [],
+    descargas: []
   };
 }
