@@ -250,7 +250,10 @@ async function handleRequest(request, env) {
     if (!query) return json({ error: 'Falta q. Usa /search?q=texto' }, 400);
     try {
       var sourceFilter = sourceParam || 'all';
-      var limit = parseInt(url.searchParams.get('limit') || '15', 10);
+      // Default 30: animeav1 pagina de a 20; con más limit se traen más páginas
+      var limit = parseInt(url.searchParams.get('limit') || '30', 10);
+      if (!isFinite(limit) || limit < 1) limit = 30;
+      if (limit > 80) limit = 80;
       var resultados = await buscarUniversal(query, sourceFilter, limit);
       if (resultados.resultados) {
         for (var ri = 0; ri < resultados.resultados.length; ri++) {
@@ -6531,48 +6534,109 @@ function mapAnimeAv1Embeds(embedsObj) {
   return { reproductores: reproductores, descargas: descargas };
 }
 
+/** status numérico animeav1 → texto (0 finalizado, 2 en emisión, …) */
+function animeAv1EstadoDesdeStatus(status, endDate) {
+  var n = status;
+  if (status && typeof status === 'object' && status.number != null) n = status.number;
+  n = parseInt(n, 10);
+  if (n === 2) return { estado: 'En emisión', en_emision: true, finalizado: false };
+  if (n === 1) return { estado: 'Próximamente', en_emision: false, finalizado: false };
+  if (n === 3) return { estado: 'Pausado', en_emision: false, finalizado: false };
+  // 0 u otros: si hay endDate → finalizado
+  if (endDate || n === 0) return { estado: 'Finalizado', en_emision: false, finalizado: true };
+  return { estado: null, en_emision: null, finalizado: null };
+}
+
+function animeAv1PortadaDesdeItem(it) {
+  if (!it) return null;
+  var portadaAv1 = it.poster || it.image || it.cover || it.thumbnail || it.coverImage || null;
+  if (!portadaAv1 && it.id != null && String(it.id).match(/^\d+$/)) {
+    portadaAv1 = 'https://cdn.animeav1.com/covers/' + it.id + '.jpg';
+  }
+  if (portadaAv1 && typeof portadaAv1 === 'string' && portadaAv1.indexOf('http') !== 0) {
+    if (/^\/?covers\//i.test(portadaAv1) || /^\d+\.jpe?g$/i.test(portadaAv1)) {
+      portadaAv1 = 'https://cdn.animeav1.com/covers/' + String(portadaAv1).replace(/^.*\//, '');
+    } else {
+      portadaAv1 = ANIMEAV1_BASE + (portadaAv1.charAt(0) === '/' ? portadaAv1 : '/' + portadaAv1);
+    }
+  }
+  return portadaAv1 || null;
+}
+
+function mapAnimeAv1SearchHit(it) {
+  if (!it || !it.slug) return null;
+  var catName = (it.category && it.category.name) || '';
+  var titAv1 = it.title || it.slug;
+  var formatoAv1 = detectarFormatoAnime(titAv1, catName, it.slug);
+  var tipo = formatoAv1 === 'Pelicula' ? 'Pelicula' : 'Anime';
+  var yearAv = extraerYearFlexible(titAv1, it.slug, it.startDate || it.year);
+  var st = animeAv1EstadoDesdeStatus(it.status, it.endDate);
+  var tituloOrig = null;
+  if (it.aka && typeof it.aka === 'object') {
+    tituloOrig = it.aka['ja-jp'] || it.aka['en'] || it.aka['en-us'] || null;
+    if (!tituloOrig) {
+      var ak = Object.keys(it.aka);
+      if (ak.length) tituloOrig = it.aka[ak[0]];
+    }
+  }
+  return {
+    fuente: 'animeav1',
+    tipo: tipo,
+    formato: formatoAv1,
+    titulo: titAv1,
+    titulo_original: tituloOrig,
+    slug: it.slug,
+    descripcion: it.synopsis || null,
+    portada: animeAv1PortadaDesdeItem(it),
+    link: ANIMEAV1_BASE + '/media/' + it.slug,
+    year: yearAv,
+    temporada: extraerNumeroTemporada(titAv1, it.slug),
+    calificacion: it.score != null ? Number(Number(it.score).toFixed(1)) : null,
+    votos: it.votes != null ? String(it.votes) : null,
+    estado: st.estado,
+    en_emision: st.en_emision,
+    finalizado: st.finalizado,
+    generos: Array.isArray(it.genres)
+      ? it.genres.map(function (g) { return (g && g.name) || g; }).filter(Boolean)
+      : null
+  };
+}
+
 async function buscarAnimeAv1(query, limit) {
   limit = limit || 15;
-  var path = '/catalogo/__data.json?search=' + encodeURIComponent(query);
-  var raw = await fetchAnimeAv1Data(path);
-  var data = decodeSvelteKitData(raw);
-  if (!data || !Array.isArray(data.results)) return [];
+  // La API de catálogo devuelve 20 por página; pedir varias páginas si hace falta
+  var maxPages = Math.min(8, Math.max(1, Math.ceil(limit / 20) + 1));
   var out = [];
-  for (var i = 0; i < data.results.length; i++) {
-    var it = data.results[i];
-    if (!it || !it.slug) continue;
-    var catName = (it.category && it.category.name) || '';
-    var titAv1 = it.title || it.slug;
-    var formatoAv1 = detectarFormatoAnime(titAv1, catName, it.slug);
-    var tipo = formatoAv1 === 'Pelicula' ? 'Pelicula' : 'Anime';
-    var portadaAv1 = it.poster || it.image || it.cover || it.thumbnail || it.coverImage || null;
-    // AnimeAV1: covers en CDN por id numérico → https://cdn.animeav1.com/covers/{id}.jpg
-    if (!portadaAv1 && it.id != null && String(it.id).match(/^\d+$/)) {
-      portadaAv1 = 'https://cdn.animeav1.com/covers/' + it.id + '.jpg';
+  var seen = Object.create(null);
+  var totalApi = null;
+
+  for (var page = 1; page <= maxPages && out.length < limit * 2; page++) {
+    var path = '/catalogo/__data.json?search=' + encodeURIComponent(query) + '&page=' + page;
+    var raw;
+    try {
+      raw = await fetchAnimeAv1Data(path);
+    } catch (ePage) {
+      break;
     }
-    if (portadaAv1 && typeof portadaAv1 === 'string' && portadaAv1.indexOf('http') !== 0) {
-      if (/^\/?covers\//i.test(portadaAv1) || /^\d+\.jpe?g$/i.test(portadaAv1)) {
-        portadaAv1 = 'https://cdn.animeav1.com/covers/' + String(portadaAv1).replace(/^.*\//, '');
-      } else {
-        portadaAv1 = ANIMEAV1_BASE + (portadaAv1.charAt(0) === '/' ? portadaAv1 : '/' + portadaAv1);
-      }
+    var data = decodeSvelteKitData(raw);
+    if (!data || !Array.isArray(data.results) || !data.results.length) break;
+    if (totalApi == null && data.total != null) totalApi = Number(data.total) || null;
+
+    var added = 0;
+    for (var i = 0; i < data.results.length; i++) {
+      var hit = mapAnimeAv1SearchHit(data.results[i]);
+      if (!hit || !hit.slug || seen[hit.slug]) continue;
+      seen[hit.slug] = true;
+      out.push(hit);
+      added++;
     }
-    var yearAv = extraerYearFlexible(titAv1, it.slug, it.startDate || it.year);
-    out.push({
-      fuente: 'animeav1',
-      tipo: tipo,
-      formato: formatoAv1,
-      titulo: titAv1,
-      slug: it.slug,
-      descripcion: it.synopsis || null,
-      portada: portadaAv1 || null,
-      link: ANIMEAV1_BASE + '/media/' + it.slug,
-      year: yearAv,
-      temporada: extraerNumeroTemporada(titAv1, it.slug)
-    });
+    // Sin más resultados o ya cubrimos el total
+    if (added === 0) break;
+    if (totalApi != null && out.length >= totalApi) break;
+    if (data.results.length < 20) break; // última página
   }
+
   // Ocultar temporadas sueltas si ya existe el título base
-  // Patrones: -season-2, -2nd-season, -temporada-2, -part-2, -s2
   var slugs = {};
   for (var j = 0; j < out.length; j++) slugs[out[j].slug] = out[j];
   out = out.filter(function (item) {
@@ -6584,11 +6648,10 @@ async function buscarAnimeAv1(query, limit) {
     var base = m[1];
     if (slugs[base]) {
       if (!item.portada && slugs[base].portada) item.portada = slugs[base].portada;
-      return false; // ocultar season suelto (el detalle del base une T1+T2)
+      return false;
     }
     return true;
   });
-  // Portada: si un season quedó y no tiene portada, intentar base
   for (var k = 0; k < out.length; k++) {
     if (out[k].portada) continue;
     var slug2 = String(out[k].slug || '');
@@ -6626,20 +6689,21 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   var media = (mediaData && mediaData.media) || {};
   var titulo = media.title || slug;
   var sinopsis = media.synopsis || null;
-  var epsCount = media.episodesCount || 0;
-  var score = media.score || null;
+  // episodesCount a veces se resuelve mal (string largo); preferir lista de episodios
+  var epsCount = 0;
+  if (Array.isArray(media.episodes) && media.episodes.length) {
+    epsCount = media.episodes.length;
+  } else if (typeof media.episodesCount === 'number' && media.episodesCount > 0 && media.episodesCount < 5000) {
+    epsCount = media.episodesCount;
+  } else if (media.episodesCount != null) {
+    var nEc = parseInt(media.episodesCount, 10);
+    if (nEc > 0 && nEc < 5000) epsCount = nEc;
+  }
+  var score = media.score != null ? Number(media.score) : null;
+  if (score != null && !isFinite(score)) score = null;
+  var votosAv1 = media.votes != null ? String(media.votes) : null;
   var malId = media.malId || null;
-  var portada = media.poster || media.cover || media.image || null;
-  if (!portada && media.id != null && String(media.id).match(/^\d+$/)) {
-    portada = 'https://cdn.animeav1.com/covers/' + media.id + '.jpg';
-  }
-  if (portada && typeof portada === 'string' && portada.indexOf('http') !== 0) {
-    if (/^\/?covers\//i.test(portada) || /^\d+\.jpe?g$/i.test(portada)) {
-      portada = 'https://cdn.animeav1.com/covers/' + String(portada).replace(/^.*\//, '');
-    } else {
-      portada = ANIMEAV1_BASE + (portada.charAt(0) === '/' ? portada : '/' + portada);
-    }
-  }
+  var portada = animeAv1PortadaDesdeItem(media);
   // Si sigue sin portada → Jikan/MAL
   if (!portada && malId) {
     try {
@@ -6648,9 +6712,28 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   }
   var catName = (media.category && media.category.name) || 'TV Anime';
   var formato = detectarFormatoAnime(titulo, catName, slug);
+  if (catName && /tv\s*anime/i.test(catName)) formato = formato || 'TV';
   var tipo = formato === 'Pelicula' ? 'Pelicula' : 'Anime';
   // Año: startDate → título/slug
   var yearAv1 = extraerYearFlexible(titulo, slug, media.startDate || media.year);
+  var estadoInfo = animeAv1EstadoDesdeStatus(media.status, media.endDate);
+  var tituloOrigAv1 = null;
+  if (media.aka && typeof media.aka === 'object') {
+    tituloOrigAv1 = media.aka['ja-jp'] || media.aka['en'] || null;
+    if (!tituloOrigAv1) {
+      var akaKeys = Object.keys(media.aka);
+      if (akaKeys.length) tituloOrigAv1 = media.aka[akaKeys[0]];
+    }
+  }
+  var generosAv1 = [];
+  if (Array.isArray(media.genres)) {
+    for (var gi = 0; gi < media.genres.length; gi++) {
+      var g = media.genres[gi];
+      if (g && g.name) generosAv1.push(g.name);
+      else if (typeof g === 'string') generosAv1.push(g);
+    }
+  }
+  var fechaEstrenoAv1 = media.startDate || null;
   // Temporada real del título/slug (One Punch Man 3 → 3, 2nd Season → 2)
   var temporadaDetectada = extraerNumeroTemporada(titulo, slug);
   var temporadaBase = temporadaDetectada;
@@ -6847,14 +6930,25 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     fuente: 'animeav1',
     source_id: '4',
     tipo: tipo,
-    formato: formato,
+    formato: formato || catName || 'TV',
+    categoria: catName || null,
     link: ANIMEAV1_BASE + '/media/' + slug,
     slug: slug,
     titulo: titulo,
+    titulo_original: tituloOrigAv1,
     portada: portada,
+    backdrop: media.backdrop || null,
     descripcion: sinopsis,
-    calificacion: score,
+    calificacion: score != null ? Number(Number(score).toFixed(1)) : null,
+    votos: votosAv1,
     year: yearAv1,
+    fecha_estreno: fechaEstrenoAv1,
+    estado: estadoInfo.estado,
+    en_emision: estadoInfo.en_emision,
+    finalizado: estadoInfo.finalizado,
+    generos: generosAv1.length ? generosAv1 : null,
+    genero: generosAv1.length ? generosAv1.join(', ') : null,
+    mal_id: malId || null,
     total_episodios: totalEps,
     total_temporadas: temporadas.length,
     temporada_principal: tempPrincipal,
@@ -6866,7 +6960,10 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     reproductores: [],
     descargas: [],
     temporadas: temporadas,
-    nota: 'Temporada principal=' + tempPrincipal + (formato !== 'TV' ? ' (' + formato + ')' : '') +
+    nota: (catName ? catName + ' • ' : '') +
+      (yearAv1 ? yearAv1 + ' • ' : '') +
+      (estadoInfo.estado ? estadoInfo.estado + ' • ' : '') +
+      'Temporada principal=' + tempPrincipal + (formato && formato !== 'TV' ? ' (' + formato + ')' : '') +
       '. Players: /4/anime/' + slug + '/' + tempPrincipal + '/{ep}'
   };
 }
