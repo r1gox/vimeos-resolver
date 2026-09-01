@@ -4872,6 +4872,12 @@ function formatearCapituloRespuesta(item, origin, ctx) {
   return out;
 }
 
+/**
+ * Detalle organizado, sin duplicados:
+ * rating + rating_source en raíz; imdb/tmdb solo ids (y rating si difiere)
+ * generos (array) sin "genero" string; estado sin triplicar en_emision/finalizado
+ * series: sin embeds/reproductores vacíos (van por capítulo)
+ */
 function formatearDetalleRespuesta(item, origin) {
   if (!item || typeof item !== 'object') return item;
 
@@ -4891,8 +4897,6 @@ function formatearDetalleRespuesta(item, origin) {
   var ratingFuente = item.rating != null ? normalizarCalificacion(item.rating) : null;
   if (ratingFuente == null && item.calificacion != null) ratingFuente = normalizarCalificacion(item.calificacion);
 
-  // Si hay imdb_id y un número de rating de la meta, tratarlo como IMDb
-  // (el scrape a veces deja el valor en calificacion pero con imdb_id)
   var rating = null;
   var rating_source = null;
   if (ratingImdb != null) {
@@ -4923,31 +4927,18 @@ function formatearDetalleRespuesta(item, origin) {
 
   var generos = Array.isArray(item.generos) && item.generos.length
     ? item.generos
-    : (item.imdb && Array.isArray(item.imdb.generos) ? item.imdb.generos : []);
-  var genero = generos.length ? generos.join(', ') : (item.genero || null);
+    : (item.imdb && Array.isArray(item.imdb.generos) ? item.imdb.generos : null);
+  if ((!generos || !generos.length) && item.genero) {
+    generos = String(item.genero).split(',').map(function (g) { return g.trim(); }).filter(Boolean);
+  }
+  if (generos && !generos.length) generos = null;
 
-  // imdb: SOLO atribución (sin duplicar portada/géneros/duración del root)
-  var imdbObj = null;
   var imdbId = item.imdb_id || (item.imdb && item.imdb.id) || null;
-  if (imdbId || rating_source === 'imdb') {
-    imdbObj = {};
-    if (imdbId) imdbObj.id = imdbId;
-    if (rating_source === 'imdb' && rating != null) imdbObj.rating = rating;
-    else if (ratingImdb != null) imdbObj.rating = ratingImdb;
-    if (votos != null && rating_source === 'imdb') imdbObj.votos = votos;
-    if (!Object.keys(imdbObj).length) imdbObj = null;
-  }
-
-  // tmdb: SOLO atribución
-  var tmdbObj = null;
   var tmdbId = item.tmdb_id || (item.tmdb && item.tmdb.id) || null;
-  if (tmdbId || rating_source === 'tmdb') {
-    tmdbObj = {};
-    if (tmdbId) tmdbObj.id = tmdbId;
-    if (rating_source === 'tmdb' && rating != null) tmdbObj.rating = rating;
-    else if (ratingTmdb != null) tmdbObj.rating = ratingTmdb;
-    if (!Object.keys(tmdbObj).length) tmdbObj = null;
-  }
+
+  // imdb/tmdb: solo ids (rating ya está en raíz con rating_source)
+  var imdbObj = imdbId ? { id: imdbId } : null;
+  var tmdbObj = tmdbId ? { id: tmdbId } : null;
 
   var tipo = item.tipo || 'Pelicula';
   var sid = item.source_id != null ? String(item.source_id) : sourceIdFromName(item.fuente);
@@ -4961,7 +4952,6 @@ function formatearDetalleRespuesta(item, origin) {
   }
 
   var portada = item.portada || item.portada_imdb || item.portada_tmdb || null;
-  // titulo_original: NUNCA usar titulo_tmdb como campo separado; solo original si es distinto del título
   var titulo = limpiarTitulo(item.titulo || '') || null;
   var tituloOrig = item.titulo_original || null;
   if (!tituloOrig && item.titulo_tmdb && String(item.titulo_tmdb).toLowerCase() !== String(titulo || '').toLowerCase()) {
@@ -4971,6 +4961,21 @@ function formatearDetalleRespuesta(item, origin) {
     tituloOrig = null;
   }
 
+  // Estado unificado (series)
+  var estado = item.estado || null;
+  if (!estado) {
+    if (item.finalizado === true) estado = 'Finalizado';
+    else if (item.en_emision === true) estado = 'En emisión';
+  }
+
+  var esSerieAnime = (tipo === 'Serie' || tipo === 'Anime');
+  var reps = item.reproductores || [];
+  var embeds = item.embeds || [];
+  var descargas = item.descargas || item.downloads || [];
+  // En ficha de serie no tiene sentido lista vacía de players (van por capítulo)
+  var incluirPlayers = !esSerieAnime || reps.length > 0 || embeds.length > 0;
+
+  // Orden lógico de campos
   var out = {
     success: item.success !== false,
     fuente: item.fuente || null,
@@ -4984,46 +4989,43 @@ function formatearDetalleRespuesta(item, origin) {
     backdrop: item.backdrop || null,
     descripcion: desc,
     year: item.year || null,
+    fecha_estreno: item.fecha_estreno || null,
     rating: rating,
     rating_source: rating_source,
     votos: votos,
-    generos: generos.length ? generos : null,
-    genero: genero,
-    actores: Array.isArray(item.actores) && item.actores.length ? item.actores : null,
-    fecha_estreno: item.fecha_estreno || null,
+    generos: generos,
     duracion: duracion,
     duracion_texto: duracionTexto,
     certificacion: certificacion,
+    actores: Array.isArray(item.actores) && item.actores.length ? item.actores : null,
+    estado: esSerieAnime ? estado : null,
     imdb_id: imdbId,
     tmdb_id: tmdbId,
-    poster_source: item.poster_source || null,
     imdb: imdbObj,
     tmdb: tmdbObj,
-    url_extract: urlExtract,
-    total: item.total != null ? item.total : (Array.isArray(item.reproductores) ? item.reproductores.length : (Array.isArray(item.embeds) ? item.embeds.length : 0)),
-    embeds: item.embeds || [],
-    reproductores: item.reproductores || [],
-    descargas: item.descargas || item.downloads || []
+    poster_source: item.poster_source || null,
+    url_extract: urlExtract
   };
 
-  // Solo series/anime llevan estado de emisión
-  if (tipo === 'Serie' || tipo === 'Anime') {
-    if (item.estado) out.estado = item.estado;
-    if (item.en_emision != null) out.en_emision = item.en_emision;
-    if (item.finalizado != null) out.finalizado = item.finalizado;
-    out.total_episodios = item.total_episodios != null ? item.total_episodios : null;
+  if (esSerieAnime) {
     out.total_temporadas = item.total_temporadas != null ? item.total_temporadas : null;
+    out.total_episodios = item.total_episodios != null ? item.total_episodios : null;
     if (Array.isArray(item.temporadas) && item.temporadas.length) {
       out.temporadas = item.temporadas.map(slimTemporada);
     }
     if (Array.isArray(item.episodios) && item.episodios.length) {
       out.episodios = item.episodios.map(slimEpisodio);
     }
-    if (item.temporada != null) out.temporada = item.temporada;
-    if (item.episodio != null) out.episodio = item.episodio;
   }
 
-  if (tipo === 'Capitulo' || (item.temporada != null && item.episodio != null && tipo !== 'Serie' && tipo !== 'Anime')) {
+  if (incluirPlayers) {
+    out.total = reps.length || embeds.length || (item.total != null ? item.total : 0);
+    out.reproductores = reps;
+    out.embeds = embeds;
+    out.descargas = descargas;
+  }
+
+  if (tipo === 'Capitulo' || (item.temporada != null && item.episodio != null && !esSerieAnime)) {
     if (item.temporada != null) out.temporada = item.temporada;
     if (item.episodio != null) out.episodio = item.episodio;
     if (item.titulo_serie) out.titulo_serie = item.titulo_serie;
@@ -5032,13 +5034,10 @@ function formatearDetalleRespuesta(item, origin) {
   if (item.postId != null) out.postId = item.postId;
   if (item.formato) out.formato = item.formato;
 
-  // Eliminar null / vacíos (excepto descripcion/backdrop/titulo_original que pueden ser null útiles)
-  var keepNull = { descripcion: 1, backdrop: 1, titulo_original: 1 };
+  // Limpiar nulls / vacíos
   Object.keys(out).forEach(function (k) {
-    if (out[k] == null && !keepNull[k]) delete out[k];
-    if (Array.isArray(out[k]) && !out[k].length && k !== 'embeds' && k !== 'reproductores' && k !== 'descargas') {
-      delete out[k];
-    }
+    if (out[k] == null) delete out[k];
+    if (Array.isArray(out[k]) && !out[k].length) delete out[k];
   });
 
   return out;
