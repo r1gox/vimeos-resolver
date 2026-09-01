@@ -275,7 +275,14 @@ async function handleRequest(request, env) {
           resultados.total = resultados.resultados.length;
         } catch (eSlim) { /* silencioso */ }
       }
-      return json(resultados);
+      var pageNum = parseInt(url.searchParams.get('page') || '1', 10) || 1;
+      var lista = (resultados && resultados.resultados) ? resultados.resultados : [];
+      return json({
+        query: query,
+        page: pageNum,
+        count: lista.length,
+        results: lista
+      });
     } catch (err) {
       return json({ success: false, error: err.message }, 500);
     }
@@ -343,7 +350,12 @@ async function handleRequest(request, env) {
           }
         } catch (eCat) { /* ok */ }
       }
-      return json(catalogo);
+      var catLista = (catalogo && catalogo.resultados) ? catalogo.resultados : [];
+      return json({
+        page: pageNum || 1,
+        count: catLista.length,
+        results: catLista
+      });
     } catch (err) {
       return json({ success: false, error: err.message }, 500);
     }
@@ -4720,6 +4732,11 @@ function esDescripcionBasura(texto) {
   return false;
 }
 
+/**
+ * Listado compacto:
+ * title, slug, url, image, year, source, type
+ * + episodes (solo serie/anime si se conoce)
+ */
 function slimResultadoLista(item, origin) {
   if (!item || typeof item !== 'object') return item;
   var fuente = item.fuente || (Array.isArray(item.fuentes) && item.fuentes[0]) || null;
@@ -4729,34 +4746,30 @@ function slimResultadoLista(item, origin) {
   var tipoPath = (tipo === 'Serie' || tipo === 'Anime')
     ? (tipo === 'Anime' ? 'anime' : 'serie')
     : 'pelicula';
-  var urlExtract = item.url_extract || null;
-  if (!urlExtract && slug && sid) {
-    urlExtract = (origin || '') + '/' + sid + '/' + tipoPath + '/' + slug;
+  var url = item.url_extract || item.url || item.link || null;
+  if (!url && slug && sid) {
+    url = (origin || '') + '/' + sid + '/' + tipoPath + '/' + slug;
   }
-  var portada = item.portada || item.portada_fuente_raw || null;
-  var portadaRaw = item.portada_fuente_raw || null;
-  // Si la portada actual es de IMDb/TMDB, conservar raw de fuente si existe
-  if (!portadaRaw && portada && /pelisplushd|lamovie|hackstore|animeav1|doramasflix/i.test(String(portada))) {
-    portadaRaw = portada;
-  }
+  var image = item.portada || item.image || item.portada_fuente_raw || null;
   var year = item.year;
   if (year != null) {
     var ym = String(year).match(/(19|20)\d{2}/);
-    year = ym ? ym[0] : year;
+    year = ym ? ym[0] : String(year);
   }
   var out = {
-    titulo: limpiarTitulo(item.titulo || item.nombre || '') || null,
-    tipo: tipo,
-    fuente: fuente,
+    title: limpiarTitulo(item.titulo || item.nombre || item.title || '') || null,
     slug: slug,
-    portada: portada,
-    year: year != null ? year : null,
-    fuentes: Array.isArray(item.fuentes) && item.fuentes.length ? item.fuentes : (fuente ? [fuente] : []),
-    source_id: sid,
-    url_extract: urlExtract
+    url: url,
+    image: image,
+    year: year || null,
+    source: fuente,
+    type: tipo
   };
-  if (portadaRaw) out.portada_fuente_raw = portadaRaw;
-  if (item.postId != null) out.postId = item.postId;
+  if (sid) out.source_id = sid;
+  // total episodios solo en DETALLE (junto a temporadas), no en listado
+  Object.keys(out).forEach(function (k) {
+    if (out[k] == null) delete out[k];
+  });
   return out;
 }
 
@@ -5021,17 +5034,25 @@ function formatearDetalleRespuesta(item, origin) {
   };
 
   if (esSerieAnime) {
+    var totalEps = item.total_episodios != null ? parseInt(item.total_episodios, 10) : null;
+    var totalTemps = item.total_temporadas != null ? parseInt(item.total_temporadas, 10) : null;
     if (Array.isArray(item.temporadas) && item.temporadas.length) {
       out.temporadas = item.temporadas.map(slimTemporada);
-      // totales se deducen de temporadas[].episodios — no repetir
-    } else {
-      // Sin estructura de temporadas: sí informar totales si existen
-      if (item.total_temporadas != null) out.total_temporadas = item.total_temporadas;
-      if (item.total_episodios != null) out.total_episodios = item.total_episodios;
-      if (Array.isArray(item.episodios) && item.episodios.length) {
-        out.episodios = item.episodios.map(slimEpisodio);
+      if (!totalTemps) totalTemps = out.temporadas.length;
+      if (!totalEps || !isFinite(totalEps)) {
+        totalEps = 0;
+        for (var ti = 0; ti < out.temporadas.length; ti++) {
+          var te = out.temporadas[ti];
+          if (te && Array.isArray(te.episodios)) totalEps += te.episodios.length;
+        }
       }
+    } else if (Array.isArray(item.episodios) && item.episodios.length) {
+      out.episodios = item.episodios.map(slimEpisodio);
+      if (!totalEps) totalEps = out.episodios.length;
     }
+    // Totales junto a temporadas (solo detalle)
+    if (totalTemps && isFinite(totalTemps)) out.total_temporadas = totalTemps;
+    if (totalEps && isFinite(totalEps) && totalEps > 0) out.total_episodios = totalEps;
   }
 
   if (incluirPlayers) {
