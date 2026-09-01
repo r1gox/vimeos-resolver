@@ -4821,11 +4821,9 @@ function slimTemporada(t) {
   var eps = t.episodios || t.capitulos || [];
   var out = {
     temporada: t.temporada != null ? t.temporada : (t.season_number != null ? t.season_number : null),
-    total_episodios: t.total_episodios != null ? t.total_episodios : (eps.length || null),
     episodios: eps.map(slimEpisodio)
   };
   if (out.temporada == null) delete out.temporada;
-  if (out.total_episodios == null) delete out.total_episodios;
   return out;
 }
 
@@ -4951,9 +4949,9 @@ function formatearDetalleRespuesta(item, origin) {
   var imdbId = item.imdb_id || (item.imdb && item.imdb.id) || null;
   var tmdbId = item.tmdb_id || (item.tmdb && item.tmdb.id) || null;
 
-  // imdb/tmdb: solo ids (rating ya está en raíz con rating_source)
-  var imdbObj = imdbId ? { id: imdbId } : null;
-  var tmdbObj = tmdbId ? { id: tmdbId } : null;
+  // IDs solo en raíz (imdb_id / tmdb_id); sin objetos {id} duplicados
+  var imdbObj = null;
+  var tmdbObj = null;
 
   var tipo = item.tipo || 'Pelicula';
   var sid = item.source_id != null ? String(item.source_id) : sourceIdFromName(item.fuente);
@@ -5023,13 +5021,16 @@ function formatearDetalleRespuesta(item, origin) {
   };
 
   if (esSerieAnime) {
-    out.total_temporadas = item.total_temporadas != null ? item.total_temporadas : null;
-    out.total_episodios = item.total_episodios != null ? item.total_episodios : null;
     if (Array.isArray(item.temporadas) && item.temporadas.length) {
       out.temporadas = item.temporadas.map(slimTemporada);
-    }
-    if (Array.isArray(item.episodios) && item.episodios.length) {
-      out.episodios = item.episodios.map(slimEpisodio);
+      // totales se deducen de temporadas[].episodios — no repetir
+    } else {
+      // Sin estructura de temporadas: sí informar totales si existen
+      if (item.total_temporadas != null) out.total_temporadas = item.total_temporadas;
+      if (item.total_episodios != null) out.total_episodios = item.total_episodios;
+      if (Array.isArray(item.episodios) && item.episodios.length) {
+        out.episodios = item.episodios.map(slimEpisodio);
+      }
     }
   }
 
