@@ -4773,17 +4773,15 @@ function slimEpisodio(ep) {
   };
   if (ep.episode_id != null) out.episode_id = ep.episode_id;
   if (ep.postId != null) out.postId = ep.postId;
-  // Solo reproductores/embeds/descargas si ya vienen (capítulo concreto)
   var reps = ep.reproductores || [];
   var embeds = ep.embeds || [];
-  var desc = ep.descargas || ep.downloads || [];
+  var descargas = ep.descargas || ep.downloads || [];
   if (reps.length) out.reproductores = reps;
   if (embeds.length) out.embeds = embeds;
-  if (desc.length) out.descargas = desc;
+  if (descargas.length) out.descargas = descargas;
   if (out.reproductores || out.embeds) {
     out.total = (out.reproductores && out.reproductores.length) || (out.embeds && out.embeds.length) || 0;
   }
-  // quitar nulls
   Object.keys(out).forEach(function (k) {
     if (out[k] == null) delete out[k];
   });
@@ -4804,20 +4802,21 @@ function slimTemporada(t) {
 }
 
 /**
- * Detalle: rating (no calificacion) con fuente imdb|tmdb|fuente.
- * Episodios: solo esencial (meta va a nivel serie/película).
+ * Detalle limpio:
+ * - rating + rating_source (imdb | tmdb | fuente)
+ * - imdb/tmdb solo id + rating + votos (sin duplicar géneros/duración/portada)
+ * - sin titulo_tmdb
+ * - sin campos null innecesarios
  */
 function formatearDetalleRespuesta(item, origin) {
   if (!item || typeof item !== 'object') return item;
 
-  // Descripción: fuente primero
   var desc = item.descripcion || null;
   if (desc && typeof esDescripcionBasura === 'function' && esDescripcionBasura(desc)) desc = null;
   if (!desc && item.imdb && item.imdb.descripcion) desc = item.imdb.descripcion;
   if (!desc && item.descripcion_imdb) desc = item.descripcion_imdb;
   if (!desc && item.descripcion_tmdb) desc = item.descripcion_tmdb;
 
-  // Rating: priorizar IMDb → TMDB → página fuente
   var ratingImdb = null;
   var ratingTmdb = null;
   if (item.imdb && item.imdb.rating != null) ratingImdb = normalizarCalificacion(item.imdb.rating);
@@ -4825,23 +4824,35 @@ function formatearDetalleRespuesta(item, origin) {
   if (item.tmdb && item.tmdb.rating != null) ratingTmdb = normalizarCalificacion(item.tmdb.rating);
   if (ratingTmdb == null && item.rating_tmdb != null) ratingTmdb = normalizarCalificacion(item.rating_tmdb);
 
-  var ratingFuente = item.calificacion != null ? normalizarCalificacion(item.calificacion) : null;
-  if (ratingFuente == null && item.rating != null) ratingFuente = normalizarCalificacion(item.rating);
+  var ratingFuente = item.rating != null ? normalizarCalificacion(item.rating) : null;
+  if (ratingFuente == null && item.calificacion != null) ratingFuente = normalizarCalificacion(item.calificacion);
 
+  // Si hay imdb_id y un número de rating de la meta, tratarlo como IMDb
+  // (el scrape a veces deja el valor en calificacion pero con imdb_id)
   var rating = null;
   var rating_source = null;
   if (ratingImdb != null) {
     rating = ratingImdb;
     rating_source = 'imdb';
+  } else if (item.imdb_id && ratingFuente != null) {
+    rating = ratingFuente;
+    rating_source = 'imdb';
   } else if (ratingTmdb != null) {
     rating = ratingTmdb;
+    rating_source = 'tmdb';
+  } else if (item.tmdb_id && ratingFuente != null) {
+    rating = ratingFuente;
     rating_source = 'tmdb';
   } else if (ratingFuente != null) {
     rating = ratingFuente;
     rating_source = 'fuente';
   }
 
-  var votos = item.votos != null ? item.votos : (item.imdb && item.imdb.votos != null ? item.imdb.votos : null);
+  var votos = null;
+  if (item.imdb && item.imdb.votos != null) votos = item.imdb.votos;
+  else if (item.votos != null) votos = item.votos;
+  else if (item.votos_imdb != null) votos = item.votos_imdb;
+
   var duracion = item.duracion != null ? item.duracion : (item.imdb && item.imdb.duracion != null ? item.imdb.duracion : null);
   var duracionTexto = item.duracion_texto || minutosATexto(duracion) || (item.imdb && item.imdb.duracion_texto) || null;
   var certificacion = item.certificacion || (item.imdb && item.imdb.certificacion) || item.clasificacion || null;
@@ -4849,38 +4860,28 @@ function formatearDetalleRespuesta(item, origin) {
   var generos = Array.isArray(item.generos) && item.generos.length
     ? item.generos
     : (item.imdb && Array.isArray(item.imdb.generos) ? item.imdb.generos : []);
-  var genero = item.genero || (generos.length ? generos.join(', ') : null);
+  var genero = generos.length ? generos.join(', ') : (item.genero || null);
 
+  // imdb: SOLO atribución (sin duplicar portada/géneros/duración del root)
   var imdbObj = null;
-  if (item.imdb_id || (item.imdb && (item.imdb.id || item.imdb.rating != null)) || ratingImdb != null) {
-    imdbObj = {
-      id: item.imdb_id || (item.imdb && item.imdb.id) || null,
-      rating: ratingImdb != null ? ratingImdb : (item.imdb && item.imdb.rating != null ? normalizarCalificacion(item.imdb.rating) : null),
-      votos: (item.imdb && item.imdb.votos != null) ? item.imdb.votos : votos,
-      portada: (item.imdb && item.imdb.portada) || item.portada_imdb || null,
-      generos: (item.imdb && item.imdb.generos) || (generos.length ? generos : null),
-      duracion: (item.imdb && item.imdb.duracion != null) ? item.imdb.duracion : duracion,
-      duracion_texto: (item.imdb && item.imdb.duracion_texto) || duracionTexto,
-      certificacion: (item.imdb && item.imdb.certificacion) || certificacion,
-      descripcion: (item.imdb && item.imdb.descripcion) || null
-    };
-    Object.keys(imdbObj).forEach(function (k) {
-      if (imdbObj[k] == null) delete imdbObj[k];
-    });
+  var imdbId = item.imdb_id || (item.imdb && item.imdb.id) || null;
+  if (imdbId || rating_source === 'imdb') {
+    imdbObj = {};
+    if (imdbId) imdbObj.id = imdbId;
+    if (rating_source === 'imdb' && rating != null) imdbObj.rating = rating;
+    else if (ratingImdb != null) imdbObj.rating = ratingImdb;
+    if (votos != null && rating_source === 'imdb') imdbObj.votos = votos;
     if (!Object.keys(imdbObj).length) imdbObj = null;
   }
 
+  // tmdb: SOLO atribución
   var tmdbObj = null;
-  if (item.tmdb_id || (item.tmdb && (item.tmdb.id || item.tmdb.rating != null)) || ratingTmdb != null) {
-    tmdbObj = {
-      id: item.tmdb_id || (item.tmdb && item.tmdb.id) || null,
-      rating: ratingTmdb != null ? ratingTmdb : null,
-      portada: (item.tmdb && item.tmdb.portada) || item.portada_tmdb || null,
-      titulo: (item.tmdb && item.tmdb.titulo) || item.titulo_tmdb || null
-    };
-    Object.keys(tmdbObj).forEach(function (k) {
-      if (tmdbObj[k] == null) delete tmdbObj[k];
-    });
+  var tmdbId = item.tmdb_id || (item.tmdb && item.tmdb.id) || null;
+  if (tmdbId || rating_source === 'tmdb') {
+    tmdbObj = {};
+    if (tmdbId) tmdbObj.id = tmdbId;
+    if (rating_source === 'tmdb' && rating != null) tmdbObj.rating = rating;
+    else if (ratingTmdb != null) tmdbObj.rating = ratingTmdb;
     if (!Object.keys(tmdbObj).length) tmdbObj = null;
   }
 
@@ -4896,6 +4897,15 @@ function formatearDetalleRespuesta(item, origin) {
   }
 
   var portada = item.portada || item.portada_imdb || item.portada_tmdb || null;
+  // titulo_original: NUNCA usar titulo_tmdb como campo separado; solo original si es distinto del título
+  var titulo = limpiarTitulo(item.titulo || '') || null;
+  var tituloOrig = item.titulo_original || null;
+  if (!tituloOrig && item.titulo_tmdb && String(item.titulo_tmdb).toLowerCase() !== String(titulo || '').toLowerCase()) {
+    tituloOrig = item.titulo_tmdb;
+  }
+  if (tituloOrig && titulo && String(tituloOrig).toLowerCase() === String(titulo).toLowerCase()) {
+    tituloOrig = null;
+  }
 
   var out = {
     success: item.success !== false,
@@ -4904,8 +4914,8 @@ function formatearDetalleRespuesta(item, origin) {
     tipo: tipo,
     link: item.link || null,
     slug: slug,
-    titulo: limpiarTitulo(item.titulo || '') || null,
-    titulo_original: item.titulo_original || item.titulo_tmdb || null,
+    titulo: titulo,
+    titulo_original: tituloOrig,
     portada: portada,
     backdrop: item.backdrop || null,
     descripcion: desc,
@@ -4920,11 +4930,8 @@ function formatearDetalleRespuesta(item, origin) {
     duracion: duracion,
     duracion_texto: duracionTexto,
     certificacion: certificacion,
-    estado: item.estado || null,
-    en_emision: item.en_emision != null ? item.en_emision : null,
-    finalizado: item.finalizado != null ? item.finalizado : null,
-    imdb_id: item.imdb_id || (imdbObj && imdbObj.id) || null,
-    tmdb_id: item.tmdb_id || (tmdbObj && tmdbObj.id) || null,
+    imdb_id: imdbId,
+    tmdb_id: tmdbId,
     poster_source: item.poster_source || null,
     imdb: imdbObj,
     tmdb: tmdbObj,
@@ -4935,8 +4942,11 @@ function formatearDetalleRespuesta(item, origin) {
     descargas: item.descargas || item.downloads || []
   };
 
-  // Series / anime: episodios slim
+  // Solo series/anime llevan estado de emisión
   if (tipo === 'Serie' || tipo === 'Anime') {
+    if (item.estado) out.estado = item.estado;
+    if (item.en_emision != null) out.en_emision = item.en_emision;
+    if (item.finalizado != null) out.finalizado = item.finalizado;
     out.total_episodios = item.total_episodios != null ? item.total_episodios : null;
     out.total_temporadas = item.total_temporadas != null ? item.total_temporadas : null;
     if (Array.isArray(item.temporadas) && item.temporadas.length) {
@@ -4949,7 +4959,6 @@ function formatearDetalleRespuesta(item, origin) {
     if (item.episodio != null) out.episodio = item.episodio;
   }
 
-  // Capítulo suelto
   if (tipo === 'Capitulo' || (item.temporada != null && item.episodio != null && tipo !== 'Serie' && tipo !== 'Anime')) {
     if (item.temporada != null) out.temporada = item.temporada;
     if (item.episodio != null) out.episodio = item.episodio;
@@ -4959,10 +4968,12 @@ function formatearDetalleRespuesta(item, origin) {
   if (item.postId != null) out.postId = item.postId;
   if (item.formato) out.formato = item.formato;
 
-  var keepNull = { descripcion: 1, backdrop: 1, titulo_original: 1, estado: 1, certificacion: 1, rating: 1, rating_source: 1 };
+  // Eliminar null / vacíos (excepto descripcion/backdrop/titulo_original que pueden ser null útiles)
+  var keepNull = { descripcion: 1, backdrop: 1, titulo_original: 1 };
   Object.keys(out).forEach(function (k) {
-    if (out[k] == null && !keepNull[k]) {
-      if (k === 'imdb' || k === 'tmdb' || k === 'actores' || k === 'generos') delete out[k];
+    if (out[k] == null && !keepNull[k]) delete out[k];
+    if (Array.isArray(out[k]) && !out[k].length && k !== 'embeds' && k !== 'reproductores' && k !== 'descargas') {
+      delete out[k];
     }
   });
 
