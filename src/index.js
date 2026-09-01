@@ -23,7 +23,6 @@ var LAMOVIE_BASE = 'https://lamovie.org';
 var HACKSTORE_BASE = 'https://www.hackstore.fo';
 var PELISPLUS_BASE = 'https://www.pelisplushd.la';
 var ANIMEAV1_BASE = 'https://animeav1.com';
-var ANIMEDBS_BASE = 'https://www.animedbs.online';
 var DORAMASFLIX_BASE = 'https://doramasflix.io';
 var DORAMASFLIX_GQL = 'https://user-api.fluxcedene.net/graphql';
 // Metadatos TMDB vía worker público (no cambia el flujo de embeds/fuentes)
@@ -205,7 +204,6 @@ async function handleRequest(request, env) {
         '2': 'hackstore',
         '3': 'pelisplushd',
         '4': 'animeav1',
-        '5': 'animedbs',
         '6': 'doramasflix'
       },
       endpoints: {
@@ -272,12 +270,7 @@ async function handleRequest(request, env) {
         // Enriquecer con IMDb/TMDB/OMDb: géneros, sinopsis, rating, poster, backdrop.
         // NUNCA dejar portadas vacías si hay meta disponible.
         try {
-          // Ligero y top N: search debe ser rápido (meta completa al detalle)
-          resultados.resultados = await enriquecerListaConTmdb(resultados.resultados, query, {
-            light: true,
-            maxItems: Math.min(8, (resultados.resultados && resultados.resultados.length) || 0),
-            concurrency: 3
-          });
+          resultados.resultados = await enriquecerListaConTmdb(resultados.resultados, query);
           for (var cj = 0; cj < resultados.resultados.length; cj++) {
             var itc = resultados.resultados[cj];
             delete itc.success;
@@ -468,7 +461,7 @@ async function handleRequest(request, env) {
         hackstore: origin + '/2/serie/asi-aprenderas-2026/1/1',
         search: origin + '/search?q=matrix'
       },
-      sources: { '1': 'lamovie', '2': 'hackstore', '3': 'pelisplushd', '4': 'animeav1', '5': 'animedbs', '6': 'doramasflix' }
+      sources: { '1': 'lamovie', '2': 'hackstore', '3': 'pelisplushd', '4': 'animeav1', '6': 'doramasflix' }
     }, 400);
   }
 
@@ -483,8 +476,6 @@ async function handleRequest(request, env) {
       resultado = await scrapearHackstore(targetUrl, commonOpts);
     } else if (source === 'animeav1') {
       resultado = await scrapearAnimeAv1(targetUrl, commonOpts);
-    } else if (source === 'animedbs') {
-      resultado = await scrapearAnimedbs(targetUrl, commonOpts);
     } else if (source === 'doramasflix') {
       resultado = await scrapearDoramasflix(targetUrl, commonOpts);
     } else {
@@ -513,14 +504,13 @@ async function handleRequest(request, env) {
   }
 }
 
-/** 1=lamovie, 2=hackstore, 3=pelisplushd, 4=animeav1, 5=animedbs, 6=doramasflix */
+/** 1=lamovie, 2=hackstore, 3=pelisplushd, 4=animeav1, 6=doramasflix */
 function normalizarSourceId(s) {
   s = String(s || '').toLowerCase().trim();
   if (s === '1' || s === 'lamovie' || s === 'lm') return 'lamovie';
   if (s === '2' || s === 'hackstore' || s === 'hs') return 'hackstore';
   if (s === '3' || s === 'pelisplushd' || s === 'pelisplus' || s === 'pp') return 'pelisplushd';
   if (s === '4' || s === 'animeav1' || s === 'av1' || s === 'aa1') return 'animeav1';
-  if (s === '5' || s === 'animedbs' || s === 'adbs' || s === 'dbs') return 'animedbs';
   if (s === '6' || s === 'doramasflix' || s === 'doramas' || s === 'dfx') return 'doramasflix';
   return '';
 }
@@ -530,7 +520,6 @@ function sourceIdFromName(name) {
   if (name === 'hackstore') return '2';
   if (name === 'pelisplushd') return '3';
   if (name === 'animeav1') return '4';
-  if (name === 'animedbs') return '5';
   if (name === 'doramasflix') return '6';
   return '1'; // lamovie default
 }
@@ -540,7 +529,6 @@ function sourceNameFromId(id) {
   if (id === '2' || id === 'hackstore' || id === 'hs') return 'hackstore';
   if (id === '3' || id === 'pelisplushd' || id === 'pp') return 'pelisplushd';
   if (id === '4' || id === 'animeav1' || id === 'av1') return 'animeav1';
-  if (id === '5' || id === 'animedbs' || id === 'adbs') return 'animedbs';
   if (id === '6' || id === 'doramasflix' || id === 'dfx') return 'doramasflix';
   if (id === '1' || id === 'lamovie' || id === 'lm') return 'lamovie';
   return id || '';
@@ -579,32 +567,27 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
   for (var si = 0; si < slugsTry.length; si++) {
     var s = slugsTry[si];
     if (tipoRuta === 'pelicula') {
-      // PELÍCULA: NUNCA animeav1/animedbs (contaminan con "Anime" el mismo slug)
-      // Orden: pelisplus → lamovie → hackstore → doramasflix (cine)
+      add('animeav1', ANIMEAV1_BASE + '/media/' + s);
+      add('doramasflix', DORAMASFLIX_BASE + '/peliculas/' + s);
       add('pelisplushd', PELISPLUS_BASE + '/pelicula/' + s + '/');
       add('lamovie', LAMOVIE_BASE + '/peliculas/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/peliculas/' + s + '/');
-      add('doramasflix', DORAMASFLIX_BASE + '/peliculas/' + s);
     } else if (tipoRuta === 'anime') {
-      // ANIME: fuentes de anime primero
+      // Orden: animeav1 → doramasflix → pelisplus → lamovie → hackstore
       add('animeav1', ANIMEAV1_BASE + '/media/' + s);
-      add('animedbs', ANIMEDBS_BASE + '/anime/' + s + '/');
+            add('doramasflix', DORAMASFLIX_BASE + '/doramas/' + s);
       add('pelisplushd', PELISPLUS_BASE + '/anime/' + s + '/');
+      add('pelisplushd', PELISPLUS_BASE + '/serie/' + s + '/');
       add('lamovie', LAMOVIE_BASE + '/animes/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/animes/' + s + '/');
-      // serie como último recurso (algunos animes solo en /serie/)
-      add('pelisplushd', PELISPLUS_BASE + '/serie/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/series/' + s + '/');
     } else {
-      // SERIE / dorama: NO poner animeav1 primero (mete películas live-action como Anime)
-      add('doramasflix', DORAMASFLIX_BASE + '/doramas/' + s);
+      add('animeav1', ANIMEAV1_BASE + '/media/' + s);
+            add('doramasflix', DORAMASFLIX_BASE + '/doramas/' + s);
       add('pelisplushd', PELISPLUS_BASE + '/serie/' + s + '/');
+      add('pelisplushd', PELISPLUS_BASE + '/anime/' + s + '/');
       add('lamovie', LAMOVIE_BASE + '/series/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/series/' + s + '/');
-      // anime solo al final y solo si no hay fuente forzada de serie
-      add('pelisplushd', PELISPLUS_BASE + '/anime/' + s + '/');
-      add('animeav1', ANIMEAV1_BASE + '/media/' + s);
-      add('animedbs', ANIMEDBS_BASE + '/anime/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/animes/' + s + '/');
     }
   }
@@ -630,24 +613,25 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     return false;
   }
 
-  // Resolver slug real de AnimeAV1 SOLO si pedimos anime (nunca en pelicula/serie live-action)
+  // Resolver slug real de AnimeAV1. SOLO el slug pedido o coincidencia exacta de título.
+  // NO añadir "one-piece" cuando el pedido es "one-piece-heroines".
   var animeAv1Slugs = [];
-  if (tipoRuta === 'anime') {
-    try {
-      var qAv1 = slug.replace(/-/g, ' ');
-      var hitsAv1 = await buscarAnimeAv1(qAv1, 12);
-      for (var ha = 0; ha < (hitsAv1 || []).length; ha++) {
-        var hitAv = hitsAv1[ha];
-        var hs = hitAv && hitAv.slug;
-        if (!hs) continue;
-        if (/-(?:season|temporada|part|parte)-\d+$/i.test(hs) ||
-            /-\d+(?:st|nd|rd|th)-season$/i.test(hs)) continue;
-        if (!resultadoCoincideSlug(slug, hs, hitAv.titulo || hitAv.title)) continue;
-        if (animeAv1Slugs.indexOf(hs) === -1) animeAv1Slugs.push(hs);
-        add('animeav1', ANIMEAV1_BASE + '/media/' + hs);
-      }
-    } catch (eAv1) { /* ok */ }
-  }
+  try {
+    var qAv1 = slug.replace(/-/g, ' '); // usar slug completo, no solo base sin año
+    var hitsAv1 = await buscarAnimeAv1(qAv1, 12);
+    for (var ha = 0; ha < (hitsAv1 || []).length; ha++) {
+      var hitAv = hitsAv1[ha];
+      var hs = hitAv && hitAv.slug;
+      if (!hs) continue;
+      // Omitir seasons sueltas si el base ya está
+      if (/-(?:season|temporada|part|parte)-\d+$/i.test(hs) ||
+          /-\d+(?:st|nd|rd|th)-season$/i.test(hs)) continue;
+      // Solo aceptar si es el mismo slug/obra (no hermanos de franquicia)
+      if (!resultadoCoincideSlug(slug, hs, hitAv.titulo || hitAv.title)) continue;
+      if (animeAv1Slugs.indexOf(hs) === -1) animeAv1Slugs.push(hs);
+      add('animeav1', ANIMEAV1_BASE + '/media/' + hs);
+    }
+  } catch (eAv1) { /* ok */ }
 
   // Si es capítulo, URLs de episodio concretas por fuente
   if (esCapitulo) {
@@ -669,25 +653,13 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
   }
 
   candidatos.sort(function (a, b) {
-    // preferred (source forzado en ruta /1/ /3/ etc.) SIEMPRE primero
+    // preferred (source forzado en ruta) primero
     var p = (b.preferred ? 1 : 0) - (a.preferred ? 1 : 0);
     if (p !== 0) return p;
-    // Orden según tipo pedido (no mezclar anime en películas)
-    var order;
-    if (tipoRuta === 'pelicula') {
-      order = { pelisplushd: 0, lamovie: 1, hackstore: 2, doramasflix: 3 };
-    } else if (tipoRuta === 'anime') {
-      order = { animeav1: 0, animedbs: 1, pelisplushd: 2, lamovie: 3, hackstore: 4, doramasflix: 5 };
-    } else {
-      // serie
-      order = { doramasflix: 0, pelisplushd: 1, lamovie: 2, hackstore: 3, animeav1: 8, animedbs: 9 };
-    }
+    // Orden global de fuentes
+    var order = { animeav1: 0, doramasflix: 1, pelisplushd: 2, lamovie: 3, hackstore: 4 };
     return (order[a.fuente] != null ? order[a.fuente] : 9) - (order[b.fuente] != null ? order[b.fuente] : 9);
   });
-
-  // Fuente forzada (/1/...) va primero (preferred), pero NO eliminamos el resto:
-  // si lamovie falla, se prueba pelisplus/hackstore del MISMO tipo.
-  // animeav1 ya no está en candidatos de pelicula.
 
   // Cascada: primera fuente que responda bien gana. Sin fusión entre fuentes.
   var lastErr = null;
@@ -698,7 +670,6 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
       var o2 = Object.assign({}, opts);
       if (c.fuente === 'pelisplushd') r = await scrapearPelisplus(c.url, o2);
       else if (c.fuente === 'animeav1') r = await scrapearAnimeAv1(c.url, o2);
-      else if (c.fuente === 'animedbs') r = await scrapearAnimedbs(c.url, o2);
       else if (c.fuente === 'doramasflix') r = await scrapearDoramasflix(c.url, o2);
       else if (c.fuente === 'hackstore') r = await scrapearHackstore(c.url, o2);
       else r = await scrapearLamovie(c.url, o2);
@@ -706,30 +677,15 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
         if (esCapitulo && r.tipo === 'Capitulo' && (!r.reproductores || !r.reproductores.length)) {
           return null;
         }
-        // No aceptar Anime cuando se pidió película (animeav1 contamina slugs live-action)
-        var tipoRes = String(r.tipo || '').toLowerCase();
-        if (tipoRuta === 'pelicula' && (tipoRes.indexOf('anime') !== -1 || c.fuente === 'animeav1' || c.fuente === 'animedbs')) {
-          return null;
-        }
-        // No aceptar Película cuando se pidió anime (salvo que la fuente sea anime)
-        if (tipoRuta === 'anime' && (tipoRes === 'pelicula' || tipoRes === 'película') && c.fuente !== 'animeav1' && c.fuente !== 'animedbs') {
-          // permitir: algunos animes vienen etiquetados raro
-        }
         // Debe coincidir con el slug pedido
         if (!resultadoCoincideSlug(slug, r.slug, r.titulo || r.titulo_serie)) {
+          // Permitir si el slug scrapeado es exacto al pedido
           if (normalizarSlugKey(r.slug) !== normalizarSlugKey(slug)) return null;
         }
         r.source_id = sourceIdFromName(c.fuente);
         r.fuente = c.fuente;
         r._fuente_scrape = c.fuente;
         r._slug_scrape = slug;
-        // Respetar tipo de la RUTA para películas (no dejar que scrape diga Anime)
-        if (tipoRuta === 'pelicula' && !esCapitulo) {
-          r.tipo = 'Pelicula';
-        }
-        if (tipoRuta === 'serie' && !esCapitulo && tipoRes.indexOf('anime') === -1) {
-          r.tipo = r.tipo || 'Serie';
-        }
         return r;
       }
     } catch (e) {
@@ -799,7 +755,6 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
       if (hf === 'pelisplushd') r2 = await scrapearPelisplus(hl, o3);
       else if (hf === 'hackstore') r2 = await scrapearHackstore(hl, o3);
       else if (hf === 'animeav1') r2 = await scrapearAnimeAv1(hl, o3);
-      else if (hf === 'animedbs') r2 = await scrapearAnimedbs(hl, o3);
       else if (hf === 'doramasflix') r2 = await scrapearDoramasflix(hl, o3);
       else r2 = await scrapearLamovie(hl, o3);
       if (r2 && r2.success !== false) {
@@ -1269,7 +1224,6 @@ function normalizarUrlEntrada(u) {
 function detectarFuente(u) {
   u = (u || '').toLowerCase();
   if (u.indexOf('animeav1') !== -1) return 'animeav1';
-  if (u.indexOf('animedbs') !== -1) return 'animedbs';
   if (u.indexOf('doramasflix') !== -1) return 'doramasflix';
   if (u.indexOf('pelisplushd') !== -1) return 'pelisplushd';
   if (u.indexOf('hackstore') !== -1) return 'hackstore';
@@ -2201,36 +2155,16 @@ function json(data, status) {
 function limpiarTexto(txt) {
   if (!txt) return '';
   var s = String(txt);
-  // Corregir mojibake UTF-8 leído como Latin-1: "CÃ³digo" → "Código"
-  // BUG previo: if (fixed && !/Ã.| /.test(fixed)) — el espacio hacía que
-  // NUNCA se aplicara el fix a títulos con espacios ("CÃ³digo: Venganza").
-  var badCount = function (t) {
-    return (String(t).match(/Ã.|Â.|â.|ð.|\uFFFD/g) || []).length;
-  };
-  if (badCount(s) > 0) {
+  // Corregir mojibake UTF-8 leído como Latin-1: "bÃºsqueda" → "búsqueda"
+  if (/Ã.|Â.|â.|ð./.test(s)) {
     try {
-      for (var pass = 0; pass < 2; pass++) {
-        if (badCount(s) === 0) break;
-        var bytes = [];
-        for (var i = 0; i < s.length; i++) bytes.push(s.charCodeAt(i) & 0xff);
-        var fixed = new TextDecoder('utf-8').decode(new Uint8Array(bytes));
-        if (fixed && badCount(fixed) < badCount(s) && fixed.indexOf('\uFFFD') === -1) {
-          s = fixed;
-        } else {
-          break;
-        }
-      }
+      var fixed = '';
+      // En Worker no hay Buffer: decodificar manualmente
+      var bytes = [];
+      for (var i = 0; i < s.length; i++) bytes.push(s.charCodeAt(i) & 0xff);
+      fixed = new TextDecoder('utf-8').decode(new Uint8Array(bytes));
+      if (fixed && !/Ã.| /.test(fixed)) s = fixed;
     } catch (e) { /* keep s */ }
-  }
-  // Fallback manual si aún quedan secuencias típicas
-  if (/Ã.|Â./.test(s)) {
-    s = s
-      .replace(/Ã¡/g, 'á').replace(/Ã©/g, 'é').replace(/Ã­/g, 'í')
-      .replace(/Ã³/g, 'ó').replace(/Ãº/g, 'ú').replace(/Ã±/g, 'ñ')
-      .replace(/Ã/g, 'Á').replace(/Ã‰/g, 'É').replace(/Ã/g, 'Í')
-      .replace(/Ã“/g, 'Ó').replace(/Ãš/g, 'Ú').replace(/Ã‘/g, 'Ñ')
-      .replace(/Ã¼/g, 'ü').replace(/Ãœ/g, 'Ü')
-      .replace(/Â¿/g, '¿').replace(/Â¡/g, '¡').replace(/Â/g, '');
   }
   return s.replace(/\s+/g, ' ').trim();
 }
@@ -2239,7 +2173,12 @@ function limpiarTexto(txt) {
 function limpiarTitulo(txt) {
   if (!txt) return '';
   var t = limpiarTexto(String(txt));
-  // Mojibake ya lo corrige limpiarTexto(); no mapear Ã suelto → Í (rompía textos)
+  // Mojibake frecuente en títulos
+  t = t.replace(/CÃ³digo/gi, 'Código').replace(/CÃ\x93digo/gi, 'Código');
+  t = t.replace(/Ã¡/g, 'á').replace(/Ã©/g, 'é').replace(/Ã­/g, 'í')
+    .replace(/Ã³/g, 'ó').replace(/Ãº/g, 'ú').replace(/Ã±/g, 'ñ')
+    .replace(/ÃÁ/g, 'Á').replace(/Ã‰/g, 'É').replace(/Ã/g, 'Í')
+    .replace(/Ã“/g, 'Ó').replace(/Ãš/g, 'Ú').replace(/Ã‘/g, 'Ñ');
   t = t.replace(/\s*[-|–—]\s*Hackstore\.fo Oficial.*$/i, '');
   t = t.replace(/\s*[-|–—]\s*Peliculas,?\s*Series y animes.*$/i, '');
   t = t.replace(/\s*[-|–—]\s*Pelisplus.*$/i, '');
@@ -2659,85 +2598,18 @@ function tiposCompatibles(a, b) {
 }
 
 /** Preferir tipo Anime si alguna fuente lo marca así */
-/**
- * Elige tipo final del grupo de hits de la misma obra.
- * items (opcional): hits con .fuente y .tipo — evita que animeav1
- * convierta películas live-action en Anime.
- */
-function preferirTipo(tipos, items) {
+function preferirTipo(tipos) {
   var list = tipos || [];
-  var cine = { pelisplushd: 1, pelisplus: 1, lamovie: 1, hackstore: 1 };
-  var animeSrc = { animeav1: 1, animedbs: 1 };
-  var doramaSrc = { doramasflix: 1 };
-
-  var hasPeliculaCine = false;
-  var hasSerieDorama = false;
-  var hasAnime = false;
-  var hasSerie = false;
-
-  if (items && items.length) {
-    for (var i = 0; i < items.length; i++) {
-      var it = items[i];
-      if (!it) continue;
-      var f = String(it.fuente || '').toLowerCase();
-      var t = normalizarTipoKey(it.tipo);
-      if (t === 'pelicula' && cine[f]) hasPeliculaCine = true;
-      if (t === 'serie' && doramaSrc[f]) hasSerieDorama = true;
-      if (t === 'anime' && animeSrc[f]) hasAnime = true;
-      if (t === 'serie') hasSerie = true;
-      if (t === 'anime') hasAnime = true;
-      if (t === 'pelicula') hasPeliculaCine = hasPeliculaCine || !!cine[f];
-    }
-  } else {
-    for (var j = 0; j < list.length; j++) {
-      var tk = normalizarTipoKey(list[j]);
-      if (tk === 'anime') hasAnime = true;
-      if (tk === 'serie') hasSerie = true;
-      if (tk === 'pelicula') hasPeliculaCine = true;
-    }
+  for (var i = 0; i < list.length; i++) {
+    if (normalizarTipoKey(list[i]) === 'anime') return 'Anime';
   }
-
-  // Película de cine gana sobre "Anime" basura del mismo slug en animeav1
-  if (hasPeliculaCine && !hasSerieDorama) return 'Pelicula';
-  // Dorama/serie de doramasflix
-  if (hasSerieDorama && !hasPeliculaCine) return 'Serie';
-  // Anime real
-  if (hasAnime && !hasPeliculaCine) return 'Anime';
-  if (hasSerie) return 'Serie';
-  if (hasPeliculaCine) return 'Pelicula';
-
-  for (var a = 0; a < list.length; a++) {
-    if (normalizarTipoKey(list[a]) === 'anime') return 'Anime';
+  for (var j = 0; j < list.length; j++) {
+    if (normalizarTipoKey(list[j]) === 'serie') return 'Serie';
   }
-  for (var b = 0; b < list.length; b++) {
-    if (normalizarTipoKey(list[b]) === 'serie') return 'Serie';
-  }
-  for (var c = 0; c < list.length; c++) {
-    if (normalizarTipoKey(list[c]) === 'pelicula') return 'Pelicula';
+  for (var k = 0; k < list.length; k++) {
+    if (normalizarTipoKey(list[k]) === 'pelicula') return 'Pelicula';
   }
   return list[0] || 'Serie';
-}
-
-/** Fuente principal según tipo final (estrenos cine → pelisplus) */
-function elegirFuentePrincipal(items, tipoFinal) {
-  if (!items || !items.length) return null;
-  var t = normalizarTipoKey(tipoFinal);
-  var order;
-  if (t === 'pelicula') {
-    // Pelisplus más actualizada en estrenos de película
-    order = ['pelisplushd', 'lamovie', 'hackstore', 'doramasflix'];
-  } else if (t === 'anime') {
-    order = ['animeav1', 'animedbs', 'pelisplushd', 'lamovie', 'hackstore'];
-  } else {
-    // serie / dorama
-    order = ['doramasflix', 'pelisplushd', 'lamovie', 'hackstore', 'animeav1', 'animedbs'];
-  }
-  for (var i = 0; i < order.length; i++) {
-    for (var j = 0; j < items.length; j++) {
-      if (String(items[j].fuente || '').toLowerCase() === order[i]) return order[i];
-    }
-  }
-  return String(items[0].fuente || '').toLowerCase() || null;
 }
 
 /** Extrae año de título, slug o campo year */
@@ -2785,16 +2657,15 @@ function claveDeduplicacion(item) {
  */
 /**
  * Orden de fuentes (búsqueda / fusión / detalle):
- * 1 animeav1 → 2 animedbs → 3 doramasflix → 4 pelisplushd → 5 lamovie → 6 hackstore
+ * 1 animeav1 → 2 doramasflix → 3 pelisplushd → 4 lamovie → 5 hackstore
  */
 function prioridadFuente(nombre) {
   var f = String(nombre || '').toLowerCase();
   if (f === 'animeav1' || f === '4') return 0;
-  if (f === 'animedbs' || f === '5') return 1;
-  if (f === 'doramasflix' || f === '6') return 2;
-  if (f === 'pelisplushd' || f === 'pelisplus' || f === '3') return 3;
-  if (f === 'lamovie' || f === '1') return 4;
-  if (f === 'hackstore' || f === '2') return 5;
+  if (f === 'doramasflix' || f === '6') return 1;
+  if (f === 'pelisplushd' || f === 'pelisplus' || f === '3') return 2;
+  if (f === 'lamovie' || f === '1') return 3;
+  if (f === 'hackstore' || f === '2') return 4;
   return 9;
 }
 
@@ -2809,31 +2680,13 @@ function ordenarFuentesLista(fuentes) {
 function scoreItemBusqueda(item) {
   if (!item) return 0;
   var s = 0;
+  // Prioridad de fuente (alineada con prioridadFuente)
   var f = String(item.fuente || '').toLowerCase();
-  var t = normalizarTipoKey(item.tipo);
-
-  // Score por fuente SEGÚN tipo (no animeav1 siempre arriba)
-  if (t === 'pelicula') {
-    if (f === 'pelisplushd') s += 200; // estrenos cine más actualizados
-    else if (f === 'lamovie') s += 160;
-    else if (f === 'hackstore') s += 140;
-    else if (f === 'doramasflix') s += 80;
-    else if (f === 'animeav1' || f === 'animedbs') s += 5; // casi basura para cine
-  } else if (t === 'anime') {
-    if (f === 'animeav1') s += 200; // emisión / estrenos anime
-    else if (f === 'animedbs') s += 160;
-    else if (f === 'pelisplushd') s += 60;
-    else if (f === 'lamovie') s += 40;
-    else if (f === 'hackstore') s += 30;
-  } else {
-    // serie / dorama
-    if (f === 'doramasflix') s += 200;
-    if (f === 'pelisplushd') s += 140;
-    if (f === 'lamovie') s += 100;
-    if (f === 'hackstore') s += 80;
-    if (f === 'animeav1') s += 50;
-    if (f === 'animedbs') s += 40;
-  }
+  if (f === 'animeav1') s += 200;
+  else if (f === 'doramasflix') s += 160;
+  else if (f === 'pelisplushd') s += 30;
+  else if (f === 'lamovie') s += 20;
+  else if (f === 'hackstore') s += 10;
 
   if (item.portada && !esPortadaSospechosa(item.portada)) s += 25;
   if (item.portada_imdb && esPortadaImdb(item.portada_imdb)) s += 12;
@@ -2844,11 +2697,6 @@ function scoreItemBusqueda(item) {
   if (item.year) s += 5;
   if (item.slug) s += 5;
   if (item.backdrop) s += 5;
-  // Más episodios / temps = mejor (Wistoria animeav1 vs lamovie corto)
-  var nEps = Number(item.total_episodios) || (Array.isArray(item.episodios) ? item.episodios.length : 0) || 0;
-  var nTemp = Number(item.total_temporadas) || 0;
-  if (nEps > 0) s += Math.min(40, nEps);
-  if (nTemp > 1) s += nTemp * 8;
   return s;
 }
 
@@ -3113,38 +2961,21 @@ function fusionarResultadosBusqueda(items) {
       for (var tf = 0; tf < sg.length; tf++) {
         if (sg[tf].tipo) tiposFirst.push(sg[tf].tipo);
       }
-      best.tipo = preferirTipo(tiposFirst, sg);
-      // Fuente principal según tipo (pelicula→pelisplus, anime→animeav1, serie→doramas)
-      var fPrinc = elegirFuentePrincipal(sg, best.tipo);
-      if (fPrinc) {
-        best.fuente = fPrinc;
-        for (var jp = 0; jp < sg.length; jp++) {
-          if (String(sg[jp].fuente || '').toLowerCase() === fPrinc) {
-            if (sg[jp].slug) best.slug = sg[jp].slug;
-            if (sg[jp].descripcion && (!best.descripcion || String(best.descripcion).length < 40)) {
-              best.descripcion = sg[jp].descripcion;
-            }
-            best.portada = mejorPortada(best.portada, sg[jp].portada);
-            break;
-          }
-        }
-        if (typeof sourceIdFromName === 'function') best.source_id = sourceIdFromName(fPrinc);
-      }
+      best.tipo = preferirTipo(tiposFirst);
       best.fuentes = ordenarFuentesLista(fuentes);
-      if (!best.fuente && best.fuentes.length) best.fuente = best.fuentes[0];
-      // Si es ANIME y animeav1 está en el grupo, preferir su slug/meta (más caps)
-      if (normalizarTipoKey(best.tipo) === 'anime') {
-        for (var ja = 0; ja < sg.length; ja++) {
-          if (String(sg[ja].fuente || '').toLowerCase() === 'animeav1') {
-            best.fuente = 'animeav1';
-            if (sg[ja].slug) best.slug = sg[ja].slug;
-            if (sg[ja].descripcion && (!best.descripcion || String(best.descripcion).length < 40)) {
-              best.descripcion = sg[ja].descripcion;
-            }
-            best.portada = mejorPortada(best.portada, sg[ja].portada);
-            if (typeof sourceIdFromName === 'function') best.source_id = sourceIdFromName('animeav1');
-            break;
+      if (best.fuentes.length) best.fuente = best.fuentes[0];
+      // Forzar animeav1 como principal si está en el grupo
+      for (var ja = 0; ja < sg.length; ja++) {
+        if (String(sg[ja].fuente || '').toLowerCase() === 'animeav1') {
+          best.fuente = 'animeav1';
+          if (sg[ja].slug) best.slug = sg[ja].slug;
+          if (sg[ja].tipo) best.tipo = preferirTipo([sg[ja].tipo].concat(tiposFirst));
+          if (sg[ja].descripcion && (!best.descripcion || String(best.descripcion).length < 40)) {
+            best.descripcion = sg[ja].descripcion;
           }
+          best.portada = mejorPortada(best.portada, sg[ja].portada);
+          if (typeof sourceIdFromName === 'function') best.source_id = sourceIdFromName('animeav1');
+          break;
         }
       }
       // Alternativas: solo otras fuentes (nunca la misma)
@@ -3244,7 +3075,7 @@ function fusionarResultadosBusqueda(items) {
         for (var tg = 0; tg < group2.length; tg++) {
           if (group2[tg].tipo) tiposG.push(group2[tg].tipo);
         }
-        best2.tipo = preferirTipo(tiposG, group2);
+        best2.tipo = preferirTipo(tiposG);
         best2.fuentes = ordenarFuentesLista(fuentes2);
         if (best2.fuentes.length) best2.fuente = best2.fuentes[0];
         for (var ja2 = 0; ja2 < group2.length; ja2++) {
@@ -4579,7 +4410,7 @@ function dedupePorSlugFuente(items) {
 /**
  * Prioridad de portadas (todas las fuentes):
  * 1) IMDb — la más fiable
- * 2) animeav1 / lamovie / animedbs / doramasflix (poster bueno de la fuente)
+ * 2) animeav1 / lamovie / doramasflix (poster bueno de la fuente)
  * 3) TMDB (image.tmdb.org w500+)
  * NUNCA usar portadas de PelisPlus (vienen rotas).
  */
@@ -4599,7 +4430,7 @@ function elegirPortadaPreferida(item, meta) {
   if (esPortadaImdb(imdb)) return imdb;
 
   // 2) Poster de fuentes fiables
-  if ((fuente === 'animeav1' || fuente === 'lamovie' || fuente === 'animedbs' || fuente === 'doramasflix') &&
+  if ((fuente === 'animeav1' || fuente === 'lamovie' || fuente === 'doramasflix') &&
       actual && !esPortadaSospechosa(actual)) {
     return actual;
   }
@@ -4962,76 +4793,62 @@ async function buscarUniversal(query, sourceFilter, limit) {
   var q = String(query || '').trim();
   if (!q) throw new Error('Falta el termino de busqueda');
 
-  // Fuentes en paralelo (rápido). Orden de score decide principal, no "el primero gana".
-  // Merge por obra → sin duplicados. Tipo final: cine > dorama > anime basura.
+  // Cascada por prioridad + relevancia:
+  // Orden: animeav1 → doramasflix → pelisplushd → lamovie → hackstore
+  // Solo se acepta una fuente si tiene al menos 1 resultado RELEVANTE al query.
+  // Sin fusión entre fuentes → sin duplicados cruzados.
   var cadena = [
-    { id: 'animeav1', aliases: ['animeav1', '4', 'av1'], fn: function () { return buscarAnimeAv1(q, limit); } },
-    { id: 'animedbs', aliases: ['animedbs', '5', 'adbs'], fn: function () { return buscarAnimedbs(q, limit); } },
-    { id: 'doramasflix', aliases: ['doramasflix', '6', 'doramas', 'dfx'], fn: function () { return buscarDoramasflix(q, limit); } },
-    { id: 'pelisplushd', aliases: ['pelisplushd', 'pelisplus', '3', 'pp'], fn: function () { return buscarPelisplus(q, limit); } },
-    { id: 'lamovie', aliases: ['lamovie', '1', 'lm'], fn: function () { return buscarLamovie(q, limit); } },
-    { id: 'hackstore', aliases: ['hackstore', '2', 'hs'], fn: function () { return buscarHackstore(q, limit); } }
+    { id: 'animeav1', aliases: ['animeav1', '4'], fn: function () { return buscarAnimeAv1(q, limit); } },
+    { id: 'doramasflix', aliases: ['doramasflix', '6'], fn: function () { return buscarDoramasflix(q, limit); } },
+    { id: 'pelisplushd', aliases: ['pelisplushd', 'pelisplus', '3'], fn: function () { return buscarPelisplus(q, limit); } },
+    { id: 'lamovie', aliases: ['lamovie', '1'], fn: function () { return buscarLamovie(q, limit); } },
+    { id: 'hackstore', aliases: ['hackstore', '2'], fn: function () { return buscarHackstore(q, limit); } }
   ];
 
-  function withTimeout(promise, ms) {
-    return Promise.race([
-      Promise.resolve(promise).catch(function () { return []; }),
-      new Promise(function (resolve) { setTimeout(function () { resolve([]); }, ms); })
-    ]);
-  }
+  var resultados = [];
+  var fuenteUsada = null;
 
-  var TIMEOUT_MS = 4000;
-  var jobs = [];
   for (var i = 0; i < cadena.length; i++) {
     var c = cadena[i];
     if (sourceFilter !== 'all' && c.aliases.indexOf(sourceFilter) === -1) continue;
-    jobs.push({ id: c.id, p: withTimeout(c.fn(), TIMEOUT_MS) });
-  }
-
-  var settled = await Promise.all(jobs.map(function (j) { return j.p; }));
-  var todos = [];
-
-  for (var ji = 0; ji < jobs.length; ji++) {
-    var hits = settled[ji];
-    var fid = jobs[ji].id;
+    var hits = [];
+    try {
+      hits = await c.fn();
+    } catch (eSrc) {
+      hits = [];
+    }
     if (!Array.isArray(hits) || !hits.length) continue;
 
+    // Limpiar + etiquetar fuente
     for (var ti = 0; ti < hits.length; ti++) {
       if (!hits[ti]) continue;
       if (hits[ti].titulo) hits[ti].titulo = limpiarTitulo(hits[ti].titulo);
       delete hits[ti].alternativas;
-      hits[ti].fuente = fid;
-      hits[ti].fuentes = [fid];
+      hits[ti].fuente = c.id;
+      hits[ti].fuentes = [c.id];
       if (typeof sourceIdFromName === 'function') {
-        hits[ti].source_id = sourceIdFromName(fid);
+        hits[ti].source_id = sourceIdFromName(c.id);
       }
-      if (fid === 'pelisplushd' && hits[ti].portada) {
+      // Nunca confiar en portada de PelisPlus
+      if (c.id === 'pelisplushd' && hits[ti].portada) {
         hits[ti].portada_fuente_raw = hits[ti].portada;
         hits[ti].portada = null;
       }
     }
 
+    // Filtrar solo relevantes al query
     var relevantes = [];
     for (var ri = 0; ri < hits.length; ri++) {
       if (resultadoRelevanteBusqueda(q, hits[ri])) relevantes.push(hits[ri]);
     }
+    if (!relevantes.length) continue; // esta fuente no sirve → siguiente
+
+    // Deduplicar solo dentro de esta fuente (mismo slug)
     relevantes = dedupePorSlugFuente(relevantes);
-    for (var rj = 0; rj < relevantes.length; rj++) todos.push(relevantes[rj]);
-  }
 
-  // Fusionar misma obra entre fuentes (sin duplicados)
-  var resultados = typeof fusionarResultadosBusqueda === 'function'
-    ? fusionarResultadosBusqueda(todos)
-    : dedupePorSlugFuente(todos);
-
-  // Ordenar por score (tipo + fuente + meta)
-  resultados.sort(function (a, b) {
-    return scoreItemBusqueda(b) - scoreItemBusqueda(a);
-  });
-
-  var fuenteUsada = null;
-  if (resultados.length) {
-    fuenteUsada = resultados[0].fuente || null;
+    resultados = relevantes;
+    fuenteUsada = c.id;
+    break; // primera fuente con hits RELEVANTES gana
   }
 
   return {
@@ -5039,7 +4856,7 @@ async function buscarUniversal(query, sourceFilter, limit) {
     query: q,
     fuente: fuenteUsada,
     total: resultados.length,
-    resultados: resultados.slice(0, limit)
+    resultados: resultados.slice(0, limit * 2)
   };
 }
 
@@ -5087,22 +4904,6 @@ async function buscarLamovie(query, limit) {
 }
 
 /** Query limpia para buscadores: sin acentos raros, sin ":", sin mojibake */
-/**
- * Convierte texto UTF-8 correcto a la forma mojibake que usa a veces pelisplushd.
- * "Código: Venganza" → "CÃ³digo: Venganza"
- * Así el buscador de la página fuente sí encuentra el título mal indexado.
- */
-function aMojibakeLatin1(txt) {
-  try {
-    var bytes = new TextEncoder().encode(String(txt || ''));
-    var out = '';
-    for (var i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
-    return out;
-  } catch (e) {
-    return String(txt || '');
-  }
-}
-
 function normalizarQueryBusqueda(q) {
   var s = limpiarTexto(String(q || ''));
   // Quitar mojibake residual y normalizar Unicode
@@ -5182,50 +4983,16 @@ async function buscarHackstore(query, limit) {
 }
 
 async function buscarPelisplus(query, limit) {
-  // Pelisplus a veces indexa el título EN MOJIBAKE en su buscador:
-  //   página: "CÃ³digo: Venganza"
-  //   usuario busca: "Codigo Venganza" / "Código: Venganza" → sin esa variante no sale
+  // Variantes: con y sin acentos, sin ":"
   var variantes = [];
-  function addVar(v) {
-    v = String(v || '').replace(/\s+/g, ' ').trim();
-    if (v && variantes.indexOf(v) === -1) variantes.push(v);
-  }
-  var qRaw = String(query || '').trim();
-  var q0 = limpiarTexto(qRaw);
+  var q0 = limpiarTexto(String(query || ''));
   var q1 = normalizarQueryBusqueda(query);
-  addVar(qRaw);
-  addVar(q0);
-  addVar(q1);
-  addVar(q1.replace(/[^\w\s\-]/g, ' ').replace(/\s+/g, ' ').trim());
-
-  // Poner acentos típicos (codigo→Código) para poder generar el mojibake real
-  function conAcentos(t) {
-    return String(t || '')
-      .replace(/\bcodigo\b/gi, function (m) { return m[0] === 'C' ? 'Código' : 'código'; })
-      .replace(/\bpelicula\b/gi, function (m) { return m[0] === 'P' ? 'Película' : 'película'; })
-      .replace(/\banos\b/gi, function (m) { return m[0] === 'A' ? 'Años' : 'años'; })
-      .replace(/\bnumero\b/gi, function (m) { return m[0] === 'N' ? 'Número' : 'número'; })
-      .replace(/\baction\b/gi, function (m) { return m; });
-  }
-  var qAccent = conAcentos(q0 || q1);
-  addVar(qAccent);
-
-  // "Código Venganza" → "Código: Venganza" (formato frecuente en la web)
-  var parts = qAccent.split(/\s+/).filter(Boolean);
-  var qColon = parts.length >= 2 ? (parts[0] + ': ' + parts.slice(1).join(' ')) : qAccent;
-  addVar(qColon);
-
-  // ★ Variantes mojibake (como está indexado en pelisplushd)
-  addVar(aMojibakeLatin1(qAccent));
-  addVar(aMojibakeLatin1(qColon));
-  var qCap = parts.map(function (w) {
-    return w.charAt(0).toUpperCase() + w.slice(1);
-  }).join(' ');
-  addVar(aMojibakeLatin1(qCap));
-  if (parts.length >= 2) {
-    addVar(aMojibakeLatin1(parts[0].charAt(0).toUpperCase() + parts[0].slice(1) + ': ' + parts.slice(1).join(' ')));
-  }
-
+  if (q0) variantes.push(q0);
+  if (q1 && variantes.indexOf(q1) === -1) variantes.push(q1);
+  // Sin dos puntos / caracteres especiales
+  var q2 = q1.replace(/[^\w\s\-]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (q2 && variantes.indexOf(q2) === -1) variantes.push(q2);
+  // Primera palabra + última si hay muchas (Código Venganza → Codigo Venganza)
   if (variantes.length === 0) return [];
 
   var out = [];
@@ -5307,47 +5074,6 @@ async function buscarPelisplus(query, limit) {
       }
     } catch (e) { /* next variante */ }
   }
-
-  // Fallback: si la web indexó el título con mojibake y el search no devuelve nada,
-  // probar URL directa por slug (codigo-venganza, etc.)
-  if (out.length === 0 && variantes.length) {
-    var slugTry = String(variantes[variantes.length - 1] || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9\s\-]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '');
-    if (slugTry && slugTry.length > 2) {
-      var kinds = ['pelicula', 'serie', 'anime'];
-      for (var ki = 0; ki < kinds.length; ki++) {
-        try {
-          var direct = PELISPLUS_BASE + '/' + kinds[ki] + '/' + slugTry + '/';
-          var dr = await fetch(direct, {
-            headers: Object.assign({}, HEADERS, { 'Referer': PELISPLUS_BASE + '/' }),
-            redirect: 'follow'
-          });
-          if (!dr.ok) continue;
-          var dhtml = await dr.text();
-          // Página real de ficha (no 404 genérico)
-          if (!/\/(pelicula|serie|anime)\//i.test(dr.url || direct) && dhtml.length < 500) continue;
-          if (/no encontrada|not found|404/i.test(dhtml.slice(0, 2000))) continue;
-          var tipoD = kinds[ki] === 'serie' ? 'Serie' : kinds[ki] === 'anime' ? 'Anime' : 'Pelicula';
-          var tituloD = tituloDesdeSlug(slugTry);
-          var tmD = dhtml.match(/<title>([^<]{3,120})<\/title>/i);
-          if (tmD) tituloD = limpiarTitulo(tmD[1].split('|')[0].split('-')[0]);
-          out.push({
-            titulo: tituloD,
-            tipo: tipoD,
-            fuente: 'pelisplushd',
-            link: direct,
-            slug: slugTry,
-            portada: PELISPLUS_BASE + '/poster/' + slugTry + '.jpg'
-          });
-          break;
-        } catch (eDir) { /* next kind */ }
-      }
-    }
-  }
   return out;
 }
 
@@ -5364,57 +5090,30 @@ function slugAQuery(slug) {
 }
 
 async function buscarPostIdPorSlug(slug) {
-  var queries = [];
-  var q1 = slugAQuery(slug) || slug;
-  queries.push(q1);
-  // Sin año al final del query: "diario de una pasion 2004" → "diario de una pasion"
-  var q2 = String(q1).replace(/\s+(19|20)\d{2}\s*$/, '').trim();
-  if (q2 && q2 !== q1) queries.push(q2);
-  // Solo slug sin guiones
-  if (slug && queries.indexOf(slug) === -1) queries.push(slug);
+  var query = slugAQuery(slug) || slug;
+  var url = LAMOVIE_API + '/search?postType=any&q=' + encodeURIComponent(query) + '&postsPerPage=10';
+  var res = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+      'Accept': 'application/json'
+    }
+  });
+  if (!res.ok) return null;
+  var data = await res.json();
+  var posts = [];
+  if (data && data.data && data.data.posts) posts = data.data.posts;
+  else if (data && data.data && Array.isArray(data.data)) posts = data.data;
+  if (!Array.isArray(posts) || posts.length === 0) return null;
 
-  for (var qi = 0; qi < queries.length; qi++) {
-    var query = queries[qi];
-    if (!query) continue;
-    try {
-      var url = LAMOVIE_API + '/search?postType=any&q=' + encodeURIComponent(query) + '&postsPerPage=15';
-      var res = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
-          'Accept': 'application/json',
-          'Referer': LAMOVIE_BASE + '/'
-        }
-      });
-      if (!res.ok) continue;
-      var data = await res.json();
-      var posts = [];
-      if (data && data.data && data.data.posts) posts = data.data.posts;
-      else if (data && data.data && Array.isArray(data.data)) posts = data.data;
-      if (!Array.isArray(posts) || posts.length === 0) continue;
-
-      // Match exacto de slug
-      for (var i = 0; i < posts.length; i++) {
-        if (posts[i].slug === slug) return { postId: posts[i]._id, post: posts[i] };
-      }
-      // Slug sin año
-      var slugNoYear = String(slug).replace(/-\d{4}$/, '');
-      for (var i2 = 0; i2 < posts.length; i2++) {
-        if (posts[i2].slug === slugNoYear || posts[i2].slug === slug) {
-          return { postId: posts[i2]._id, post: posts[i2] };
-        }
-      }
-      for (var j = 0; j < posts.length; j++) {
-        if (posts[j].slug && (posts[j].slug.indexOf(slugNoYear) !== -1 || slugNoYear.indexOf(posts[j].slug) !== -1)) {
-          return { postId: posts[j]._id, post: posts[j] };
-        }
-      }
-      // Primer resultado solo si el título se parece
-      if (posts[0] && posts[0]._id) {
-        return { postId: posts[0]._id, post: posts[0] };
-      }
-    } catch (eQ) { /* next query */ }
+  for (var i = 0; i < posts.length; i++) {
+    if (posts[i].slug === slug) return { postId: posts[i]._id, post: posts[i] };
   }
-  return null;
+  for (var j = 0; j < posts.length; j++) {
+    if (posts[j].slug && (posts[j].slug.indexOf(slug) !== -1 || slug.indexOf(posts[j].slug) !== -1)) {
+      return { postId: posts[j]._id, post: posts[j] };
+    }
+  }
+  return { postId: posts[0]._id, post: posts[0] };
 }
 
 async function getPlayerLamovie(postId) {
@@ -5512,13 +5211,6 @@ async function scrapearLamovie(pageUrl, opts) {
   if (!slug) throw new Error('No se pudo extraer el slug de la URL de Lamovie');
 
   var encontrado = await buscarPostIdPorSlug(slug);
-  // Reintento: query sin año (diario-de-una-pasion-2004 → diario de una pasion)
-  if (!encontrado || !encontrado.postId) {
-    var slugSinAnio = String(slug).replace(/-\d{4}$/, '');
-    if (slugSinAnio && slugSinAnio !== slug) {
-      encontrado = await buscarPostIdPorSlug(slugSinAnio);
-    }
-  }
   if (!encontrado || !encontrado.postId) {
     throw new Error('No se encontro postId para el slug: ' + slug);
   }
@@ -5548,30 +5240,22 @@ async function scrapearLamovie(pageUrl, opts) {
 
   // PELÍCULA
   if (tipo === 'Pelicula') {
-    var playerData = { embeds: [], downloads: [] };
-    try {
-      playerData = await getPlayerLamovie(postId);
-    } catch (ePl) {
-      // Meta sí; players opcionales (no tumbar el detalle entero)
-      playerData = { embeds: [], downloads: [] };
-    }
+    var playerData = await getPlayerLamovie(postId);
     return {
       success: true,
       fuente: 'lamovie',
-      source_id: '1',
       tipo: tipo,
       link: pageUrl,
       postId: postId,
-      slug: slug,
       titulo: titulo,
       portada: portada,
       descripcion: descripcion,
       year: year,
       calificacion: calificacion,
-      total: (playerData.embeds && playerData.embeds.length) || 0,
-      embeds: (playerData.embeds || []).map(function (e) { return e.url; }),
-      reproductores: playerData.embeds || [],
-      descargas: playerData.downloads || [],
+      total: playerData.embeds.length,
+      embeds: playerData.embeds.map(function (e) { return e.url; }),
+      reproductores: playerData.embeds,
+      descargas: playerData.downloads,
       temporadas: []
     };
   }
@@ -6885,258 +6569,6 @@ async function scrapearAnimeAv1(pageUrl, opts) {
       '. Players: /4/anime/' + slug + '/' + tempPrincipal + '/{ep}'
   };
 }
-// ======================================================
-// ANIMEDBS (WordPress) — source_id 5
-// ======================================================
-async function buscarAnimedbs(query, limit) {
-  limit = limit || 15;
-  var q = normalizarQueryBusqueda(query) || String(query || '').trim();
-  if (!q) return [];
-  try {
-    var url = ANIMEDBS_BASE + '/?s=' + encodeURIComponent(q);
-    var res = await fetch(url, {
-      headers: Object.assign({}, HEADERS, { Referer: ANIMEDBS_BASE + '/' })
-    });
-    if (!res.ok) return [];
-    var html = await res.text();
-    var out = [];
-    var seen = Object.create(null);
-    var re = /href=["'](https?:\/\/(?:www\.)?animedbs\.online\/anime\/([^"'\/\?]+))\/?["']/gi;
-    var m;
-    while ((m = re.exec(html)) !== null && out.length < limit) {
-      var slug = decodeURIComponent(m[2] || '').toLowerCase();
-      if (!slug || seen[slug] || slug.indexOf('?') === 0) continue;
-      if (PALABRAS_BLOQUEADAS_BUSQUEDA.some(function (w) { return slug.indexOf(w) !== -1; })) continue;
-      seen[slug] = true;
-      var chunk = html.slice(Math.max(0, m.index - 300), m.index + 500);
-      var portada = null;
-      var im = chunk.match(/(?:data-src|src)=["'](https?:\/\/[^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/i);
-      if (im && !/logo|favicon|avatar/i.test(im[1])) portada = im[1];
-      var titulo = tituloDesdeSlug(slug);
-      var tm = chunk.match(/alt=["']([^"']{2,80})["']/i) || chunk.match(/title=["']([^"']{2,80})["']/i);
-      if (tm) titulo = limpiarTitulo(limpiarTexto(tm[1]));
-      out.push({
-        titulo: titulo,
-        tipo: 'Anime',
-        fuente: 'animedbs',
-        slug: slug,
-        link: ANIMEDBS_BASE + '/anime/' + slug + '/',
-        portada: portada,
-        year: null
-      });
-    }
-    return out;
-  } catch (e) {
-    return [];
-  }
-}
-
-function extraerPlayersAnimedbs(html) {
-  var reps = [];
-  var seen = Object.create(null);
-  var opts = html.match(/<option[^>]+value=["']([A-Za-z0-9+/=]{20,})["'][^>]*>([^<]*)/gi) || [];
-  for (var i = 0; i < opts.length; i++) {
-    var om = opts[i].match(/value=["']([A-Za-z0-9+/=]+)["'][^>]*>([\s\S]*?)$/i);
-    if (!om) continue;
-    var label = limpiarTexto(om[2] || '').replace(/^>/, '').trim() || ('Opción ' + (i + 1));
-    try {
-      var raw = om[1];
-      // atob in workers
-      var bin = '';
-      if (typeof atob === 'function') bin = atob(raw);
-      else {
-        // fallback minimal base64
-        var BufferRef = typeof Buffer !== 'undefined' ? Buffer : null;
-        if (BufferRef) bin = BufferRef.from(raw, 'base64').toString('utf8');
-      }
-      if (!bin) continue;
-      var srcs = bin.match(/(?:src|href)=["']([^"']+)["']/gi) || [];
-      var plain = bin.match(/https?:\/\/[^\s"'<>]+/gi) || [];
-      var urls = [];
-      for (var s = 0; s < srcs.length; s++) {
-        var um = srcs[s].match(/["']([^"']+)["']/);
-        if (um) urls.push(um[1]);
-      }
-      for (var p = 0; p < plain.length; p++) urls.push(plain[p]);
-      for (var u = 0; u < urls.length; u++) {
-        var href = urls[u];
-        if (!href) continue;
-        if (href.indexOf('//') === 0) href = 'https:' + href;
-        if (!/^https?:\/\//i.test(href)) continue;
-        var key = normalizarUrlEmbed(href);
-        if (seen[key]) continue;
-        if (!esReproductorValido(href) && !/\.mp4(\?|$)/i.test(href) && href.indexOf('mega.nz') === -1) continue;
-        seen[key] = true;
-        var idioma = /LAT|Latino|DUB/i.test(label) ? 'Latino' : (/SUB/i.test(label) ? 'Subtitulado' : 'Desconocido');
-        reps.push({
-          url: href,
-          servidor: extraerServidor(href),
-          idioma: idioma,
-          calidad: /1080|720|480|HD|CAM/i.test(label) ? (label.match(/1080|720|480|HD|CAM/i) || [])[0] : null,
-          label: label,
-          fuente: 'animedbs',
-          tipo: 'reproductor'
-        });
-      }
-    } catch (e) { /* skip */ }
-  }
-  return reps;
-}
-
-async function scrapearAnimedbs(pageUrl, opts) {
-  opts = opts || {};
-  var u = String(pageUrl || '');
-  var slugM = u.match(/\/anime\/([^\/\?#]+)/i);
-  var slug = slugM ? decodeURIComponent(slugM[1]) : null;
-  var epFromUrl = u.match(/episodio[_-]?(\d+)/i);
-  var epNum = opts.episode ? parseInt(opts.episode, 10) : (epFromUrl ? parseInt(epFromUrl[1], 10) : null);
-
-  // Página de episodio directo
-  if (/episodio/i.test(u) && !slugM) {
-    var resEp = await fetch(u, { headers: Object.assign({}, HEADERS, { Referer: ANIMEDBS_BASE + '/' }) });
-    if (!resEp.ok) throw new Error('Animedbs episodio HTTP ' + resEp.status);
-    var htmlEp = await resEp.text();
-    var reps = extraerPlayersAnimedbs(htmlEp);
-    var tit = '';
-    var mt = htmlEp.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
-    if (mt) tit = limpiarTitulo(mt[1]);
-    return {
-      success: true,
-      fuente: 'animedbs',
-      source_id: '5',
-      tipo: 'Capitulo',
-      link: u,
-      slug: slug,
-      titulo: tit || ('Episodio ' + (epNum || '')),
-      temporada: opts.season || 1,
-      episodio: epNum,
-      reproductores: reps,
-      embeds: reps.map(function (r) { return r.url; }),
-      total: reps.length
-    };
-  }
-
-  if (!slug) throw new Error('Animedbs: no se pudo extraer slug de ' + pageUrl);
-  var detailUrl = ANIMEDBS_BASE + '/anime/' + encodeURIComponent(slug) + '/';
-  var res = await fetch(detailUrl, { headers: Object.assign({}, HEADERS, { Referer: ANIMEDBS_BASE + '/' }) });
-  if (!res.ok) throw new Error('Animedbs HTTP ' + res.status);
-  var html = await res.text();
-
-  var titulo = '';
-  var m = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i);
-  if (m) titulo = limpiarTitulo(m[1].replace(/\s*[-|].*Anime\s*DBS.*/i, ''));
-  if (!titulo) titulo = tituloDesdeSlug(slug);
-
-  var portada = null;
-  m = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i);
-  if (m) portada = m[1];
-
-  var descripcion = '';
-  m = html.match(/property=["']og:description["']\s+content=["']([^"']+)["']/i)
-    || html.match(/name=["']description["']\s+content=["']([^"']+)["']/i);
-  if (m) descripcion = limpiarTexto(m[1]);
-
-  var estado = null;
-  m = html.match(/<b>\s*Estado:\s*<\/b>\s*([^<]+)/i);
-  if (m) estado = limpiarTexto(m[1]);
-  var year = null;
-  m = html.match(/<b>\s*Publicado:\s*<\/b>\s*(\d{4})/i);
-  if (m) year = m[1];
-  var tipoLabel = 'Anime';
-  m = html.match(/<b>\s*Tipo:\s*<\/b>\s*([^<]+)/i);
-  if (m) {
-    var tl = limpiarTexto(m[1]).toLowerCase();
-    if (/movie|pel[ií]cula/.test(tl)) tipoLabel = 'Pelicula';
-    else if (/ova|ona|special|especial/.test(tl)) tipoLabel = 'Anime';
-  }
-  var calidad = null;
-  m = html.match(/<b>\s*Calidad:\s*<\/b>\s*([^<]+)/i);
-  if (m) calidad = limpiarTexto(m[1]);
-
-  // Episodios
-  var epLinks = [];
-  var seenEp = Object.create(null);
-  var ere = /href=["'](https?:\/\/(?:www\.)?animedbs\.online\/([^"'\/]+-episodio-(\d+)[^"']*))["']/gi;
-  var em;
-  while ((em = ere.exec(html)) !== null) {
-    var en = parseInt(em[3], 10);
-    if (!en || seenEp[en]) continue;
-    seenEp[en] = true;
-    epLinks.push({ n: en, url: em[1].replace(/\/$/, '') + (em[1].slice(-1) === '/' ? '' : '/') });
-  }
-  epLinks.sort(function (a, b) { return a.n - b.n; });
-
-  // Capítulo concreto
-  if (epNum && epNum > 0) {
-    var target = null;
-    for (var i = 0; i < epLinks.length; i++) {
-      if (epLinks[i].n === epNum) { target = epLinks[i]; break; }
-    }
-    if (!target) {
-      // construir URL típica
-      target = { n: epNum, url: ANIMEDBS_BASE + '/' + slug + '-episodio-' + epNum + '-sub-espanol/' };
-    }
-    var r2 = await fetch(target.url, { headers: Object.assign({}, HEADERS, { Referer: detailUrl }) });
-    var html2 = r2.ok ? await r2.text() : '';
-    var reps2 = extraerPlayersAnimedbs(html2);
-    return {
-      success: true,
-      fuente: 'animedbs',
-      source_id: '5',
-      tipo: 'Capitulo',
-      link: target.url,
-      slug: slug,
-      titulo: titulo + ' — Episodio ' + epNum,
-      titulo_serie: titulo,
-      portada: portada,
-      descripcion: descripcion,
-      year: year,
-      estado: estado,
-      calidad: calidad,
-      temporada: opts.season || 1,
-      episodio: epNum,
-      reproductores: reps2,
-      embeds: reps2.map(function (r) { return r.url; }),
-      total: reps2.length
-    };
-  }
-
-  var episodios = epLinks.map(function (e) {
-    return {
-      temporada: 1,
-      episodio: e.n,
-      titulo: 'Episodio ' + e.n,
-      link: e.url,
-      reproductores: [],
-      embeds: []
-    };
-  });
-
-  return {
-    success: true,
-    fuente: 'animedbs',
-    source_id: '5',
-    tipo: tipoLabel,
-    link: detailUrl,
-    slug: slug,
-    titulo: titulo,
-    portada: portada,
-    descripcion: descripcion,
-    year: year,
-    estado: estado || null,
-    en_emision: estado ? /emisi[oó]n/i.test(estado) : null,
-    finalizado: estado ? /finaliz/i.test(estado) : null,
-    calidad: calidad,
-    total_episodios: episodios.length,
-    total_temporadas: 1,
-    temporadas: [{ temporada: 1, total_episodios: episodios.length, episodios: episodios }],
-    total: 0,
-    embeds: [],
-    reproductores: [],
-    descargas: []
-  };
-}
-
 // ======================================================
 // DORAMASFLIX (GraphQL fluxcedene + HTML) — source_id 6
 // ======================================================
