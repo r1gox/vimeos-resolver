@@ -274,6 +274,7 @@ async function handleRequest(request, env) {
           }
           resultados.total = resultados.resultados.length;
         } catch (eSlim) { /* silencioso */ }
+      }
       return json(resultados);
     } catch (err) {
       return json({ success: false, error: err.message }, 500);
