@@ -3221,21 +3221,32 @@ function metaCoincideConItem(item, meta) {
   var eItem = extras(tItem);
   var eMeta = extras(tMeta);
 
-  // "la captura" vs "facing el chapo" → shared 0 → NO
-  if (!eItem.length) return false;
+  // Tokens compartidos
+  if (!eItem.length) {
+    // Sin tokens útiles: permitir si match_relaxed (año único en suggestion)
+    return !!(meta.match_relaxed && yItem && yMeta && String(yItem) === String(yMeta));
+  }
   var shared = 0;
   for (var i = 0; i < eItem.length; i++) {
     if (tMeta.indexOf(eItem[i]) !== -1) shared++;
   }
-  if (shared === 0) return false;
-  // Debe compartir la mayoría de tokens distintivos
-  if (shared < Math.ceil(eItem.length * 0.6)) return false;
-  // Y el candidato no debe tener muchos extras ajenos (facing, chapo…)
+  // Título ES vs EN sin tokens en común: OK si año igual y match_relaxed
+  if (shared === 0) {
+    if (meta.match_relaxed && yItem && yMeta && String(yItem) === String(yMeta)) return true;
+    return false;
+  }
+  if (shared < Math.ceil(eItem.length * 0.6)) {
+    if (meta.match_relaxed && yItem && yMeta && String(yItem) === String(yMeta)) return true;
+    return false;
+  }
   var extraAjenos = 0;
   for (var j = 0; j < eMeta.length; j++) {
     if (tItem.indexOf(eMeta[j]) === -1) extraAjenos++;
   }
-  if (eMeta.length && extraAjenos > eItem.length) return false;
+  if (eMeta.length && extraAjenos > eItem.length) {
+    if (meta.match_relaxed && yItem && yMeta && String(yItem) === String(yMeta)) return true;
+    return false;
+  }
 
   return true;
 }
@@ -3250,7 +3261,7 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   if (yIt0 && yMt0 && String(yIt0) !== String(yMt0)) {
     coincide = false;
   }
-  // Rescue: mismo año + sinopsis parecida O título ES igual (Facing El Chapo ↔ La captura)
+  // Rescue: rating es prioritario — mismo año + señales de misma obra
   if (!coincide && meta.imdb_id) {
     var yearOk0 = !yIt0 || !yMt0 || String(yIt0) === String(yMt0);
     var tEs = normalizarTituloKey(meta.titulo_es || '');
@@ -3258,33 +3269,77 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
     if (yearOk0 && tEs && tIt && tEs === tIt) {
       coincide = true;
     } else if (yearOk0 && item.descripcion && meta.descripcion &&
-        similitudDescripcion(item.descripcion, meta.descripcion) >= 0.18) {
+        similitudDescripcion(item.descripcion, meta.descripcion) >= 0.12) {
+      coincide = true;
+    } else if (yearOk0 && meta.match_relaxed && meta.calificacion != null) {
+      // Suggestion única del año (título EN distinto) → aplicar rating IMDb
+      coincide = true;
+    } else if (yearOk0 && meta.calificacion != null && meta.portada_imdb && item.portada &&
+        String(meta.portada_imdb).replace(/\._V1.*$/, '') === String(item.portada).replace(/\._V1.*$/, '')) {
+      // Misma portada Amazon = misma obra
       coincide = true;
     }
   }
   var sinPortada = !item.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(item.portada));
 
-  // Soft poster: solo si NO hay conflicto de año (evita portada 2012 en película 2026)
+  // Sin coincide pleno: aún aplicar RATING si es seguro (año + meta IMDb)
   if (!coincide) {
     var yItemSoft = extraerYearItem(item);
     var yMetaSoft = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
     var yearSoftOk = !yItemSoft || !yMetaSoft || String(yItemSoft) === String(yMetaSoft);
-    if (sinPortada && yearSoftOk) {
-      var tA = normalizarTituloKey(item.titulo || '');
-      var tB = normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
-      if (tA && tB && (tA === tB || tA.indexOf(tB) === 0 || tB.indexOf(tA) === 0)) {
-        if (meta.portada_imdb && esPortadaUrlValida(meta.portada_imdb)) {
-          item.portada = meta.portada_imdb;
-          item.portada_imdb = meta.portada_imdb;
-          item.poster_source = 'imdb';
-        } else if (meta.portada_tmdb && esPortadaUrlValida(meta.portada_tmdb)) {
-          item.portada = meta.portada_tmdb;
-          item.portada_tmdb = meta.portada_tmdb;
-          item.poster_source = 'tmdb';
+
+    // PRIORIDAD RATING: mismo año + imdb_id + calificación + (relaxed | misma portada | simopsis)
+    if (yearSoftOk && meta.imdb_id && meta.calificacion != null) {
+      var applyRating = !!meta.match_relaxed;
+      if (!applyRating && item.descripcion && meta.descripcion &&
+          similitudDescripcion(item.descripcion, meta.descripcion) >= 0.12) applyRating = true;
+      if (!applyRating && meta.portada_imdb && item.portada) {
+        var pa = String(meta.portada_imdb).replace(/\._V1.*$/i, '').replace(/\?.*$/, '');
+        var pb = String(item.portada).replace(/\._V1.*$/i, '').replace(/\?.*$/, '');
+        if (pa && pb && (pa === pb || pa.indexOf(pb.slice(-20)) !== -1 || pb.indexOf(pa.slice(-20)) !== -1)) {
+          applyRating = true;
         }
       }
+      if (applyRating) {
+        item.calificacion = normalizarCalificacion(meta.calificacion);
+        item.imdb_id = meta.imdb_id;
+        if (meta.votos) item.votos = meta.votos;
+        item.rating_imdb = item.calificacion;
+        if (meta.votos) item.votos_imdb = meta.votos;
+        if (meta.portada_imdb) item.portada_imdb = meta.portada_imdb;
+        if (meta.duracion) {
+          item.duracion = meta.duracion;
+          item.duracion_texto = meta.duracion_texto || item.duracion_texto;
+        }
+        if (meta.certificacion) item.certificacion = meta.certificacion;
+        if (meta.generos && meta.generos.length && (!item.generos || !item.generos.length)) {
+          item.generos = meta.generos;
+          item.genero = meta.generos.join(', ');
+        }
+        if (meta.titulo_original) item.titulo_original = meta.titulo_original;
+        // seguir a aplicarCamposPorFuente vía coincide forzado
+        coincide = true;
+      }
     }
-    return item;
+
+    if (!coincide) {
+      if (sinPortada && yearSoftOk) {
+        var tA = normalizarTituloKey(item.titulo || '');
+        var tB = normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
+        if (tA && tB && (tA === tB || tA.indexOf(tB) === 0 || tB.indexOf(tA) === 0)) {
+          if (meta.portada_imdb && esPortadaUrlValida(meta.portada_imdb)) {
+            item.portada = meta.portada_imdb;
+            item.portada_imdb = meta.portada_imdb;
+            item.poster_source = 'imdb';
+          } else if (meta.portada_tmdb && esPortadaUrlValida(meta.portada_tmdb)) {
+            item.portada = meta.portada_tmdb;
+            item.portada_tmdb = meta.portada_tmdb;
+            item.poster_source = 'tmdb';
+          }
+        }
+      }
+      return item;
+    }
   }
 
   // Evitar cruzar metadata de obras con años distintos (remakes)
@@ -4457,15 +4512,21 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
     }
   }
 
-  // Un solo candidato del año pedido (Facing El Chapo 2026) → aceptar aunque score bajo
+  // Un solo candidato del año pedido → aceptar (título puede ser EN distinto)
   if (best && wantedYear) {
     var sameY = 0;
     for (var cyi = 0; cyi < candidates.length; cyi++) {
       if (candidates[cyi].year && String(candidates[cyi].year) === String(wantedYear)) sameY++;
     }
-    if (sameY === 1 && String(best.year) === String(wantedYear)) return best;
+    if (sameY === 1 && String(best.year) === String(wantedYear)) {
+      best.match_relaxed = true; // La captura del enfermero ↔ Capturing the Killer Nurse
+      return best;
+    }
   }
-  if (best && bestScore >= 30) return best;
+  if (best && bestScore >= 30) {
+    best.match_relaxed = bestScore >= 80 ? false : true;
+    return best;
+  }
 
   // --- 4) OMDb search por título + año ---
   if (wantedYear) {
