@@ -267,72 +267,13 @@ async function handleRequest(request, env) {
           delete r.link;
           delete r.url;
         }
-        // Enriquecer con IMDb/TMDB/OMDb: géneros, sinopsis, rating, poster, backdrop.
-        // NUNCA dejar portadas vacías si hay meta disponible.
+        // LISTADO/BÚSQUEDA: solo campos esenciales (meta completa va en detalle)
         try {
-          // Ligero y top N: search debe ser rápido (meta completa al detalle)
-          resultados.resultados = await enriquecerListaConTmdb(resultados.resultados, query, {
-            light: true,
-            maxItems: Math.min(8, (resultados.resultados && resultados.resultados.length) || 0),
-            concurrency: 3
-          });
           for (var cj = 0; cj < resultados.resultados.length; cj++) {
-            var itc = resultados.resultados[cj];
-            delete itc.success;
-            delete itc.tmdb_overview;
-            delete itc.overview_tmdb;
-            delete itc.description;
-            delete itc.tmdb_genres;
-            delete itc.genres_tmdb;
-            delete itc.genres;
-            delete itc.tmdb_poster;
-            delete itc.poster_tmdb;
-            // Conservar rating antes de borrar aliases
-            if ((itc.calificacion == null || itc.calificacion === '') && itc.rating != null) {
-              itc.calificacion = itc.rating;
-            }
-            if ((itc.calificacion == null || itc.calificacion === '') && itc.tmdb_rating != null) {
-              itc.calificacion = itc.tmdb_rating;
-            }
-            delete itc.tmdb_rating;
-            delete itc.rating;
-            delete itc.tmdb_release_date;
-            delete itc.release_date;
-            delete itc.tmdb_title;
-            delete itc.original_title;
-            delete itc.image;
-            delete itc.alternativas; // sin fusión entre fuentes
-            // Garantizar portada: preferir la ya elegida, luego portada_imdb, luego portada_tmdb
-            if (!itc.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(itc.portada))) {
-              if (itc.portada_imdb && esPortadaUrlValida(itc.portada_imdb)) {
-                itc.portada = itc.portada_imdb;
-                itc.poster_source = 'imdb';
-              } else if (itc.portada_tmdb && esPortadaUrlValida(itc.portada_tmdb)) {
-                itc.portada = itc.portada_tmdb;
-                itc.poster_source = 'tmdb';
-              }
-            }
-            // Normalizar calificación (número 0–10)
-            if (itc.calificacion != null && itc.calificacion !== '') {
-              itc.calificacion = normalizarCalificacion(itc.calificacion);
-            }
-            // Esquema uniforme de campos en todos los resultados
-            normalizarCamposResultado(itc);
-            if (itc.slug) {
-              var sidFinal = sourceIdFromName(itc.fuente);
-              var tipoPathFinal = (itc.tipo === 'Serie' || itc.tipo === 'Anime')
-                ? (itc.tipo === 'Anime' ? 'anime' : 'serie')
-                : 'pelicula';
-              itc.source_id = sidFinal;
-              itc.url_extract = origin + '/' + sidFinal + '/' + tipoPathFinal + '/' + itc.slug;
-            }
-            if (Array.isArray(itc.fuentes) && itc.fuentes.length) {
-              itc.fuente = itc.fuentes[0];
-            }
+            resultados.resultados[cj] = slimResultadoLista(resultados.resultados[cj], origin);
           }
           resultados.total = resultados.resultados.length;
-        } catch (eEnrich) { /* silencioso */ }
-      }
+        } catch (eSlim) { /* silencioso */ }
       return json(resultados);
     } catch (err) {
       return json({ success: false, error: err.message }, 500);
@@ -392,14 +333,14 @@ async function handleRequest(request, env) {
       var catalogo = await listarPelisplusCatalogo(catSeccion, catFiltro || null, pageNum, origin);
       if (catalogo && catalogo.resultados && catalogo.resultados.length) {
         try {
-          // Catálogo: enriquecimiento LIGERO (sin ficha PelisPlus ni scrape IMDb ES por ítem)
-          // Evita error 1102/503 por CPU timeout en Cloudflare Workers
-          catalogo.resultados = await enriquecerListaConTmdb(catalogo.resultados, '', {
-            light: true,
-            maxItems: 16,
-            concurrency: 2
-          });
-        } catch (eCat) { /* devolver catálogo sin meta */ }
+          // Catálogo/estrenos: solo esenciales (meta al detalle)
+          if (catalogo && Array.isArray(catalogo.resultados)) {
+            for (var ci = 0; ci < catalogo.resultados.length; ci++) {
+              catalogo.resultados[ci] = slimResultadoLista(catalogo.resultados[ci], origin);
+            }
+            catalogo.total = catalogo.resultados.length;
+          }
+        } catch (eCat) { /* ok */ }
       }
       return json(catalogo);
     } catch (err) {
@@ -442,7 +383,10 @@ async function handleRequest(request, env) {
           resultadoPath.poster_source = 'tmdb';
         }
       }
-      if (resultadoPath) normalizarCamposResultado(resultadoPath);
+      if (resultadoPath) {
+        normalizarCamposResultado(resultadoPath);
+        resultadoPath = formatearDetalleRespuesta(resultadoPath, origin);
+      }
       return json(resultadoPath);
     } catch (err) {
       return json({
@@ -499,6 +443,10 @@ async function handleRequest(request, env) {
         resultado.portada = resultado.portada_tmdb;
         resultado.poster_source = 'tmdb';
       }
+    }
+    if (resultado) {
+      normalizarCamposResultado(resultado);
+      resultado = formatearDetalleRespuesta(resultado, origin);
     }
     return json(resultado);
   } catch (err) {
@@ -4744,11 +4692,287 @@ function normalizarCalificacion(val) {
  * Garantiza el mismo esquema de campos en búsqueda y detalle.
  * No inventa datos: solo asegura claves presentes (null si faltan).
  */
+
+/** Listado/búsqueda: solo lo esencial (meta completa en el detalle) */
+
+function esDescripcionBasura(texto) {
+  if (!texto || typeof texto !== 'string') return true;
+  var t = texto.trim();
+  if (t.length < 40) return true;
+  if (/ver\s+.+\s+online\s+gratis/i.test(t)) return true;
+  if (/cuevana|pelisplus|repelis|seriesyonkis/i.test(t) && t.length < 120) return true;
+  if (/temporada\s+\d+\s+episodio\s+\d+/i.test(t) && /latino|subtitulad/i.test(t)) return true;
+  if (/^ver\s+/i.test(t) && /gratis|hd\b|online/i.test(t)) return true;
+  return false;
+}
+
+function slimResultadoLista(item, origin) {
+  if (!item || typeof item !== 'object') return item;
+  var fuente = item.fuente || (Array.isArray(item.fuentes) && item.fuentes[0]) || null;
+  var sid = item.source_id != null ? String(item.source_id) : sourceIdFromName(fuente);
+  var slug = item.slug || null;
+  var tipo = item.tipo || 'Pelicula';
+  var tipoPath = (tipo === 'Serie' || tipo === 'Anime')
+    ? (tipo === 'Anime' ? 'anime' : 'serie')
+    : 'pelicula';
+  var urlExtract = item.url_extract || null;
+  if (!urlExtract && slug && sid) {
+    urlExtract = (origin || '') + '/' + sid + '/' + tipoPath + '/' + slug;
+  }
+  var portada = item.portada || item.portada_fuente_raw || null;
+  var portadaRaw = item.portada_fuente_raw || null;
+  // Si la portada actual es de IMDb/TMDB, conservar raw de fuente si existe
+  if (!portadaRaw && portada && /pelisplushd|lamovie|hackstore|animeav1|doramasflix/i.test(String(portada))) {
+    portadaRaw = portada;
+  }
+  var year = item.year;
+  if (year != null) {
+    var ym = String(year).match(/(19|20)\d{2}/);
+    year = ym ? ym[0] : year;
+  }
+  var out = {
+    titulo: limpiarTitulo(item.titulo || item.nombre || '') || null,
+    tipo: tipo,
+    fuente: fuente,
+    slug: slug,
+    portada: portada,
+    year: year != null ? year : null,
+    fuentes: Array.isArray(item.fuentes) && item.fuentes.length ? item.fuentes : (fuente ? [fuente] : []),
+    source_id: sid,
+    url_extract: urlExtract
+  };
+  if (portadaRaw) out.portada_fuente_raw = portadaRaw;
+  if (item.postId != null) out.postId = item.postId;
+  return out;
+}
+
+/** Minutos → "1h 31min" */
+function minutosATexto(mins) {
+  var n = parseInt(mins, 10);
+  if (!n || n <= 0 || !isFinite(n)) return null;
+  var h = Math.floor(n / 60);
+  var m = n % 60;
+  if (h > 0 && m > 0) return h + 'h ' + m + 'min';
+  if (h > 0) return h + 'h';
+  return m + 'min';
+}
+
+/**
+ * Detalle: respuesta ordenada con meta IMDb/TMDB y atribución de fuente.
+ * Descripción: prioridad página fuente; si no hay, IMDb/TMDB.
+ */
+function slimEpisodio(ep) {
+  if (!ep || typeof ep !== 'object') return ep;
+  var out = {
+    temporada: ep.temporada != null ? ep.temporada : (ep.season != null ? ep.season : null),
+    episodio: ep.episodio != null ? ep.episodio : (ep.episode != null ? ep.episode : null),
+    titulo: ep.titulo || ep.name || ep.nombre || null,
+    slug: ep.slug || null,
+    link: ep.link || null
+  };
+  if (ep.episode_id != null) out.episode_id = ep.episode_id;
+  if (ep.postId != null) out.postId = ep.postId;
+  // Solo reproductores/embeds/descargas si ya vienen (capítulo concreto)
+  var reps = ep.reproductores || [];
+  var embeds = ep.embeds || [];
+  var desc = ep.descargas || ep.downloads || [];
+  if (reps.length) out.reproductores = reps;
+  if (embeds.length) out.embeds = embeds;
+  if (desc.length) out.descargas = desc;
+  if (out.reproductores || out.embeds) {
+    out.total = (out.reproductores && out.reproductores.length) || (out.embeds && out.embeds.length) || 0;
+  }
+  // quitar nulls
+  Object.keys(out).forEach(function (k) {
+    if (out[k] == null) delete out[k];
+  });
+  return out;
+}
+
+function slimTemporada(t) {
+  if (!t || typeof t !== 'object') return t;
+  var eps = t.episodios || t.capitulos || [];
+  var out = {
+    temporada: t.temporada != null ? t.temporada : (t.season_number != null ? t.season_number : null),
+    total_episodios: t.total_episodios != null ? t.total_episodios : (eps.length || null),
+    episodios: eps.map(slimEpisodio)
+  };
+  if (out.temporada == null) delete out.temporada;
+  if (out.total_episodios == null) delete out.total_episodios;
+  return out;
+}
+
+/**
+ * Detalle: rating (no calificacion) con fuente imdb|tmdb|fuente.
+ * Episodios: solo esencial (meta va a nivel serie/película).
+ */
+function formatearDetalleRespuesta(item, origin) {
+  if (!item || typeof item !== 'object') return item;
+
+  // Descripción: fuente primero
+  var desc = item.descripcion || null;
+  if (desc && typeof esDescripcionBasura === 'function' && esDescripcionBasura(desc)) desc = null;
+  if (!desc && item.imdb && item.imdb.descripcion) desc = item.imdb.descripcion;
+  if (!desc && item.descripcion_imdb) desc = item.descripcion_imdb;
+  if (!desc && item.descripcion_tmdb) desc = item.descripcion_tmdb;
+
+  // Rating: priorizar IMDb → TMDB → página fuente
+  var ratingImdb = null;
+  var ratingTmdb = null;
+  if (item.imdb && item.imdb.rating != null) ratingImdb = normalizarCalificacion(item.imdb.rating);
+  if (ratingImdb == null && item.rating_imdb != null) ratingImdb = normalizarCalificacion(item.rating_imdb);
+  if (item.tmdb && item.tmdb.rating != null) ratingTmdb = normalizarCalificacion(item.tmdb.rating);
+  if (ratingTmdb == null && item.rating_tmdb != null) ratingTmdb = normalizarCalificacion(item.rating_tmdb);
+
+  var ratingFuente = item.calificacion != null ? normalizarCalificacion(item.calificacion) : null;
+  if (ratingFuente == null && item.rating != null) ratingFuente = normalizarCalificacion(item.rating);
+
+  var rating = null;
+  var rating_source = null;
+  if (ratingImdb != null) {
+    rating = ratingImdb;
+    rating_source = 'imdb';
+  } else if (ratingTmdb != null) {
+    rating = ratingTmdb;
+    rating_source = 'tmdb';
+  } else if (ratingFuente != null) {
+    rating = ratingFuente;
+    rating_source = 'fuente';
+  }
+
+  var votos = item.votos != null ? item.votos : (item.imdb && item.imdb.votos != null ? item.imdb.votos : null);
+  var duracion = item.duracion != null ? item.duracion : (item.imdb && item.imdb.duracion != null ? item.imdb.duracion : null);
+  var duracionTexto = item.duracion_texto || minutosATexto(duracion) || (item.imdb && item.imdb.duracion_texto) || null;
+  var certificacion = item.certificacion || (item.imdb && item.imdb.certificacion) || item.clasificacion || null;
+
+  var generos = Array.isArray(item.generos) && item.generos.length
+    ? item.generos
+    : (item.imdb && Array.isArray(item.imdb.generos) ? item.imdb.generos : []);
+  var genero = item.genero || (generos.length ? generos.join(', ') : null);
+
+  var imdbObj = null;
+  if (item.imdb_id || (item.imdb && (item.imdb.id || item.imdb.rating != null)) || ratingImdb != null) {
+    imdbObj = {
+      id: item.imdb_id || (item.imdb && item.imdb.id) || null,
+      rating: ratingImdb != null ? ratingImdb : (item.imdb && item.imdb.rating != null ? normalizarCalificacion(item.imdb.rating) : null),
+      votos: (item.imdb && item.imdb.votos != null) ? item.imdb.votos : votos,
+      portada: (item.imdb && item.imdb.portada) || item.portada_imdb || null,
+      generos: (item.imdb && item.imdb.generos) || (generos.length ? generos : null),
+      duracion: (item.imdb && item.imdb.duracion != null) ? item.imdb.duracion : duracion,
+      duracion_texto: (item.imdb && item.imdb.duracion_texto) || duracionTexto,
+      certificacion: (item.imdb && item.imdb.certificacion) || certificacion,
+      descripcion: (item.imdb && item.imdb.descripcion) || null
+    };
+    Object.keys(imdbObj).forEach(function (k) {
+      if (imdbObj[k] == null) delete imdbObj[k];
+    });
+    if (!Object.keys(imdbObj).length) imdbObj = null;
+  }
+
+  var tmdbObj = null;
+  if (item.tmdb_id || (item.tmdb && (item.tmdb.id || item.tmdb.rating != null)) || ratingTmdb != null) {
+    tmdbObj = {
+      id: item.tmdb_id || (item.tmdb && item.tmdb.id) || null,
+      rating: ratingTmdb != null ? ratingTmdb : null,
+      portada: (item.tmdb && item.tmdb.portada) || item.portada_tmdb || null,
+      titulo: (item.tmdb && item.tmdb.titulo) || item.titulo_tmdb || null
+    };
+    Object.keys(tmdbObj).forEach(function (k) {
+      if (tmdbObj[k] == null) delete tmdbObj[k];
+    });
+    if (!Object.keys(tmdbObj).length) tmdbObj = null;
+  }
+
+  var tipo = item.tipo || 'Pelicula';
+  var sid = item.source_id != null ? String(item.source_id) : sourceIdFromName(item.fuente);
+  var slug = item.slug || null;
+  var tipoPath = (tipo === 'Serie' || tipo === 'Anime')
+    ? (tipo === 'Anime' ? 'anime' : 'serie')
+    : 'pelicula';
+  var urlExtract = item.url_extract || null;
+  if (!urlExtract && slug && sid && origin) {
+    urlExtract = origin + '/' + sid + '/' + tipoPath + '/' + slug;
+  }
+
+  var portada = item.portada || item.portada_imdb || item.portada_tmdb || null;
+
+  var out = {
+    success: item.success !== false,
+    fuente: item.fuente || null,
+    source_id: sid,
+    tipo: tipo,
+    link: item.link || null,
+    slug: slug,
+    titulo: limpiarTitulo(item.titulo || '') || null,
+    titulo_original: item.titulo_original || item.titulo_tmdb || null,
+    portada: portada,
+    backdrop: item.backdrop || null,
+    descripcion: desc,
+    year: item.year || null,
+    rating: rating,
+    rating_source: rating_source,
+    votos: votos,
+    generos: generos.length ? generos : null,
+    genero: genero,
+    actores: Array.isArray(item.actores) && item.actores.length ? item.actores : null,
+    fecha_estreno: item.fecha_estreno || null,
+    duracion: duracion,
+    duracion_texto: duracionTexto,
+    certificacion: certificacion,
+    estado: item.estado || null,
+    en_emision: item.en_emision != null ? item.en_emision : null,
+    finalizado: item.finalizado != null ? item.finalizado : null,
+    imdb_id: item.imdb_id || (imdbObj && imdbObj.id) || null,
+    tmdb_id: item.tmdb_id || (tmdbObj && tmdbObj.id) || null,
+    poster_source: item.poster_source || null,
+    imdb: imdbObj,
+    tmdb: tmdbObj,
+    url_extract: urlExtract,
+    total: item.total != null ? item.total : (Array.isArray(item.reproductores) ? item.reproductores.length : (Array.isArray(item.embeds) ? item.embeds.length : 0)),
+    embeds: item.embeds || [],
+    reproductores: item.reproductores || [],
+    descargas: item.descargas || item.downloads || []
+  };
+
+  // Series / anime: episodios slim
+  if (tipo === 'Serie' || tipo === 'Anime') {
+    out.total_episodios = item.total_episodios != null ? item.total_episodios : null;
+    out.total_temporadas = item.total_temporadas != null ? item.total_temporadas : null;
+    if (Array.isArray(item.temporadas) && item.temporadas.length) {
+      out.temporadas = item.temporadas.map(slimTemporada);
+    }
+    if (Array.isArray(item.episodios) && item.episodios.length) {
+      out.episodios = item.episodios.map(slimEpisodio);
+    }
+    if (item.temporada != null) out.temporada = item.temporada;
+    if (item.episodio != null) out.episodio = item.episodio;
+  }
+
+  // Capítulo suelto
+  if (tipo === 'Capitulo' || (item.temporada != null && item.episodio != null && tipo !== 'Serie' && tipo !== 'Anime')) {
+    if (item.temporada != null) out.temporada = item.temporada;
+    if (item.episodio != null) out.episodio = item.episodio;
+    if (item.titulo_serie) out.titulo_serie = item.titulo_serie;
+  }
+
+  if (item.postId != null) out.postId = item.postId;
+  if (item.formato) out.formato = item.formato;
+
+  var keepNull = { descripcion: 1, backdrop: 1, titulo_original: 1, estado: 1, certificacion: 1, rating: 1, rating_source: 1 };
+  Object.keys(out).forEach(function (k) {
+    if (out[k] == null && !keepNull[k]) {
+      if (k === 'imdb' || k === 'tmdb' || k === 'actores' || k === 'generos') delete out[k];
+    }
+  });
+
+  return out;
+}
+
 function normalizarCamposResultado(item) {
   if (!item || typeof item !== 'object') return item;
   var campos = [
     'titulo', 'titulo_original', 'tipo', 'formato', 'fuente', 'source_id', 'slug',
-    'portada', 'backdrop', 'descripcion', 'calificacion', 'votos', 'year', 'fecha_estreno',
+    'portada', 'backdrop', 'descripcion', 'rating', 'calificacion', 'votos', 'year', 'fecha_estreno',
     'generos', 'genero', 'duracion', 'estado', 'en_emision', 'finalizado',
     'imdb_id', 'tmdb_id', 'url_extract'
   ];
@@ -4756,6 +4980,8 @@ function normalizarCamposResultado(item) {
     if (item[campos[i]] === undefined) item[campos[i]] = null;
   }
   if (item.calificacion != null) item.calificacion = normalizarCalificacion(item.calificacion);
+  if (item.rating != null) item.rating = normalizarCalificacion(item.rating);
+  else if (item.calificacion != null) item.rating = item.calificacion;
   if (item.year != null) {
     var y = String(item.year).match(/(19|20)\d{2}/);
     item.year = y ? y[0] : null;
