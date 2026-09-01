@@ -625,25 +625,24 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     return false;
   }
 
-  // Resolver slug real de AnimeAV1. SOLO el slug pedido o coincidencia exacta de título.
-  // NO añadir "one-piece" cuando el pedido es "one-piece-heroines".
+  // Resolver slug real de AnimeAV1 SOLO si pedimos anime (nunca en pelicula/serie live-action)
   var animeAv1Slugs = [];
-  try {
-    var qAv1 = slug.replace(/-/g, ' '); // usar slug completo, no solo base sin año
-    var hitsAv1 = await buscarAnimeAv1(qAv1, 12);
-    for (var ha = 0; ha < (hitsAv1 || []).length; ha++) {
-      var hitAv = hitsAv1[ha];
-      var hs = hitAv && hitAv.slug;
-      if (!hs) continue;
-      // Omitir seasons sueltas si el base ya está
-      if (/-(?:season|temporada|part|parte)-\d+$/i.test(hs) ||
-          /-\d+(?:st|nd|rd|th)-season$/i.test(hs)) continue;
-      // Solo aceptar si es el mismo slug/obra (no hermanos de franquicia)
-      if (!resultadoCoincideSlug(slug, hs, hitAv.titulo || hitAv.title)) continue;
-      if (animeAv1Slugs.indexOf(hs) === -1) animeAv1Slugs.push(hs);
-      add('animeav1', ANIMEAV1_BASE + '/media/' + hs);
-    }
-  } catch (eAv1) { /* ok */ }
+  if (tipoRuta === 'anime') {
+    try {
+      var qAv1 = slug.replace(/-/g, ' ');
+      var hitsAv1 = await buscarAnimeAv1(qAv1, 12);
+      for (var ha = 0; ha < (hitsAv1 || []).length; ha++) {
+        var hitAv = hitsAv1[ha];
+        var hs = hitAv && hitAv.slug;
+        if (!hs) continue;
+        if (/-(?:season|temporada|part|parte)-\d+$/i.test(hs) ||
+            /-\d+(?:st|nd|rd|th)-season$/i.test(hs)) continue;
+        if (!resultadoCoincideSlug(slug, hs, hitAv.titulo || hitAv.title)) continue;
+        if (animeAv1Slugs.indexOf(hs) === -1) animeAv1Slugs.push(hs);
+        add('animeav1', ANIMEAV1_BASE + '/media/' + hs);
+      }
+    } catch (eAv1) { /* ok */ }
+  }
 
   // Si es capítulo, URLs de episodio concretas por fuente
   if (esCapitulo) {
@@ -681,11 +680,9 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     return (order[a.fuente] != null ? order[a.fuente] : 9) - (order[b.fuente] != null ? order[b.fuente] : 9);
   });
 
-  // Si la ruta fuerza fuente (/1/pelicula/...), solo esa fuente (no caer en animeav1)
-  if (sourceParam) {
-    var soloForzada = candidatos.filter(function (c) { return c.fuente === sourceParam; });
-    if (soloForzada.length) candidatos = soloForzada;
-  }
+  // Fuente forzada (/1/...) va primero (preferred), pero NO eliminamos el resto:
+  // si lamovie falla, se prueba pelisplus/hackstore del MISMO tipo.
+  // animeav1 ya no está en candidatos de pelicula.
 
   // Cascada: primera fuente que responda bien gana. Sin fusión entre fuentes.
   var lastErr = null;
@@ -5246,30 +5243,57 @@ function slugAQuery(slug) {
 }
 
 async function buscarPostIdPorSlug(slug) {
-  var query = slugAQuery(slug) || slug;
-  var url = LAMOVIE_API + '/search?postType=any&q=' + encodeURIComponent(query) + '&postsPerPage=10';
-  var res = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
-      'Accept': 'application/json'
-    }
-  });
-  if (!res.ok) return null;
-  var data = await res.json();
-  var posts = [];
-  if (data && data.data && data.data.posts) posts = data.data.posts;
-  else if (data && data.data && Array.isArray(data.data)) posts = data.data;
-  if (!Array.isArray(posts) || posts.length === 0) return null;
+  var queries = [];
+  var q1 = slugAQuery(slug) || slug;
+  queries.push(q1);
+  // Sin año al final del query: "diario de una pasion 2004" → "diario de una pasion"
+  var q2 = String(q1).replace(/\s+(19|20)\d{2}\s*$/, '').trim();
+  if (q2 && q2 !== q1) queries.push(q2);
+  // Solo slug sin guiones
+  if (slug && queries.indexOf(slug) === -1) queries.push(slug);
 
-  for (var i = 0; i < posts.length; i++) {
-    if (posts[i].slug === slug) return { postId: posts[i]._id, post: posts[i] };
+  for (var qi = 0; qi < queries.length; qi++) {
+    var query = queries[qi];
+    if (!query) continue;
+    try {
+      var url = LAMOVIE_API + '/search?postType=any&q=' + encodeURIComponent(query) + '&postsPerPage=15';
+      var res = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+          'Accept': 'application/json',
+          'Referer': LAMOVIE_BASE + '/'
+        }
+      });
+      if (!res.ok) continue;
+      var data = await res.json();
+      var posts = [];
+      if (data && data.data && data.data.posts) posts = data.data.posts;
+      else if (data && data.data && Array.isArray(data.data)) posts = data.data;
+      if (!Array.isArray(posts) || posts.length === 0) continue;
+
+      // Match exacto de slug
+      for (var i = 0; i < posts.length; i++) {
+        if (posts[i].slug === slug) return { postId: posts[i]._id, post: posts[i] };
+      }
+      // Slug sin año
+      var slugNoYear = String(slug).replace(/-\d{4}$/, '');
+      for (var i2 = 0; i2 < posts.length; i2++) {
+        if (posts[i2].slug === slugNoYear || posts[i2].slug === slug) {
+          return { postId: posts[i2]._id, post: posts[i2] };
+        }
+      }
+      for (var j = 0; j < posts.length; j++) {
+        if (posts[j].slug && (posts[j].slug.indexOf(slugNoYear) !== -1 || slugNoYear.indexOf(posts[j].slug) !== -1)) {
+          return { postId: posts[j]._id, post: posts[j] };
+        }
+      }
+      // Primer resultado solo si el título se parece
+      if (posts[0] && posts[0]._id) {
+        return { postId: posts[0]._id, post: posts[0] };
+      }
+    } catch (eQ) { /* next query */ }
   }
-  for (var j = 0; j < posts.length; j++) {
-    if (posts[j].slug && (posts[j].slug.indexOf(slug) !== -1 || slug.indexOf(posts[j].slug) !== -1)) {
-      return { postId: posts[j]._id, post: posts[j] };
-    }
-  }
-  return { postId: posts[0]._id, post: posts[0] };
+  return null;
 }
 
 async function getPlayerLamovie(postId) {
@@ -5367,6 +5391,13 @@ async function scrapearLamovie(pageUrl, opts) {
   if (!slug) throw new Error('No se pudo extraer el slug de la URL de Lamovie');
 
   var encontrado = await buscarPostIdPorSlug(slug);
+  // Reintento: query sin año (diario-de-una-pasion-2004 → diario de una pasion)
+  if (!encontrado || !encontrado.postId) {
+    var slugSinAnio = String(slug).replace(/-\d{4}$/, '');
+    if (slugSinAnio && slugSinAnio !== slug) {
+      encontrado = await buscarPostIdPorSlug(slugSinAnio);
+    }
+  }
   if (!encontrado || !encontrado.postId) {
     throw new Error('No se encontro postId para el slug: ' + slug);
   }
@@ -5396,22 +5427,30 @@ async function scrapearLamovie(pageUrl, opts) {
 
   // PELÍCULA
   if (tipo === 'Pelicula') {
-    var playerData = await getPlayerLamovie(postId);
+    var playerData = { embeds: [], downloads: [] };
+    try {
+      playerData = await getPlayerLamovie(postId);
+    } catch (ePl) {
+      // Meta sí; players opcionales (no tumbar el detalle entero)
+      playerData = { embeds: [], downloads: [] };
+    }
     return {
       success: true,
       fuente: 'lamovie',
+      source_id: '1',
       tipo: tipo,
       link: pageUrl,
       postId: postId,
+      slug: slug,
       titulo: titulo,
       portada: portada,
       descripcion: descripcion,
       year: year,
       calificacion: calificacion,
-      total: playerData.embeds.length,
-      embeds: playerData.embeds.map(function (e) { return e.url; }),
-      reproductores: playerData.embeds,
-      descargas: playerData.downloads,
+      total: (playerData.embeds && playerData.embeds.length) || 0,
+      embeds: (playerData.embeds || []).map(function (e) { return e.url; }),
+      reproductores: playerData.embeds || [],
+      descargas: playerData.downloads || [],
       temporadas: []
     };
   }
