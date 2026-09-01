@@ -4775,29 +4775,44 @@ function minutosATexto(mins) {
  * Detalle: respuesta ordenada con meta IMDb/TMDB y atribución de fuente.
  * Descripción: prioridad página fuente; si no hay, IMDb/TMDB.
  */
+/** Episodio en listado de serie: mínimo para navegar/reproducir */
 function slimEpisodio(ep) {
   if (!ep || typeof ep !== 'object') return ep;
-  var out = {
-    temporada: ep.temporada != null ? ep.temporada : (ep.season != null ? ep.season : null),
-    episodio: ep.episodio != null ? ep.episodio : (ep.episode != null ? ep.episode : null),
-    titulo: ep.titulo || ep.name || ep.nombre || null,
-    slug: ep.slug || null,
-    link: ep.link || null
-  };
+  var temporada = ep.temporada != null ? ep.temporada : (ep.season != null ? ep.season : null);
+  var episodio = ep.episodio != null ? ep.episodio : (ep.episode != null ? ep.episode : null);
+
+  // Título: solo nombre del capítulo, no "Serie 1x1"
+  var titulo = ep.titulo || ep.name || ep.nombre || null;
+  if (titulo) {
+    titulo = String(titulo).trim();
+    // Quitar prefijos tipo "Acaramelados 1x1", "Serie - T1E1", "1x1 - "
+    titulo = titulo
+      .replace(/^.*?\b\d+\s*[x×]\s*\d+\s*[-–:|]?\s*/i, '')
+      .replace(/^.*?\bT\s*\d+\s*E\s*\d+\s*[-–:|]?\s*/i, '')
+      .replace(/^.*?\bTemporada\s*\d+\s*(Episodio|Cap[ií]tulo)?\s*\d+\s*[-–:|]?\s*/i, '')
+      .replace(/^(Episodio|Cap[ií]tulo|Episode|Chapter)\s*\d+\s*[-–:|]?\s*/i, '')
+      .trim();
+    // Si quedó vacío o es solo el nombre de la serie repetido, no mandar titulo
+    if (!titulo || /^\d+$/.test(titulo)) titulo = null;
+  }
+
+  var out = {};
+  if (temporada != null) out.temporada = temporada;
+  if (episodio != null) out.episodio = episodio;
+  if (titulo) out.titulo = titulo;
+  if (ep.slug) out.slug = ep.slug;
+  if (ep.link) out.link = ep.link;
   if (ep.episode_id != null) out.episode_id = ep.episode_id;
   if (ep.postId != null) out.postId = ep.postId;
+
+  // Players solo si ya vienen en este ítem (capítulo resuelto)
   var reps = ep.reproductores || [];
   var embeds = ep.embeds || [];
   var descargas = ep.descargas || ep.downloads || [];
   if (reps.length) out.reproductores = reps;
   if (embeds.length) out.embeds = embeds;
   if (descargas.length) out.descargas = descargas;
-  if (out.reproductores || out.embeds) {
-    out.total = (out.reproductores && out.reproductores.length) || (out.embeds && out.embeds.length) || 0;
-  }
-  Object.keys(out).forEach(function (k) {
-    if (out[k] == null) delete out[k];
-  });
+
   return out;
 }
 
