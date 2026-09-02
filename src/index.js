@@ -3280,6 +3280,61 @@ async function fetchDetalleTmdbMeta(slugOrTitle, tipoHint) {
   return null;
 }
 
+/** Completa tmdb_id / status / descripción / votos usando IMDb ID (find + detail). */
+async function completarDesdeTmdbPorImdbId(imdbId, tipoHint) {
+  var key = __TMDB_KEY__ || null;
+  if (!key || !imdbId || String(imdbId).indexOf('tt') !== 0) return null;
+  try {
+    var findUrl = 'https://api.themoviedb.org/3/find/' + encodeURIComponent(imdbId)
+      + '?api_key=' + encodeURIComponent(key)
+      + '&external_source=imdb_id&language=es-ES';
+    var res = await fetchWithTimeout(findUrl, { headers: { Accept: 'application/json' } }, 9000);
+    if (!res || !res.ok) return null;
+    var data = await res.json();
+    var isTv = normalizarTipoKey(tipoHint) === 'serie' || normalizarTipoKey(tipoHint) === 'anime';
+    var hit = null;
+    var mediaType = null;
+    if (isTv) {
+      if (data.tv_results && data.tv_results.length) { hit = data.tv_results[0]; mediaType = 'tv'; }
+      else if (data.movie_results && data.movie_results.length) { hit = data.movie_results[0]; mediaType = 'movie'; }
+    } else {
+      if (data.movie_results && data.movie_results.length) { hit = data.movie_results[0]; mediaType = 'movie'; }
+      else if (data.tv_results && data.tv_results.length) { hit = data.tv_results[0]; mediaType = 'tv'; }
+    }
+    if (!hit || !hit.id) return null;
+
+    var detUrl = 'https://api.themoviedb.org/3/' + mediaType + '/' + hit.id
+      + '?api_key=' + encodeURIComponent(key) + '&language=es-ES';
+    var res2 = await fetchWithTimeout(detUrl, { headers: { Accept: 'application/json' } }, 9000);
+    if (!res2 || !res2.ok) {
+      return {
+        tmdb_id: hit.id,
+        descripcion: hit.overview || null,
+        votos: hit.vote_count || null,
+        calificacion: hit.vote_average != null ? Number(hit.vote_average) : null,
+        status: null,
+        fecha_estreno: hit.release_date || hit.first_air_date || null,
+        year: (hit.release_date || hit.first_air_date || '').slice(0, 4) || null
+      };
+    }
+    var d = await res2.json();
+    var release = d.release_date || d.first_air_date || null;
+    return {
+      tmdb_id: d.id || hit.id,
+      descripcion: d.overview || hit.overview || null,
+      votos: d.vote_count != null ? d.vote_count : (hit.vote_count || null),
+      calificacion: d.vote_average != null ? Number(d.vote_average) : null,
+      status: d.status || null,
+      fecha_estreno: release,
+      year: release ? String(release).slice(0, 4) : null,
+      backdrop: d.backdrop_path ? ('https://image.tmdb.org/t/p/w780' + d.backdrop_path) : null,
+      titulo_original: d.original_title || d.original_name || null
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 /** Extrae meta limpia desde un ítem de búsqueda tvymas (sin campos duplicados) */
 function mapMetaFromSearchItem(it) {
   if (!it) return null;
@@ -3485,7 +3540,7 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   }
 
   // Descripción: si la FUENTE tiene español válido → conservar.
-  // Si no → IMDb ES / TMDB ES. NUNCA dejar sinopsis solo en inglés.
+  // Si no → IMDb ES / TMDB ES. Si no hay fuente usable, aceptar meta (aunque sea inglés).
   var descFuente = item.descripcion || '';
   var descFuenteEs = descFuente.length >= 40 && pareceEspanol(descFuente)
     && !/\.\.\.\s*$/.test(descFuente) && !/^(Pel[ií]cula|Serie|Anime)\s/i.test(descFuente);
@@ -3498,9 +3553,13 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
       item.descripcion = meta.descripcion;
     } else if (!pareceIngles(meta.descripcion)) {
       item.descripcion = meta.descripcion;
-    } else if (!descFuente) {
-      // Solo inglés disponible: no asignar (evitar sinopsis en inglés)
-      // item.descripcion se deja vacío o la de fuente corta
+    } else {
+      // Fuente sin sinopsis usable: usar meta aunque sea inglés (antes se dejaba vacío)
+      var descCortaOVacia = !descFuente || descFuente.length < 40
+        || (typeof esDescripcionBasura === 'function' && esDescripcionBasura(descFuente));
+      if (descCortaOVacia) {
+        item.descripcion = meta.descripcion;
+      }
     }
   }
   // Si la fuente era inglesa y meta trae español, reemplazar
@@ -5342,7 +5401,7 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   // fetchDetalle puede traer más campos
   if (metaFull.backdrop) meta.backdrop = metaFull.backdrop;
   if (metaFull.original_title) meta.titulo_original = metaFull.original_title;
-  if (metaFull.votes) meta.votos = metaFull.votes;
+  if (metaFull.votos) meta.votos = metaFull.votos;
   if (metaFull.runtime) meta.duracion = metaFull.runtime;
   if (metaFull.status) {
     meta.status = metaFull.status;
@@ -5373,7 +5432,8 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
 
   // No pisar datos buenos ya extraídos de la página fuente
   var descFuente = detalle.descripcion || '';
-  var descFuenteOk = descFuente.length > 60 && !/\.\.\.\s*$/.test(descFuente);
+  var descFuenteOk = descFuente.length > 60 && !/\.\.\.\s*$/.test(descFuente)
+    && !(typeof esDescripcionBasura === 'function' && esDescripcionBasura(descFuente));
   var portadaFuenteOk = detalle.portada && !esFuentePelisplus(detalle) && !esPortadaSospechosa(detalle.portada);
 
   if (descFuenteOk) meta.descripcion = null; // conservar scrape
@@ -5390,6 +5450,48 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
     detalle.calificacion = normalizarCalificacion(detalle.calificacion);
   }
   if (!detalle.votos && metaFull.votos) detalle.votos = metaFull.votos;
+
+  // Si aún no hay descripción usable, forzar la de meta (aunque sea inglés)
+  var descAhora = detalle.descripcion || '';
+  var descSigueMal = !descAhora || descAhora.length < 40
+    || (typeof esDescripcionBasura === 'function' && esDescripcionBasura(descAhora));
+  if (descSigueMal && metaFull.descripcion && String(metaFull.descripcion).length >= 40) {
+    detalle.descripcion = metaFull.descripcion;
+  }
+
+  // Si hay imdb_id pero falta estado/tmdb_id/descripcion → TMDB find por imdb_id
+  var imdbIdNow = detalle.imdb_id || metaFull.imdb_id || null;
+  var faltaEstado = !detalle.estado && !detalle.status;
+  var faltaTmdb = !detalle.tmdb_id;
+  var faltaDesc2 = !detalle.descripcion || String(detalle.descripcion).length < 40
+    || (typeof esDescripcionBasura === 'function' && esDescripcionBasura(detalle.descripcion));
+  if (imdbIdNow && (faltaEstado || faltaTmdb || faltaDesc2)) {
+    try {
+      var extraTmdb = await completarDesdeTmdbPorImdbId(imdbIdNow, tipoRuta || detalle.tipo);
+      if (extraTmdb) {
+        if (!detalle.tmdb_id && extraTmdb.tmdb_id) detalle.tmdb_id = extraTmdb.tmdb_id;
+        if (faltaDesc2 && extraTmdb.descripcion && String(extraTmdb.descripcion).length >= 40) {
+          detalle.descripcion = extraTmdb.descripcion;
+        }
+        if (!detalle.votos && extraTmdb.votos) detalle.votos = extraTmdb.votos;
+        if ((detalle.calificacion == null || detalle.calificacion === '') && extraTmdb.calificacion != null) {
+          detalle.calificacion = normalizarCalificacion(extraTmdb.calificacion);
+        }
+        if (!detalle.backdrop && extraTmdb.backdrop) detalle.backdrop = extraTmdb.backdrop;
+        if (!detalle.titulo_original && extraTmdb.titulo_original) detalle.titulo_original = extraTmdb.titulo_original;
+        if (!detalle.fecha_estreno && extraTmdb.fecha_estreno) detalle.fecha_estreno = extraTmdb.fecha_estreno;
+        if (extraTmdb.status) {
+          detalle.status = extraTmdb.status;
+          var st2 = normalizarEstadoEmision(extraTmdb.status);
+          if (st2.estado) {
+            if (!detalle.estado) detalle.estado = st2.estado;
+            if (detalle.en_emision == null) detalle.en_emision = st2.en_emision;
+            if (detalle.finalizado == null) detalle.finalizado = st2.finalizado;
+          }
+        }
+      }
+    } catch (eTmdbImdb) { /* silencioso */ }
+  }
 
   // Temporadas TMDB (solo meta; no pisa embeds)
   if (Array.isArray(metaFull.temporadas) && metaFull.temporadas.length) {
@@ -5427,6 +5529,7 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
 
   return detalle;
 }
+
 
 async function buscarUniversal(query, sourceFilter, limit) {
   sourceFilter = (sourceFilter || 'all').toLowerCase();
