@@ -3945,7 +3945,7 @@ async function buscarMetaMal(titulo, yearHint) {
       fecha_estreno: fecha,
       year: year,
       titulo_original: best.title_japanese || best.title || null,
-      votos: best.scored_by || null,
+      votos: best.scored_by != null ? String(best.scored_by).replace(/\B(?=(\d{3})+(?!\d))/g, ',') : null,
       duracion: null,
       duracion_texto: best.duration || null,
       certificacion: best.rating || null,
