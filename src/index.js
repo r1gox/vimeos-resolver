@@ -3887,6 +3887,77 @@ async function scrapeFichaImdbEs(imdbId) {
  * opts.descripcionHint: sinopsis de la fuente para elegir el tt correcto (homónimos).
  * Prioridad de portadas: imageUrl de suggestion → OMDb → ficha.
  */
+/**
+ * MyAnimeList vía Jikan (gratis, sin key). Solo se usa para tipo Anime,
+ * como primer intento antes de IMDb, porque MAL indexa el título
+ * romanizado japonés que usan las fuentes (animeav1/lamovie), mientras
+ * que IMDb/TMDB suelen tener solo el título oficial en inglés.
+ */
+async function buscarMetaMal(titulo, yearHint) {
+  var q = String(titulo || '').replace(/\(\d{4}\)/g, '').trim();
+  if (!q) return null;
+  try {
+    var url = 'https://api.jikan.moe/v4/anime?q=' + encodeURIComponent(q) + '&limit=5';
+    var res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 9000);
+    if (!res.ok) return null;
+    var data = await res.json();
+    var results = Array.isArray(data.data) ? data.data : [];
+    if (!results.length) return null;
+
+    var wantedTitle = normalizarTituloKey(q);
+    var wantedYearMatch = yearHint ? String(yearHint).match(/(19|20)\d{2}/) : null;
+    var wantedYear = wantedYearMatch ? wantedYearMatch[0] : null;
+
+    var best = null, bestScore = -999;
+    for (var i = 0; i < results.length; i++) {
+      var r = results[i];
+      var candidatos = [r.title, r.title_english, r.title_japanese].filter(Boolean);
+      var score = -999;
+      for (var c = 0; c < candidatos.length; c++) {
+        var ct = normalizarTituloKey(candidatos[c]);
+        var s = 0;
+        if (ct === wantedTitle) s = 100;
+        else if (ct && (ct.indexOf(wantedTitle) !== -1 || wantedTitle.indexOf(ct) !== -1)) s = 50;
+        if (s > score) score = s;
+      }
+      var ry = r.aired && r.aired.from ? String(r.aired.from).slice(0, 4) : (r.year ? String(r.year) : null);
+      if (wantedYear && ry && wantedYear !== ry) score -= 60;
+      if (score > bestScore) { bestScore = score; best = r; }
+    }
+    if (!best || bestScore < 40) return null;
+
+    var genres = (best.genres || []).map(function (g) { return g.name; }).filter(Boolean);
+    var poster = best.images && best.images.jpg ? (best.images.jpg.large_image_url || best.images.jpg.image_url) : null;
+    var fecha = best.aired && best.aired.from ? String(best.aired.from).slice(0, 10) : null;
+    var year = fecha ? fecha.slice(0, 4) : (best.year ? String(best.year) : null);
+
+    return {
+      mal_id: best.mal_id || null,
+      tmdb_id: null,
+      imdb_id: null,
+      titulo_tmdb: best.title || q,
+      portada_tmdb: null,
+      portada_imdb: poster,
+      backdrop: null,
+      calificacion: best.score != null ? Number(best.score) : null,
+      descripcion: best.synopsis || null,
+      generos: genres,
+      fecha_estreno: fecha,
+      year: year,
+      titulo_original: best.title_japanese || best.title || null,
+      votos: best.scored_by || null,
+      duracion: null,
+      duracion_texto: best.duration || null,
+      certificacion: best.rating || null,
+      status: best.status || null,
+      tagline: null,
+      slug_tmdb: null
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
   opts = opts || {};
   var descHint = opts.descripcionHint || opts.descripcion || null;
@@ -4634,6 +4705,7 @@ function metaCacheSet(key, value) {
 /**
  * Metadata combinada.
  * Orden:
+ *   0. MyAnimeList (Jikan) primero SOLO si tipoHint es Anime
  *   1. IMDb scrape sin key (poster fiable + ID + rating + año + géneros)
  *   2. TMDB oficial si existe TMDB_API_KEY (backdrop + respaldo)
  *   3. OMDb solo si todavía faltan datos
@@ -4671,6 +4743,7 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
     if (destino.calificacion == null && origenMeta.calificacion != null) destino.calificacion = origenMeta.calificacion;
     if (!destino.imdb_id && origenMeta.imdb_id) destino.imdb_id = origenMeta.imdb_id;
     if (!destino.tmdb_id && origenMeta.tmdb_id) destino.tmdb_id = origenMeta.tmdb_id;
+    if (!destino.mal_id && origenMeta.mal_id) destino.mal_id = origenMeta.mal_id;
     if ((!destino.generos || !destino.generos.length) && origenMeta.generos && origenMeta.generos.length) destino.generos = origenMeta.generos;
     if (!destino.year && origenMeta.year) destino.year = origenMeta.year;
     if (!destino.fecha_estreno && origenMeta.fecha_estreno) destino.fecha_estreno = origenMeta.fecha_estreno;
@@ -4680,6 +4753,22 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
     if (!destino.duracion_texto && origenMeta.duracion_texto) destino.duracion_texto = origenMeta.duracion_texto;
     if (!destino.certificacion && origenMeta.certificacion) destino.certificacion = origenMeta.certificacion;
     return destino;
+  }
+
+  // 0) MyAnimeList primero SOLO para Anime (título romanizado JP; IMDb/TMDB
+  //    casi nunca coinciden con ese formato para anime nuevo/poco licenciado)
+  var esAnimeHint = normalizarTipoKey(tipoHint) === 'anime';
+  if (esAnimeHint) {
+    var maxVarMal = lightMeta ? 1 : 3;
+    for (var mi = 0; mi < Math.min(variantes.length, maxVarMal); mi++) {
+      try {
+        var mMal = await buscarMetaMal(variantes[mi], yearHint);
+        if (mMal) {
+          meta = completar(meta, mMal);
+          if (meta.mal_id && meta.descripcion && meta.calificacion != null) break;
+        }
+      } catch (eMal) { /* siguiente variante */ }
+    }
   }
 
   // 1) IMDb primero (suggestion + ficha ES + cruce por sinopsis)
@@ -4967,6 +5056,9 @@ function formatearDetalleRespuesta(item, origin) {
   if (ratingImdb != null) {
     rating = ratingImdb;
     rating_source = 'imdb';
+  } else if (item.mal_id && ratingFuente != null) {
+    rating = ratingFuente;
+    rating_source = 'mal';
   } else if (item.imdb_id && ratingFuente != null) {
     rating = ratingFuente;
     rating_source = 'imdb';
