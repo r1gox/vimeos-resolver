@@ -4762,7 +4762,7 @@ function slimResultadoLista(item, origin) {
     title: limpiarTitulo(item.titulo || item.nombre || item.title || '') || null,
     slug: slug,
     url: url,
-    image: image,
+    portada: image,
     year: year || null,
     source: fuente,
     type: tipo
