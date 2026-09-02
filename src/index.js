@@ -215,6 +215,9 @@ async function handleRequest(request, env) {
         estrenos_peliculas: origin + '/3/peliculas/estrenos',
         estrenos_series: origin + '/3/series/estrenos',
         estrenos_animes: origin + '/3/animes/estrenos',
+        estrenos_animeav1: origin + '/4/animes/estrenos',
+        emision_animeav1: origin + '/4/animes/emision',
+        proximamente_animeav1: origin + '/4/animes/proximamente',
         populares_peliculas: origin + '/3/peliculas/populares',
         por_url: origin + '/?url={url_completa}',
         resolve_vimeos: origin + '/resolve/vimeos?url={embed}&proxy=1',
@@ -320,30 +323,48 @@ async function handleRequest(request, env) {
   var catFiltro = (parts[catTipoIdx + 1] || '').toLowerCase(); // estrenos|populares|''
 
   if ((catSeccion === 'peliculas' || catSeccion === 'series' || catSeccion === 'animes') &&
-      (catFiltro === 'estrenos' || catFiltro === 'populares' || catFiltro === '' || catFiltro === 'page')) {
+      (catFiltro === 'estrenos' || catFiltro === 'populares' || catFiltro === 'emision' || catFiltro === 'proximo' || catFiltro === 'proximamente' || catFiltro === '' || catFiltro === 'page')) {
     var pageNum = parseInt(url.searchParams.get('page') || '1', 10);
     if (catFiltro === 'page' && parts[catTipoIdx + 2]) {
       pageNum = parseInt(parts[catTipoIdx + 2], 10) || 1;
       catFiltro = '';
     }
-    // Solo PelisPlus tiene estas listas públicas; id 3 o sin id con source=3
-    var srcCat = catSource || sourceParam || 'pelisplushd';
-    if (srcCat !== 'pelisplushd' && srcCat !== '3') {
-      // permitir /3/... forzado
-      if (String(parts[0]) !== '3' && parts[0] !== 'pelisplushd' && parts[0] !== 'pp') {
-        return json({
-          success: false,
-          error: 'Los catalogos estrenos/populares solo estan disponibles para PelisPlus (id 3)',
-          ejemplo: origin + '/3/peliculas/estrenos'
-        }, 400);
-      }
-      srcCat = 'pelisplushd';
-    }
+    var srcCat = catSource || sourceParam || '';
+    // AnimeAV1: /4/animes/estrenos o /4/animes/emision → catálogo en emisión
+    var esAnimeAv1Cat =
+      String(parts[0]) === '4' ||
+      parts[0] === 'animeav1' ||
+      parts[0] === 'av1' ||
+      srcCat === 'animeav1' ||
+      srcCat === '4' ||
+      srcCat === 'av1';
+
     try {
-      var catalogo = await listarPelisplusCatalogo(catSeccion, catFiltro || null, pageNum, origin);
+      var catalogo = null;
+      if (esAnimeAv1Cat && catSeccion === 'animes') {
+        var filtroAv1 = 'emision';
+        if (catFiltro === 'populares') filtroAv1 = 'populares';
+        else if (catFiltro === 'proximo' || catFiltro === 'proximamente') filtroAv1 = 'proximo';
+        else if (catFiltro === 'estrenos' || catFiltro === 'emision' || !catFiltro) filtroAv1 = 'emision';
+        catalogo = await listarAnimeAv1Catalogo(filtroAv1, pageNum, origin);
+      } else {
+        // PelisPlus (flujo original)
+        if (srcCat !== 'pelisplushd' && srcCat !== '3') {
+          if (String(parts[0]) !== '3' && parts[0] !== 'pelisplushd' && parts[0] !== 'pp') {
+            return json({
+              success: false,
+              error: 'Catalogos: PelisPlus /3/... o AnimeAV1 /4/animes/estrenos',
+              ejemplos: {
+                pelisplus: origin + '/3/peliculas/estrenos',
+                animeav1: origin + '/4/animes/estrenos'
+              }
+            }, 400);
+          }
+        }
+        catalogo = await listarPelisplusCatalogo(catSeccion, catFiltro || null, pageNum, origin);
+      }
       if (catalogo && catalogo.resultados && catalogo.resultados.length) {
         try {
-          // Catálogo/estrenos: solo esenciales (meta al detalle)
           if (catalogo && Array.isArray(catalogo.resultados)) {
             for (var ci = 0; ci < catalogo.resultados.length; ci++) {
               catalogo.resultados[ci] = slimResultadoLista(catalogo.resultados[ci], origin);
@@ -356,7 +377,8 @@ async function handleRequest(request, env) {
       return json({
         page: pageNum || 1,
         count: catLista.length,
-        results: catLista
+        results: catLista,
+        fuente: esAnimeAv1Cat ? 'animeav1' : 'pelisplushd'
       });
     } catch (err) {
       return json({ success: false, error: err.message }, 500);
@@ -3395,6 +3417,17 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
 
   if (meta.tmdb_id) item.tmdb_id = meta.tmdb_id;
   if (meta.imdb_id) item.imdb_id = meta.imdb_id;
+  if (meta.estado && !item.estado) item.estado = meta.estado;
+  if (meta.en_emision != null && item.en_emision == null) item.en_emision = meta.en_emision;
+  if (meta.finalizado != null && item.finalizado == null) item.finalizado = meta.finalizado;
+  if (meta.status && !item.estado) {
+    var stAp = normalizarEstadoEmision(meta.status);
+    if (stAp.estado) {
+      item.estado = stAp.estado;
+      if (item.en_emision == null) item.en_emision = stAp.en_emision;
+      if (item.finalizado == null) item.finalizado = stAp.finalizado;
+    }
+  }
   if (meta.titulo_tmdb) item.titulo_tmdb = meta.titulo_tmdb;
   if (meta.titulo_original) item.titulo_original = meta.titulo_original;
 
@@ -4762,7 +4795,7 @@ function slimResultadoLista(item, origin) {
     title: limpiarTitulo(item.titulo || item.nombre || item.title || '') || null,
     slug: slug,
     url: url,
-    portada: image,
+    image: image,
     year: year || null,
     source: fuente,
     type: tipo
@@ -4993,6 +5026,12 @@ function formatearDetalleRespuesta(item, origin) {
 
   // Estado unificado (series)
   var estado = item.estado || null;
+  if (!estado && item.status) {
+    var stFmt = normalizarEstadoEmision(item.status);
+    estado = stFmt.estado;
+    if (item.en_emision == null) item.en_emision = stFmt.en_emision;
+    if (item.finalizado == null) item.finalizado = stFmt.finalizado;
+  }
   if (!estado) {
     if (item.finalizado === true) estado = 'Finalizado';
     else if (item.en_emision === true) estado = 'En emisión';
@@ -5211,7 +5250,15 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   if (metaFull.original_title) meta.titulo_original = metaFull.original_title;
   if (metaFull.votes) meta.votos = metaFull.votes;
   if (metaFull.runtime) meta.duracion = metaFull.runtime;
-  if (metaFull.status) meta.status = metaFull.status;
+  if (metaFull.status) {
+    meta.status = metaFull.status;
+    var stMeta = normalizarEstadoEmision(metaFull.status);
+    if (stMeta.estado) {
+      meta.estado = stMeta.estado;
+      meta.en_emision = stMeta.en_emision;
+      meta.finalizado = stMeta.finalizado;
+    }
+  }
   if (metaFull.tagline) meta.tagline = metaFull.tagline;
   if (metaFull.imdb_id) meta.imdb_id = metaFull.imdb_id;
   if (metaFull.overview_tmdb || metaFull.tmdb_overview) {
@@ -6877,6 +6924,69 @@ function mapAnimeAv1Embeds(embedsObj) {
   return { reproductores: reproductores, descargas: descargas };
 }
 
+
+/**
+ * Catálogo AnimeAV1 (estrenos / en emisión)
+ * https://animeav1.com/catalogo?status=emision
+ * Ruta: /4/animes/estrenos  o  /4/animes/emision
+ */
+async function listarAnimeAv1Catalogo(filtro, page, origin) {
+  page = page || 1;
+  filtro = (filtro || 'emision').toLowerCase();
+  // AnimeAV1: emision | proximo (status=1) | populares (sin filtro)
+  var statusParam = 'emision';
+  if (filtro === 'populares') statusParam = '';
+  else if (filtro === 'proximo' || filtro === 'proximamente' || filtro === 'upcoming') statusParam = '1';
+  else if (filtro === 'estrenos' || filtro === 'emision') statusParam = 'emision';
+  var path = '/catalogo/__data.json?page=' + page;
+  if (statusParam) path += '&status=' + encodeURIComponent(statusParam);
+
+  var raw = await fetchAnimeAv1Data(path);
+  var data = decodeSvelteKitData(raw);
+  var results = (data && Array.isArray(data.results)) ? data.results : [];
+  var out = [];
+  for (var i = 0; i < results.length; i++) {
+    var it = results[i];
+    if (!it || !it.slug) continue;
+    var catName = (it.category && it.category.name) || '';
+    var tit = it.title || it.slug;
+    var formato = detectarFormatoAnime(tit, catName, it.slug);
+    var tipo = formato === 'Pelicula' ? 'Pelicula' : 'Anime';
+    var portada = it.poster || it.image || it.cover || it.thumbnail || null;
+    if (!portada && it.id != null && String(it.id).match(/^\d+$/)) {
+      portada = 'https://cdn.animeav1.com/covers/' + it.id + '.jpg';
+    }
+    if (portada && typeof portada === 'string' && portada.indexOf('http') !== 0) {
+      portada = 'https://cdn.animeav1.com/covers/' + String(portada).replace(/^.*\//, '');
+    }
+    var yearAv = extraerYearFlexible(tit, it.slug, it.startDate || it.year);
+    out.push({
+      fuente: 'animeav1',
+      source_id: '4',
+      tipo: tipo,
+      formato: formato,
+      titulo: tit,
+      slug: it.slug,
+      portada: portada,
+      year: yearAv,
+      link: ANIMEAV1_BASE + '/media/' + it.slug,
+      url_extract: (origin || '') + '/4/anime/' + it.slug,
+      estado: statusParam === 'emision' ? 'En emisión' : (statusParam === '1' ? 'Próximamente' : null),
+      en_emision: statusParam === 'emision' ? true : false,
+      finalizado: false
+    });
+  }
+  return {
+    success: true,
+    fuente: 'animeav1',
+    seccion: 'animes',
+    filtro: filtro,
+    page: page,
+    total: out.length,
+    resultados: out
+  };
+}
+
 async function buscarAnimeAv1(query, limit) {
   limit = limit || 30;
   var out = [];
@@ -6964,6 +7074,67 @@ async function buscarAnimeAv1(query, limit) {
   }
   return out.slice(0, limit);
 }
+
+
+/**
+ * Estado unificado anime/series.
+ * AnimeAV1 usa status numérico: 0=Finalizado, 1=Próximamente, 2=En emisión
+ * También acepta booleanos y textos TMDB/IMDb.
+ */
+function normalizarEstadoEmision(raw) {
+  if (raw == null || raw === '') return { estado: null, en_emision: null, finalizado: null };
+  // Códigos numéricos AnimeAV1
+  if (typeof raw === 'number' || (typeof raw === 'string' && /^\d+$/.test(String(raw).trim()))) {
+    var code = parseInt(raw, 10);
+    if (code === 0) return { estado: 'Finalizado', en_emision: false, finalizado: true };
+    if (code === 1) return { estado: 'Próximamente', en_emision: false, finalizado: false };
+    if (code === 2) return { estado: 'En emisión', en_emision: true, finalizado: false };
+    if (code === 3) return { estado: 'Pausado', en_emision: false, finalizado: false };
+  }
+  if (typeof raw === 'boolean') {
+    return raw
+      ? { estado: 'En emisión', en_emision: true, finalizado: false }
+      : { estado: 'Finalizado', en_emision: false, finalizado: true };
+  }
+  var t = String(raw).trim().toLowerCase();
+  if (!t) return { estado: null, en_emision: null, finalizado: null };
+  if (/final|ended|complet|finish|finished|concluded|terminad/.test(t)) {
+    return { estado: 'Finalizado', en_emision: false, finalizado: true };
+  }
+  if (/emisi[oó]n|airing|ongoing|returning|current|releasing|en\s*curso|transmission/.test(t)) {
+    return { estado: 'En emisión', en_emision: true, finalizado: false };
+  }
+  if (/paus|hiatus|on\s*hold/.test(t)) {
+    return { estado: 'Pausado', en_emision: false, finalizado: false };
+  }
+  if (/pr[oó]xim|upcoming|not yet|soon|announced|tba/.test(t)) {
+    return { estado: 'Próximamente', en_emision: false, finalizado: false };
+  }
+  if (/cancel/.test(t)) {
+    return { estado: 'Cancelado', en_emision: false, finalizado: true };
+  }
+  return { estado: String(raw).trim(), en_emision: null, finalizado: null };
+}
+
+/** Estado desde objeto media de AnimeAV1 (status + endDate) */
+function estadoDesdeAnimeAv1Media(media) {
+  if (!media) return { estado: null, en_emision: null, finalizado: null };
+  // Preferir código status
+  if (media.status != null && media.status !== '') {
+    var st = normalizarEstadoEmision(media.status);
+    if (st.estado) return st;
+  }
+  // Heurística: endDate presente → finalizado; si no y hay startDate → en emisión
+  if (media.endDate) return { estado: 'Finalizado', en_emision: false, finalizado: true };
+  if (media.nextDate || media.waitDays != null) {
+    return { estado: 'En emisión', en_emision: true, finalizado: false };
+  }
+  if (media.startDate && !media.endDate) {
+    return { estado: 'En emisión', en_emision: true, finalizado: false };
+  }
+  return { estado: null, en_emision: null, finalizado: null };
+}
+
 
 async function scrapearAnimeAv1(pageUrl, opts) {
   opts = opts || {};
@@ -7205,6 +7376,9 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     }
   }
 
+  // Estado AnimeAV1: status numérico (0 finalizado, 2 en emisión) + endDate/nextDate
+  var estadoInfo = estadoDesdeAnimeAv1Media(media);
+
   return {
     success: true,
     fuente: 'animeav1',
@@ -7218,6 +7392,10 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     descripcion: sinopsis,
     calificacion: score,
     year: yearAv1,
+    fecha_estreno: media.startDate || media.airedFrom || media.premiereDate || null,
+    estado: estadoInfo.estado,
+    en_emision: estadoInfo.en_emision,
+    finalizado: estadoInfo.finalizado,
     total_episodios: totalEps,
     total_temporadas: temporadas.length,
     temporada_principal: tempPrincipal,
