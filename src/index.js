@@ -701,6 +701,12 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
         if (tipoRuta === 'pelicula' && (tipoRes.indexOf('anime') !== -1 || c.fuente === 'animeav1' )) {
           return null;
         }
+        // No aceptar Anime cuando se pidió serie con fuente forzada distinta de animeav1
+        // (evita que la cascada "filtre" a animeav1 cuando pelisplushd falla en un slug)
+        if (tipoRuta === 'serie' && (tipoRes.indexOf('anime') !== -1 || c.fuente === 'animeav1') &&
+            sourceParam && sourceParam !== 'animeav1') {
+          return null;
+        }
         // No aceptar Película cuando se pidió anime (salvo que la fuente sea anime)
         if (tipoRuta === 'anime' && (tipoRes === 'pelicula' || tipoRes === 'película') && c.fuente !== 'animeav1' ) {
           // permitir: algunos animes vienen etiquetados raro
