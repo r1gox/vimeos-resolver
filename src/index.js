@@ -217,6 +217,7 @@ async function handleRequest(request, env) {
         estrenos_animes: origin + '/3/animes/estrenos',
         estrenos_animeav1: origin + '/4/animes/estrenos',
         emision_animeav1: origin + '/4/animes/emision',
+        proximamente_animeav1: origin + '/4/animes/proximamente',
         populares_peliculas: origin + '/3/peliculas/populares',
         por_url: origin + '/?url={url_completa}',
         resolve_vimeos: origin + '/resolve/vimeos?url={embed}&proxy=1',
@@ -322,7 +323,7 @@ async function handleRequest(request, env) {
   var catFiltro = (parts[catTipoIdx + 1] || '').toLowerCase(); // estrenos|populares|''
 
   if ((catSeccion === 'peliculas' || catSeccion === 'series' || catSeccion === 'animes') &&
-      (catFiltro === 'estrenos' || catFiltro === 'populares' || catFiltro === 'emision' || catFiltro === '' || catFiltro === 'page')) {
+      (catFiltro === 'estrenos' || catFiltro === 'populares' || catFiltro === 'emision' || catFiltro === 'proximo' || catFiltro === 'proximamente' || catFiltro === '' || catFiltro === 'page')) {
     var pageNum = parseInt(url.searchParams.get('page') || '1', 10);
     if (catFiltro === 'page' && parts[catTipoIdx + 2]) {
       pageNum = parseInt(parts[catTipoIdx + 2], 10) || 1;
@@ -341,9 +342,10 @@ async function handleRequest(request, env) {
     try {
       var catalogo = null;
       if (esAnimeAv1Cat && catSeccion === 'animes') {
-        var filtroAv1 = (catFiltro === 'estrenos' || catFiltro === 'emision' || !catFiltro)
-          ? 'emision'
-          : (catFiltro === 'populares' ? 'populares' : 'emision');
+        var filtroAv1 = 'emision';
+        if (catFiltro === 'populares') filtroAv1 = 'populares';
+        else if (catFiltro === 'proximo' || catFiltro === 'proximamente') filtroAv1 = 'proximo';
+        else if (catFiltro === 'estrenos' || catFiltro === 'emision' || !catFiltro) filtroAv1 = 'emision';
         catalogo = await listarAnimeAv1Catalogo(filtroAv1, pageNum, origin);
       } else {
         // PelisPlus (flujo original)
@@ -6931,9 +6933,11 @@ function mapAnimeAv1Embeds(embedsObj) {
 async function listarAnimeAv1Catalogo(filtro, page, origin) {
   page = page || 1;
   filtro = (filtro || 'emision').toLowerCase();
+  // AnimeAV1: emision | proximo (status=1) | populares (sin filtro)
   var statusParam = 'emision';
-  if (filtro === 'populares') statusParam = ''; // catálogo general
-  // status=emision = en emisión (estrenos anime)
+  if (filtro === 'populares') statusParam = '';
+  else if (filtro === 'proximo' || filtro === 'proximamente' || filtro === 'upcoming') statusParam = '1';
+  else if (filtro === 'estrenos' || filtro === 'emision') statusParam = 'emision';
   var path = '/catalogo/__data.json?page=' + page;
   if (statusParam) path += '&status=' + encodeURIComponent(statusParam);
 
@@ -6967,8 +6971,9 @@ async function listarAnimeAv1Catalogo(filtro, page, origin) {
       year: yearAv,
       link: ANIMEAV1_BASE + '/media/' + it.slug,
       url_extract: (origin || '') + '/4/anime/' + it.slug,
-      estado: statusParam === 'emision' ? 'En emisión' : null,
-      en_emision: statusParam === 'emision' ? true : null
+      estado: statusParam === 'emision' ? 'En emisión' : (statusParam === '1' ? 'Próximamente' : null),
+      en_emision: statusParam === 'emision' ? true : false,
+      finalizado: false
     });
   }
   return {
@@ -7071,9 +7076,21 @@ async function buscarAnimeAv1(query, limit) {
 }
 
 
-/** Estado unificado para anime/series a partir de campos fuente o TMDB/IMDb */
+/**
+ * Estado unificado anime/series.
+ * AnimeAV1 usa status numérico: 0=Finalizado, 1=Próximamente, 2=En emisión
+ * También acepta booleanos y textos TMDB/IMDb.
+ */
 function normalizarEstadoEmision(raw) {
   if (raw == null || raw === '') return { estado: null, en_emision: null, finalizado: null };
+  // Códigos numéricos AnimeAV1
+  if (typeof raw === 'number' || (typeof raw === 'string' && /^\d+$/.test(String(raw).trim()))) {
+    var code = parseInt(raw, 10);
+    if (code === 0) return { estado: 'Finalizado', en_emision: false, finalizado: true };
+    if (code === 1) return { estado: 'Próximamente', en_emision: false, finalizado: false };
+    if (code === 2) return { estado: 'En emisión', en_emision: true, finalizado: false };
+    if (code === 3) return { estado: 'Pausado', en_emision: false, finalizado: false };
+  }
   if (typeof raw === 'boolean') {
     return raw
       ? { estado: 'En emisión', en_emision: true, finalizado: false }
@@ -7081,29 +7098,43 @@ function normalizarEstadoEmision(raw) {
   }
   var t = String(raw).trim().toLowerCase();
   if (!t) return { estado: null, en_emision: null, finalizado: null };
-  // Finalizado
   if (/final|ended|complet|finish|finished|concluded|terminad/.test(t)) {
     return { estado: 'Finalizado', en_emision: false, finalizado: true };
   }
-  // En emisión
-  if (/emisi[oó]n|airing|ongoing|returning|current|releasing|en\s*curso/.test(t)) {
+  if (/emisi[oó]n|airing|ongoing|returning|current|releasing|en\s*curso|transmission/.test(t)) {
     return { estado: 'En emisión', en_emision: true, finalizado: false };
   }
-  // Pausado / hiatus
   if (/paus|hiatus|on\s*hold/.test(t)) {
     return { estado: 'Pausado', en_emision: false, finalizado: false };
   }
-  // Próximamente
   if (/pr[oó]xim|upcoming|not yet|soon|announced|tba/.test(t)) {
     return { estado: 'Próximamente', en_emision: false, finalizado: false };
   }
-  // Cancelado
   if (/cancel/.test(t)) {
     return { estado: 'Cancelado', en_emision: false, finalizado: true };
   }
-  // Valor legible tal cual
   return { estado: String(raw).trim(), en_emision: null, finalizado: null };
 }
+
+/** Estado desde objeto media de AnimeAV1 (status + endDate) */
+function estadoDesdeAnimeAv1Media(media) {
+  if (!media) return { estado: null, en_emision: null, finalizado: null };
+  // Preferir código status
+  if (media.status != null && media.status !== '') {
+    var st = normalizarEstadoEmision(media.status);
+    if (st.estado) return st;
+  }
+  // Heurística: endDate presente → finalizado; si no y hay startDate → en emisión
+  if (media.endDate) return { estado: 'Finalizado', en_emision: false, finalizado: true };
+  if (media.nextDate || media.waitDays != null) {
+    return { estado: 'En emisión', en_emision: true, finalizado: false };
+  }
+  if (media.startDate && !media.endDate) {
+    return { estado: 'En emisión', en_emision: true, finalizado: false };
+  }
+  return { estado: null, en_emision: null, finalizado: null };
+}
+
 
 async function scrapearAnimeAv1(pageUrl, opts) {
   opts = opts || {};
@@ -7345,15 +7376,8 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     }
   }
 
-  // Estado: animeav1 (status / aired / finished) o heurística por episodios
-  var estadoRaw = media.status || media.airingStatus || media.state || null;
-  if (!estadoRaw && media.aired === false) estadoRaw = 'Finalizado';
-  if (!estadoRaw && media.airing === true) estadoRaw = 'En emisión';
-  if (!estadoRaw && media.finished === true) estadoRaw = 'Finalizado';
-  if (!estadoRaw && media.isFinish === true) estadoRaw = 'Finalizado';
-  var estadoInfo = normalizarEstadoEmision(estadoRaw);
-  // Si no hay dato: si tiene muchos episodios y no parece película, no inventar;
-  // si episodesCount conocido y media.status vacío, dejar null (TMDB puede rellenar)
+  // Estado AnimeAV1: status numérico (0 finalizado, 2 en emisión) + endDate/nextDate
+  var estadoInfo = estadoDesdeAnimeAv1Media(media);
 
   return {
     success: true,
