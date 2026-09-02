@@ -55,6 +55,7 @@ async function handleRequest(request, env) {
   // API key TMDB opcional (Cloudflare Worker secret / var)
   try {
     if (env && env.TMDB_API_KEY) __TMDB_KEY__ = env.TMDB_API_KEY;
+    if (env && env.OMDB_API_KEY) __OMDB_KEY__ = env.OMDB_API_KEY;
   } catch (eEnv) { /* ok */ }
 
   var url = new URL(request.url);
@@ -3628,7 +3629,7 @@ async function buscarMetaOmdb(titulo) {
   var q = String(titulo || '').replace(/\(\d{4}\)/g, '').trim();
   if (!q) return null;
   try {
-    var url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) + '&apikey=trilogy&plot=full';
+    var url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
     var res = await fetch(url, { headers: { Accept: 'application/json' } });
     if (!res.ok) return null;
     var d = await res.json();
@@ -4042,7 +4043,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
           var plotCand = null;
           var omdbCand = null;
           try {
-            var oUrl = 'https://www.omdbapi.com/?i=' + encodeURIComponent(cand.item.id) + '&apikey=trilogy&plot=full';
+            var oUrl = 'https://www.omdbapi.com/?i=' + encodeURIComponent(cand.item.id) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
             var oRes = await fetch(oUrl, { headers: { Accept: 'application/json' } });
             if (oRes.ok) {
               omdbCand = await oRes.json();
@@ -4185,7 +4186,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
   if (wantedYear) {
     try {
       var omdbByYear = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) +
-        '&y=' + encodeURIComponent(wantedYear) + '&apikey=trilogy&plot=full';
+        '&y=' + encodeURIComponent(wantedYear) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
       var oY = await fetch(omdbByYear, { headers: { Accept: 'application/json' } });
       if (oY.ok) {
         var odY = await oY.json();
@@ -4224,7 +4225,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
         }
       }
       // Búsqueda listado OMDb filtrada por año
-      var omdbSearch = 'https://www.omdbapi.com/?s=' + encodeURIComponent(q) + '&type=movie&apikey=trilogy';
+      var omdbSearch = 'https://www.omdbapi.com/?s=' + encodeURIComponent(q) + '&type=movie&apikey=' + encodeURIComponent(__OMDB_KEY__) + '';
       var oS = await fetch(omdbSearch, { headers: { Accept: 'application/json' } });
       if (oS.ok) {
         var odS = await oS.json();
@@ -4234,7 +4235,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
           if (!row || !row.imdbID) continue;
           var yr = row.Year ? String(row.Year).slice(0, 4) : null;
           if (yr && yr !== wantedYear) continue;
-          var omdbUrl3 = 'https://www.omdbapi.com/?i=' + encodeURIComponent(row.imdbID) + '&apikey=trilogy&plot=full';
+          var omdbUrl3 = 'https://www.omdbapi.com/?i=' + encodeURIComponent(row.imdbID) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
           var oR3 = await fetch(omdbUrl3, { headers: { Accept: 'application/json' } });
           if (!oR3.ok) continue;
           var od3 = await oR3.json();
@@ -4308,7 +4309,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
     var cand = candidates[0];
     // Usar OMDb con el primer tt encontrado
     try {
-      var omdbUrl2 = 'https://www.omdbapi.com/?i=' + encodeURIComponent(cand.imdbId) + '&apikey=trilogy&plot=full';
+      var omdbUrl2 = 'https://www.omdbapi.com/?i=' + encodeURIComponent(cand.imdbId) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
       var omdbRes2 = await fetch(omdbUrl2, { headers: { Accept: 'application/json' } });
       if (omdbRes2.ok) {
         var od2 = await omdbRes2.json();
@@ -4461,6 +4462,7 @@ async function buscarMetaTmdbApi(titulo, tipoHint, yearHint) {
 }
 
 var __TMDB_KEY__ = null; // se asigna en handleRequest desde env
+var __OMDB_KEY__ = 'trilogy'; // se sobreescribe en handleRequest desde env.OMDB_API_KEY si existe
 
 // ======================================================
 // METADATA / PORTADAS ROBUSTAS
