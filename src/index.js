@@ -1,14 +1,17 @@
 var __LAST_ORIGIN__ = "";
 // src/index.js — MovieZone Worker (Lamovie + Hackstore + PelisPlusHD)
-// Compatible con Workers clásico y module workers
-addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request, event.env || self || {}));
-});
-
-// Module worker export (Wrangler moderno)
+// Module worker (Wrangler moderno). El patrón addEventListener('fetch', ...)
+// clásico se retiró: event.env no existe en ese modelo y es código muerto
+// junto al export default de abajo.
 export default {
   async fetch(request, env, ctx) {
-    return handleRequest(request, env || {});
+    try {
+      return await handleRequest(request, env || {});
+    } catch (eTop) {
+      // Red de seguridad: nunca dejar que una excepción no controlada
+      // devuelva la página de error genérica de Cloudflare (1101) en vez de JSON.
+      return json({ success: false, error: (eTop && eTop.message) || 'Error interno' }, 500);
+    }
   }
 };
 
