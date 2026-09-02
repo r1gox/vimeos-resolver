@@ -3815,7 +3815,8 @@ async function scrapeFichaImdbEs(imdbId) {
         generos: [],
         descripcion: null,
         year: null,
-        titulo_original: null
+        titulo_original: null,
+        status: null
       };
 
       // JSON-LD
@@ -3930,6 +3931,17 @@ async function scrapeFichaImdbEs(imdbId) {
         if (pm2) {
           var plot = limpiarTexto(pm2[1].replace(/<[^>]+>/g, ' '));
           if (plot.length >= 40) out.descripcion = plot;
+        }
+      }
+
+
+      // Estado serie (IMDb): "TV Series (2023– )" = en emisión; "(2023–2024)" = finalizado
+      if (!out.status) {
+        var stm = html.match(/TV Series\s*\(\s*((?:19|20)\d{2})\s*[–—\-]\s*((?:19|20)\d{2})?\s*\)/i)
+          || html.match(/Serie de TV\s*\(\s*((?:19|20)\d{2})\s*[–—\-]\s*((?:19|20)\d{2})?\s*\)/i)
+          || html.match(/Mini[\- ]?Serie(?:s)?\s*\(\s*((?:19|20)\d{2})\s*[–—\-]\s*((?:19|20)\d{2})?\s*\)/i);
+        if (stm) {
+          out.status = stm[2] ? 'Ended' : 'Returning Series';
         }
       }
 
@@ -4303,7 +4315,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
             duracion: (ficha && ficha.duracion) || (extra && extra.Runtime && extra.Runtime !== 'N/A' ? parseInt(extra.Runtime, 10) || null : null),
             duracion_texto: (ficha && ficha.duracion_texto) || null,
             certificacion: (ficha && ficha.certificacion) || (extra && extra.Rated && extra.Rated !== 'N/A' ? extra.Rated : null),
-            status: null,
+            status: (ficha && ficha.status) || null,
             tagline: null,
             slug_tmdb: null
           };
@@ -4811,6 +4823,7 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
     if (!destino.duracion && origenMeta.duracion) destino.duracion = origenMeta.duracion;
     if (!destino.duracion_texto && origenMeta.duracion_texto) destino.duracion_texto = origenMeta.duracion_texto;
     if (!destino.certificacion && origenMeta.certificacion) destino.certificacion = origenMeta.certificacion;
+    if (!destino.status && origenMeta.status) destino.status = origenMeta.status;
     return destino;
   }
 
