@@ -575,7 +575,11 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     candidatos.push({
       fuente: src,
       url: fullUrl,
-      preferred: !!(sourceParam && sourceParam === src)
+      preferred: !!(sourceParam && (
+        sourceParam === src ||
+        sourceIdFromName(src) === String(sourceParam) ||
+        sourceIdFromName(src) === sourceIdFromName(sourceParam)
+      ))
     });
   }
 
@@ -673,9 +677,15 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     }
   }
 
-  // Capítulo con fuente en ruta (/6/.../1/1): SOLO esa fuente (sin cascada)
+  // Capítulo con fuente en ruta (/6/.../1/1): SOLO esa fuente si hay match
   if (esCapitulo && sourceParam) {
-    var onlyPref = candidatos.filter(function (c) { return c.preferred; });
+    var onlyPref = candidatos.filter(function (c) {
+      if (c.preferred) return true;
+      if (c.fuente === sourceParam) return true;
+      var idC = sourceIdFromName(c.fuente);
+      var idP = sourceIdFromName(sourceParam) || String(sourceParam);
+      return idC && idP && idC === idP;
+    });
     if (onlyPref.length) candidatos = onlyPref;
   }
 
@@ -714,7 +724,13 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
       else r = await scrapearLamovie(c.url, o2);
       if (r && r.success !== false) {
         if (esCapitulo && r.tipo === 'Capitulo' && (!r.reproductores || !r.reproductores.length)) {
-          return null;
+          // doramasflix a veces tarda en links: devolver igual (mejor que 404)
+          if (c.fuente === 'doramasflix') {
+            r.reproductores = r.reproductores || [];
+            r._sin_players = true;
+          } else {
+            return null;
+          }
         }
         // No aceptar Anime cuando se pidió película (animeav1 contamina slugs live-action)
         var tipoRes = String(r.tipo || '').toLowerCase();
@@ -771,7 +787,13 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
 
   // Fallback búsqueda universal — NO en capítulos (demasiado lento)
   if (esCapitulo) {
-    throw lastErr || new Error('Capítulo no encontrado en fuente ' + (sourceParam || 'indicada'));
+    var msgCap = 'Capítulo no encontrado';
+    if (sourceParam) msgCap += ' en ' + sourceParam;
+    msgCap += ' (' + slug + ' S' + seasonOnly + 'E' + episodeOnly + ')';
+    if (lastErr && lastErr.message && lastErr.message.indexOf('HTTP 404') === -1) {
+      msgCap += ': ' + lastErr.message;
+    }
+    throw new Error(msgCap);
   }
   // Fallback búsqueda universal — solo hits de la MISMA obra (slug/título exacto)
   var q = slug.replace(/-/g, ' ');
