@@ -336,7 +336,37 @@ async function handleRequest(request, env) {
           resultados.total = resultados.resultados.length;
         } catch (eEnrich) { /* silencioso */ }
       }
-      return json(resultados);
+      // Formato compacto de búsqueda (results) + resultados (compat MovieZone)
+      var pageN = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10) || 1);
+      var lista = (resultados && resultados.resultados) || [];
+      var resultsCompact = [];
+      for (var rc = 0; rc < lista.length; rc++) {
+        var it = lista[rc];
+        if (!it) continue;
+        var tipoR = it.tipo || 'Pelicula';
+        var tipoPathR = (tipoR === 'Anime') ? 'anime' : ((tipoR === 'Serie') ? 'serie' : 'pelicula');
+        var sidR = it.source_id || sourceIdFromName(it.fuente) || '';
+        resultsCompact.push({
+          title: it.titulo || it.title || '',
+          slug: it.slug || '',
+          url: it.url_extract || (origin + '/' + sidR + '/' + tipoPathR + '/' + (it.slug || '')),
+          portada: it.portada || null,
+          year: it.year || null,
+          source: it.fuente || it.source || null,
+          type: tipoR,
+          source_id: String(sidR)
+        });
+      }
+      return json({
+        success: true,
+        query: query,
+        page: pageN,
+        count: resultsCompact.length,
+        results: resultsCompact,
+        fuente: (resultados && resultados.fuente) || null,
+        total: resultsCompact.length,
+        resultados: lista
+      });
     } catch (err) {
       return json({ success: false, error: err.message }, 500);
     }
@@ -449,7 +479,20 @@ async function handleRequest(request, env) {
         if (resultadoPath) normalizarCamposResultado(resultadoPath);
       } else if (resultadoPath) {
         // Capítulo: players + link/url_extract (sin meta de serie)
-        var embedsCap = resultadoPath.reproductores || resultadoPath.embeds || [];
+        var embedsCap = resultadoPath.embeds || resultadoPath.reproductores || [];
+        // Dedupe por URL de embed
+        var seenEmb = Object.create(null);
+        var embedsUniq = [];
+        for (var eu = 0; eu < embedsCap.length; eu++) {
+          var emb = embedsCap[eu];
+          var uk = emb && (emb.url || emb);
+          if (!uk) continue;
+          uk = String(uk);
+          if (seenEmb[uk]) continue;
+          seenEmb[uk] = true;
+          embedsUniq.push(emb);
+        }
+        embedsCap = embedsUniq;
         var sidCap = resultadoPath.fuente || resultadoPath.source_id || forcedSource || pathSource || '';
         var sidNum = (typeof sourceIdFromName === 'function' && sourceIdFromName(sidCap)) || sidCap || pathSource || '';
         resultadoPath = {
@@ -5099,6 +5142,15 @@ async function buscarUniversal(query, sourceFilter, limit) {
     for (var rj = 0; rj < relevantes.length; rj++) todos.push(relevantes[rj]);
   }
 
+  // Si animeav1 trajo resultados → SOLO esos (es la fuente de anime; no mezclar pelisplus/etc.)
+  var hitsAv1 = [];
+  for (var ha = 0; ha < todos.length; ha++) {
+    if (todos[ha] && todos[ha].fuente === 'animeav1') hitsAv1.push(todos[ha]);
+  }
+  if (hitsAv1.length) {
+    todos = hitsAv1;
+  }
+
   // Fusionar misma obra entre fuentes (sin duplicados)
   var resultados = typeof fusionarResultadosBusqueda === 'function'
     ? fusionarResultadosBusqueda(todos)
@@ -7426,7 +7478,6 @@ async function scrapearDoramasflix(pageUrl, opts) {
       total: reproductores.length,
       embeds: reproductores,
       descargas: [],
-      url_extract: null, // se rellena en reescribirLinksCortos / path
       link: DORAMASFLIX_BASE + '/capitulos/' + epSlug
     };
   }
