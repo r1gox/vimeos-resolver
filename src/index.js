@@ -7858,54 +7858,48 @@ async function doramasflixListarEpisodios(serieId, seasonNumber) {
 // ======================================================
 // Prioridad: VOE → VidHide → Streamtape (Doramasflix)
 // ======================================================
-
 function detectarServidorImportante(url) {
   var u = String(url || "").toLowerCase();
   if (!u) return null;
 
-  // VOE + mirrors
+  if (
+    u.indexOf("streamtape.com") !== -1 ||
+    u.indexOf("streamtape.to") !== -1 ||
+    u.indexOf("strtape") !== -1
+  ) return "streamtape";
+
+  if (
+    u.indexOf("streamwish") !== -1 ||
+    u.indexOf("flaswish") !== -1 ||
+    u.indexOf("strwish") !== -1 ||
+    u.indexOf("ahvsh.com") !== -1 ||
+    u.indexOf("streamhg.com") !== -1 ||
+    u.indexOf("streamwish.") !== -1
+  ) return "streamwish";
+
   if (
     u.indexOf("voe.sx") !== -1 ||
     u.indexOf("voe-network") !== -1 ||
     u.indexOf("jilliandescribecompany") !== -1 ||
-    u.indexOf("timbercoolingblaze") !== -1 ||
-    u.indexOf("reputationsheriffkenneth") !== -1 ||
     u.indexOf("voe.") !== -1
-  ) {
-    return "voe";
-  }
+  ) return "voe";
 
-  // VidHide / StreamHide family
   if (
     u.indexOf("vidhide") !== -1 ||
     u.indexOf("streamhide") !== -1 ||
     u.indexOf("vidhidepro") !== -1 ||
-    u.indexOf("vidhidepre") !== -1 ||
-    u.indexOf("filelions") !== -1 ||
-    u.indexOf("smoothpre") !== -1
-  ) {
-    return "vidhide";
-  }
-
-  // Streamtape + mirrors
-  if (
-    u.indexOf("streamtape.com") !== -1 ||
-    u.indexOf("streamtape.to") !== -1 ||
-    u.indexOf("strtape") !== -1 ||
-    u.indexOf("streamtapeadblock") !== -1
-  ) {
-    return "streamtape";
-  }
+    u.indexOf("filelions") !== -1
+  ) return "vidhide";
 
   return null;
 }
 
 function scoreServidorImportante(url) {
   var s = detectarServidorImportante(url);
-
-  if (s === "streamtape") return 100;
-  if (s === "vidhide") return 90;
-  if (s === "voe") return 80;
+  if (s === "streamtape") return 100; // 1º
+  if (s === "streamwish") return 90;  // 2º
+  if (s === "voe") return 80;         // 3º
+  if (s === "vidhide") return 70;     // 4º
   return 0;
 }
 
