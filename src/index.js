@@ -448,7 +448,10 @@ async function handleRequest(request, env) {
         }
         if (resultadoPath) normalizarCamposResultado(resultadoPath);
       } else if (resultadoPath) {
-        // Capítulo: solo players (sin meta de serie)
+        // Capítulo: players + link/url_extract (sin meta de serie)
+        var embedsCap = resultadoPath.reproductores || resultadoPath.embeds || [];
+        var sidCap = resultadoPath.fuente || resultadoPath.source_id || forcedSource || pathSource || '';
+        var sidNum = (typeof sourceIdFromName === 'function' && sourceIdFromName(sidCap)) || sidCap || pathSource || '';
         resultadoPath = {
           success: true,
           tipo: 'Capitulo',
@@ -458,11 +461,12 @@ async function handleRequest(request, env) {
           titulo: resultadoPath.titulo_serie || resultadoPath.titulo || slug,
           temporada: commonOpts.season,
           episodio: commonOpts.episode,
-          total: (resultadoPath.reproductores && resultadoPath.reproductores.length) ||
-            (resultadoPath.embeds && resultadoPath.embeds.length) || 0,
-          embeds: resultadoPath.reproductores || resultadoPath.embeds || [],
-          reproductores: resultadoPath.reproductores || resultadoPath.embeds || [],
-          descargas: resultadoPath.descargas || []
+          total: embedsCap.length || 0,
+          embeds: embedsCap,
+          descargas: resultadoPath.descargas || [],
+          url_extract: origin + '/' + sidNum + '/' + tipoRuta + '/' + (resultadoPath.slug || slug) +
+            '/' + commonOpts.season + '/' + commonOpts.episode,
+          link: resultadoPath.link || null
         };
       }
       return json(resultadoPath);
@@ -7409,7 +7413,7 @@ async function scrapearDoramasflix(pageUrl, opts) {
       }
     }
 
-    // Respuesta mínima de capítulo (la meta ya está en el detalle de la serie)
+    // Respuesta de capítulo (sin meta de serie; sí link + url_extract)
     return {
       success: true,
       tipo: 'Capitulo',
@@ -7421,8 +7425,9 @@ async function scrapearDoramasflix(pageUrl, opts) {
       episodio: eN,
       total: reproductores.length,
       embeds: reproductores,
-      reproductores: reproductores,
-      descargas: []
+      descargas: [],
+      url_extract: null, // se rellena en reescribirLinksCortos / path
+      link: DORAMASFLIX_BASE + '/capitulos/' + epSlug
     };
   }
 
