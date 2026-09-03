@@ -138,23 +138,19 @@ async function handleRequest(request, env) {
       if (!provider || supported.indexOf(provider) === -1) {
         provider = detectarProviderEmbedFull(resolveUrl) || detectarProviderEmbed(resolveUrl) || '';
       }
-      // Si aún no hay provider conocido: intentar streamwish (packer) y luego vimeos
+      // Sin provider conocido: un solo intento streamwish (evita Too many subrequests)
       if (!provider || supported.indexOf(provider) === -1) {
         try {
           resolved = await resolveByProvider(resolveUrl, 'streamwish', wantProxy ? origin : null);
           provider = 'streamwish';
         } catch (eTrySw) {
-          try {
-            resolved = await resolveByProvider(resolveUrl, 'vimeos', wantProxy ? origin : null);
-            provider = 'vimeos';
-          } catch (eTryVm) {
-            return json({
-              success: false,
-              provider: null,
-              error: 'Host no soportado o no resoluble (no es streamwish/vimeos/voe/vidhide). Detalle: ' + (eTrySw.message || eTryVm.message),
-              source: resolveUrl
-            }, 422);
-          }
+          return json({
+            success: false,
+            provider: null,
+            error: 'Host no soportado o no resoluble. ' + (eTrySw.message || ''),
+            source: resolveUrl,
+            hint: 'Soportados: streamwish/flaswish, voe, vidhide, vimeos, goodstream'
+          }, 422);
         }
       } else {
         resolved = await resolveByProvider(resolveUrl, provider, wantProxy ? origin : null);
@@ -2039,12 +2035,11 @@ async function buildProviderRichResponse(embedUrl, origin, forceProvider) {
   var provider = forceProvider || detectarProviderEmbedFull(embedUrl) || detectarProviderEmbed(embedUrl) || '';
   var base;
   var lastErr = null;
+  // Solo 1 provider detectado; si no hay, un único intento streamwish (mismo packer en muchos clones).
+  // NO probar 5 providers: Cloudflare limita subrequests por invocación.
   var tryList = [];
   if (provider) tryList.push(provider);
-  // Fallbacks si el host es desconocido o el primero falla
-  ['streamwish', 'vidhide', 'voe', 'vimeos', 'goodstream'].forEach(function (p) {
-    if (tryList.indexOf(p) === -1) tryList.push(p);
-  });
+  else tryList.push('streamwish');
   for (var ti = 0; ti < tryList.length; ti++) {
     try {
       base = await resolveByProvider(embedUrl, tryList[ti], null);
@@ -2061,7 +2056,8 @@ async function buildProviderRichResponse(embedUrl, origin, forceProvider) {
       success: false,
       provider: provider || null,
       source: embedUrl,
-      error: (lastErr && lastErr.message) || 'No se pudo resolver este embed'
+      error: (lastErr && lastErr.message) || 'No se pudo resolver este embed (host no soportado o protegido)',
+      hint: 'primeload/do7go y similares no exponen HLS sin anti-bot; usa streamwish/flaswish/voe/vidhide/vimeos'
     };
   }
 
@@ -2179,11 +2175,20 @@ function attachStreamUrl(origin, rep) {
     rep.hls_resolve = rep.stream_url;
     rep.provider = 'vimeos';
   } else {
-    // Host desconocido (primeload, do7go, etc.): auto /streamurl (intenta detectar + packer)
-    // NO usar /resolve default vimeos (falla con "Packer no encontrado")
-    rep.stream_url = origin + '/streamurl?url=' + encodeURIComponent(u);
-    rep.hls_resolve = rep.stream_url;
-    rep.provider = 'auto';
+    // Hosts sin resolver real (primeload, do7go, CF-protegidos): no inventar stream
+    // El player debe usar el embed en iframe (url) si stream falla
+    var hostBad = /primeload|do7go|bysefujedu|dood|mixdrop|streamtape|uqload/i.test(u);
+    if (hostBad) {
+      rep.stream_url = null;
+      rep.hls_resolve = null;
+      rep.provider = 'iframe';
+      rep.playable = false;
+      rep.nota = 'Solo embed/iframe; no hay HLS público';
+    } else {
+      rep.stream_url = origin + '/streamurl?url=' + encodeURIComponent(u);
+      rep.hls_resolve = rep.stream_url;
+      rep.provider = 'auto';
+    }
   }
   return rep;
 }
