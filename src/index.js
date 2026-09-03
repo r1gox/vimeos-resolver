@@ -1,17 +1,14 @@
 var __LAST_ORIGIN__ = "";
 // src/index.js — MovieZone Worker (Lamovie + Hackstore + PelisPlusHD)
-// Module worker (Wrangler moderno). El patrón addEventListener('fetch', ...)
-// clásico se retiró: event.env no existe en ese modelo y es código muerto
-// junto al export default de abajo.
+// Compatible con Workers clásico y module workers
+addEventListener('fetch', event => {
+  event.respondWith(handleRequest(event.request, event.env || self || {}));
+});
+
+// Module worker export (Wrangler moderno)
 export default {
   async fetch(request, env, ctx) {
-    try {
-      return await handleRequest(request, env || {});
-    } catch (eTop) {
-      // Red de seguridad: nunca dejar que una excepción no controlada
-      // devuelva la página de error genérica de Cloudflare (1101) en vez de JSON.
-      return json({ success: false, error: (eTop && eTop.message) || 'Error interno' }, 500);
-    }
+    return handleRequest(request, env || {});
   }
 };
 
@@ -168,6 +165,10 @@ async function handleRequest(request, env) {
     (parts[0] === 'vidhide' && parts[1] === 'streamurl') ||
     (parts[0] === 'voe' && parts[1] === 'streamurl') ||
     (parts[0] === 'goodstream' && parts[1] === 'streamurl') ||
+    (parts[0] === 'streamtape' && parts[1] === 'streamurl') ||
+    (parts[0] === 'yourupload' && parts[1] === 'streamurl') ||
+    (parts[0] === 'mp4upload' && parts[1] === 'streamurl') ||
+    (parts[0] === 'ryderjet' && parts[1] === 'streamurl') ||
     parts[0] === 'streamurl'
   ) {
     var swUrl = url.searchParams.get('url') || '';
@@ -180,6 +181,10 @@ async function handleRequest(request, env) {
           vidhide: origin + '/vidhide/streamurl?url=https://vidhidepro.com/v/XXXX',
           voe: origin + '/voe/streamurl?url=https://voe.sx/e/XXXX',
           goodstream: origin + '/goodstream/streamurl?url=https://goodstream.one/embed-XXXX.html',
+          streamtape: origin + '/streamtape/streamurl?url=https://streamtape.com/e/XXXX',
+          yourupload: origin + '/yourupload/streamurl?url=https://www.yourupload.com/embed/XXXX',
+          mp4upload: origin + '/mp4upload/streamurl?url=https://www.mp4upload.com/embed-XXXX.html',
+          ryderjet: origin + '/ryderjet/streamurl?url=https://ryderjet.com/embed/XXXX',
           auto: origin + '/streamurl?url={embed}'
         }
       }, 400);
@@ -190,6 +195,10 @@ async function handleRequest(request, env) {
     else if (parts[0] === 'vidhide') forceProv = 'vidhide';
     else if (parts[0] === 'voe') forceProv = 'voe';
     else if (parts[0] === 'goodstream') forceProv = 'goodstream';
+    else if (parts[0] === 'streamtape') forceProv = 'streamtape';
+    else if (parts[0] === 'yourupload') forceProv = 'yourupload';
+    else if (parts[0] === 'mp4upload') forceProv = 'mp4upload';
+    else if (parts[0] === 'ryderjet') forceProv = 'ryderjet';
     try {
       var rich = await buildProviderRichResponse(swUrl, origin, forceProv);
       return json(rich);
@@ -702,12 +711,6 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
         // No aceptar Anime cuando se pidió película (animeav1 contamina slugs live-action)
         var tipoRes = String(r.tipo || '').toLowerCase();
         if (tipoRuta === 'pelicula' && (tipoRes.indexOf('anime') !== -1 || c.fuente === 'animeav1' )) {
-          return null;
-        }
-        // No aceptar Anime cuando se pidió serie con fuente forzada distinta de animeav1
-        // (evita que la cascada "filtre" a animeav1 cuando pelisplushd falla en un slug)
-        if (tipoRuta === 'serie' && (tipoRes.indexOf('anime') !== -1 || c.fuente === 'animeav1') &&
-            sourceParam && sourceParam !== 'animeav1') {
           return null;
         }
         // No aceptar Película cuando se pidió anime (salvo que la fuente sea anime)
@@ -1987,6 +1990,60 @@ async function resolveVoeEmbed(embedUrl, origin) {
   return out;
 }
 
+/**
+ * Streamtape: NO usa .m3u8, el link final es un mp4 directo armado en dos
+ * pedazos para dificultar el scraping: un <div id="...link" style="display:
+ * none"> con la URL parcial (//tapecontent.net/get_video?...) y una línea
+ * JS que hace getElementById('...link').innerHTML = "&token=XXXX...".
+ * Método documentado y usado por varios extractores públicos; si Streamtape
+ * cambia el HTML esto puede necesitar un ajuste de regex — el error de abajo
+ * lo deja claro en vez de fallar en silencio.
+ */
+async function resolveStreamtapeEmbed(embedUrl, origin) {
+  var pageUrl = String(embedUrl || '').replace('/e/', '/v/');
+  var res;
+  try {
+    res = await fetchWithTimeout(pageUrl, { headers: HEADERS, redirect: 'follow' }, 12000);
+  } catch (e) {
+    throw new Error('Streamtape: bloqueado o no accesible desde el worker (' + (e.message || e) + ').');
+  }
+  if (!res.ok) throw new Error('Streamtape: HTTP ' + res.status);
+  var html = await res.text();
+
+  var mToken = html.match(/document\.getElementById\(['"]([a-z0-9_]*link)['"]\)\.innerHTML\s*=\s*(.+?);/i);
+  if (!mToken) throw new Error('Streamtape: no se encontró el bloque del token (posible cambio de HTML)');
+  var tokenPart = mToken[2];
+  var mTokenVal = tokenPart.match(/token=([^&'"]+)/i);
+  if (!mTokenVal) throw new Error('Streamtape: token no encontrado dentro del bloque');
+  var token = mTokenVal[1];
+
+  var idBase = mToken[1]; // ej "norobotlink" -> el otro div suele ser "ideoooolink", pero puede variar
+  var mBase =
+    html.match(/id\s*=\s*["']ideoooolink["'][^>]*>([^<]+)/i) ||
+    html.match(new RegExp('id\\s*=\\s*["\']' + idBase.replace('norobot', 'ideooo') + '["\'][^>]*>([^<]+)', 'i')) ||
+    html.match(/get_video\?[^"'<]+/i);
+  if (!mBase) throw new Error('Streamtape: no se encontró la URL base del video');
+  var basePart = (mBase[1] || mBase[0]).trim();
+  if (basePart.charAt(0) !== '/') basePart = '/' + basePart.replace(/^\/+/, '');
+
+  var direct = 'https:' + basePart + (basePart.indexOf('?') === -1 ? '?' : '&') + 'token=' + token;
+
+  var out = {
+    success: true,
+    provider: 'streamtape',
+    source: embedUrl,
+    resolved_embed: pageUrl,
+    type: 'mp4',
+    url: direct,
+    master: direct,
+    all_sources: [direct]
+  };
+  if (origin) {
+    out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(direct) + '&ref=' + encodeURIComponent(pageUrl);
+  }
+  return out;
+}
+
 function detectarProviderEmbed(u) {
   u = String(u || '').toLowerCase();
   if (u.indexOf('vimeos') !== -1) return 'vimeos';
@@ -1994,6 +2051,106 @@ function detectarProviderEmbed(u) {
       u.indexOf('strwish') !== -1 || u.indexOf('ahvsh') !== -1 ||
       u.indexOf('streamhg') !== -1) return 'streamwish';
   return '';
+}
+
+/** YourUpload: mp4 directo en el HTML del embed */
+async function resolveYourUploadEmbed(embedUrl, origin) {
+  var res;
+  try {
+    res = await fetchWithTimeout(embedUrl, {
+      headers: Object.assign({}, HEADERS, { Referer: 'https://www.yourupload.com/' })
+    }, 12000);
+  } catch (e) {
+    throw new Error('YourUpload: bloqueado o no accesible desde el worker (' + (e.message || e) + ').');
+  }
+  if (!res.ok) throw new Error('YourUpload: HTTP ' + res.status);
+  var html = await res.text();
+  var m =
+    html.match(/file\s*:\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i) ||
+    html.match(/(https?:\/\/vidcache\.net[^"'\s]+\.mp4)/i) ||
+    html.match(/(https?:\/\/[^"'\s]+\/video\.mp4)/i);
+  if (!m) throw new Error('YourUpload: no se encontró el MP4 (posible cambio de HTML)');
+  var mp4 = m[1];
+  var out = {
+    success: true,
+    provider: 'yourupload',
+    source: embedUrl,
+    resolved_embed: embedUrl,
+    type: 'mp4',
+    url: mp4,
+    master: mp4,
+    all_sources: [mp4]
+  };
+  if (origin) out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(mp4) + '&ref=' + encodeURIComponent(embedUrl);
+  return out;
+}
+
+/** MP4Upload: mp4 directo en el HTML del embed */
+async function resolveMp4UploadEmbed(embedUrl, origin) {
+  var res;
+  try {
+    res = await fetchWithTimeout(embedUrl, {
+      headers: Object.assign({}, HEADERS, { Referer: 'https://www.mp4upload.com/' })
+    }, 12000);
+  } catch (e) {
+    throw new Error('MP4Upload: bloqueado o no accesible desde el worker (' + (e.message || e) + ').');
+  }
+  if (!res.ok) throw new Error('MP4Upload: HTTP ' + res.status);
+  var html = await res.text();
+  var m =
+    html.match(/player\.src\s*\(\s*\{[^}]*src\s*:\s*["'](https?:\/\/[^"']+)["']/i) ||
+    html.match(/src\s*:\s*["'](https?:\/\/[^"']+video\.mp4[^"']*)["']/i) ||
+    html.match(/(https?:\/\/[^"'\s]*mp4upload\.com[^"'\s]*\/video\.mp4)/i);
+  if (!m) throw new Error('MP4Upload: no se encontró el MP4 (posible cambio de HTML)');
+  var mp4 = m[1];
+  var out = {
+    success: true,
+    provider: 'mp4upload',
+    source: embedUrl,
+    resolved_embed: embedUrl,
+    type: 'mp4',
+    url: mp4,
+    master: mp4,
+    all_sources: [mp4]
+  };
+  if (origin) out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(mp4) + '&ref=' + encodeURIComponent(embedUrl);
+  return out;
+}
+
+/** Ryderjet: HLS ofuscado con Packer (mismo patrón que Streamwish) */
+async function resolveRyderjetEmbed(embedUrl, origin) {
+  var res;
+  try {
+    res = await fetchWithTimeout(embedUrl, {
+      headers: Object.assign({}, HEADERS, { Referer: 'https://ryderjet.com/' })
+    }, 12000);
+  } catch (e) {
+    throw new Error('Ryderjet: bloqueado o no accesible desde el worker (' + (e.message || e) + ').');
+  }
+  if (!res.ok) throw new Error('Ryderjet: HTTP ' + res.status);
+  var html = await res.text();
+  var decoded;
+  try {
+    decoded = unpackPacker(html);
+  } catch (e2) {
+    throw new Error('Ryderjet: ' + (e2.message || 'no se pudo desempacar el Packer'));
+  }
+  var urls = findStreamUrlsInDecoded(decoded);
+  urls = urls.filter(function (u) { return /\.m3u8|\.mp4|hls/i.test(u); });
+  if (!urls.length) throw new Error('Ryderjet: HTML obtenido pero sin fuentes HLS');
+  var master = pickMasterUrl(urls);
+  var out = {
+    success: true,
+    provider: 'ryderjet',
+    source: embedUrl,
+    resolved_embed: embedUrl,
+    type: 'hls',
+    url: master,
+    master: master,
+    all_sources: urls
+  };
+  if (origin) out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(master) + '&ref=' + encodeURIComponent(embedUrl);
+  return out;
 }
 
 function detectarProviderEmbedFull(u) {
@@ -2005,6 +2162,10 @@ function detectarProviderEmbedFull(u) {
       u.indexOf('callistanise') !== -1 || u.indexOf('smoothpre') !== -1 || u.indexOf('filelions') !== -1) return 'vidhide';
   if (u.indexOf('voe') !== -1 || u.indexOf('jilliandescribe') !== -1) return 'voe';
   if (u.indexOf('goodstream') !== -1) return 'goodstream';
+  if (u.indexOf('streamtape') !== -1 || u.indexOf('stape.') !== -1 || u.indexOf('streamta.pe') !== -1) return 'streamtape';
+  if (u.indexOf('yourupload.com') !== -1) return 'yourupload';
+  if (u.indexOf('mp4upload.com') !== -1) return 'mp4upload';
+  if (u.indexOf('ryderjet.com') !== -1) return 'ryderjet';
   return '';
 }
 
@@ -2014,6 +2175,10 @@ async function resolveByProvider(embedUrl, provider, origin) {
   if (provider === 'vidhide') return resolveVidhideEmbed(embedUrl, origin);
   if (provider === 'goodstream') return resolveGoodstreamEmbed(embedUrl, origin);
   if (provider === 'voe') return resolveVoeEmbed(embedUrl, origin);
+  if (provider === 'streamtape') return resolveStreamtapeEmbed(embedUrl, origin);
+  if (provider === 'yourupload') return resolveYourUploadEmbed(embedUrl, origin);
+  if (provider === 'mp4upload') return resolveMp4UploadEmbed(embedUrl, origin);
+  if (provider === 'ryderjet') return resolveRyderjetEmbed(embedUrl, origin);
   if (provider === 'vimeos') return resolveVimeosEmbed(embedUrl, origin);
   throw new Error('Provider no soportado: ' + (provider || 'desconocido'));
 }
@@ -2134,6 +2299,18 @@ function attachStreamUrl(origin, rep) {
     rep.hls_resolve = rep.stream_url;
   } else if (prov === 'goodstream' || s.indexOf('goodstream') !== -1) {
     rep.stream_url = origin + '/goodstream/streamurl?url=' + encodeURIComponent(u);
+    rep.hls_resolve = rep.stream_url;
+  } else if (prov === 'streamtape' || s.indexOf('streamtape') !== -1) {
+    rep.stream_url = origin + '/streamtape/streamurl?url=' + encodeURIComponent(u);
+    rep.hls_resolve = rep.stream_url;
+  } else if (prov === 'yourupload' || s.indexOf('yourupload') !== -1) {
+    rep.stream_url = origin + '/yourupload/streamurl?url=' + encodeURIComponent(u);
+    rep.hls_resolve = rep.stream_url;
+  } else if (prov === 'mp4upload' || s.indexOf('mp4upload') !== -1) {
+    rep.stream_url = origin + '/mp4upload/streamurl?url=' + encodeURIComponent(u);
+    rep.hls_resolve = rep.stream_url;
+  } else if (prov === 'ryderjet' || s.indexOf('ryderjet') !== -1) {
+    rep.stream_url = origin + '/ryderjet/streamurl?url=' + encodeURIComponent(u);
     rep.hls_resolve = rep.stream_url;
   } else if (prov === 'vimeos' || s.indexOf('vimeos') !== -1) {
     rep.stream_url = origin + '/resolve/vimeos?url=' + encodeURIComponent(u) + '&proxy=1';
@@ -3289,61 +3466,6 @@ async function fetchDetalleTmdbMeta(slugOrTitle, tipoHint) {
   return null;
 }
 
-/** Completa tmdb_id / status / descripción / votos usando IMDb ID (find + detail). */
-async function completarDesdeTmdbPorImdbId(imdbId, tipoHint) {
-  var key = __TMDB_KEY__ || null;
-  if (!key || !imdbId || String(imdbId).indexOf('tt') !== 0) return null;
-  try {
-    var findUrl = 'https://api.themoviedb.org/3/find/' + encodeURIComponent(imdbId)
-      + '?api_key=' + encodeURIComponent(key)
-      + '&external_source=imdb_id&language=es-ES';
-    var res = await fetchWithTimeout(findUrl, { headers: { Accept: 'application/json' } }, 9000);
-    if (!res || !res.ok) return null;
-    var data = await res.json();
-    var isTv = normalizarTipoKey(tipoHint) === 'serie' || normalizarTipoKey(tipoHint) === 'anime';
-    var hit = null;
-    var mediaType = null;
-    if (isTv) {
-      if (data.tv_results && data.tv_results.length) { hit = data.tv_results[0]; mediaType = 'tv'; }
-      else if (data.movie_results && data.movie_results.length) { hit = data.movie_results[0]; mediaType = 'movie'; }
-    } else {
-      if (data.movie_results && data.movie_results.length) { hit = data.movie_results[0]; mediaType = 'movie'; }
-      else if (data.tv_results && data.tv_results.length) { hit = data.tv_results[0]; mediaType = 'tv'; }
-    }
-    if (!hit || !hit.id) return null;
-
-    var detUrl = 'https://api.themoviedb.org/3/' + mediaType + '/' + hit.id
-      + '?api_key=' + encodeURIComponent(key) + '&language=es-ES';
-    var res2 = await fetchWithTimeout(detUrl, { headers: { Accept: 'application/json' } }, 9000);
-    if (!res2 || !res2.ok) {
-      return {
-        tmdb_id: hit.id,
-        descripcion: hit.overview || null,
-        votos: hit.vote_count || null,
-        calificacion: hit.vote_average != null ? Number(hit.vote_average) : null,
-        status: null,
-        fecha_estreno: hit.release_date || hit.first_air_date || null,
-        year: (hit.release_date || hit.first_air_date || '').slice(0, 4) || null
-      };
-    }
-    var d = await res2.json();
-    var release = d.release_date || d.first_air_date || null;
-    return {
-      tmdb_id: d.id || hit.id,
-      descripcion: d.overview || hit.overview || null,
-      votos: d.vote_count != null ? d.vote_count : (hit.vote_count || null),
-      calificacion: d.vote_average != null ? Number(d.vote_average) : null,
-      status: d.status || null,
-      fecha_estreno: release,
-      year: release ? String(release).slice(0, 4) : null,
-      backdrop: d.backdrop_path ? ('https://image.tmdb.org/t/p/w780' + d.backdrop_path) : null,
-      titulo_original: d.original_title || d.original_name || null
-    };
-  } catch (e) {
-    return null;
-  }
-}
-
 /** Extrae meta limpia desde un ítem de búsqueda tvymas (sin campos duplicados) */
 function mapMetaFromSearchItem(it) {
   if (!it) return null;
@@ -3482,6 +3604,7 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
 
   if (meta.tmdb_id) item.tmdb_id = meta.tmdb_id;
   if (meta.imdb_id) item.imdb_id = meta.imdb_id;
+  if (meta.mal_id) item.mal_id = meta.mal_id;
   if (meta.estado && !item.estado) item.estado = meta.estado;
   if (meta.en_emision != null && item.en_emision == null) item.en_emision = meta.en_emision;
   if (meta.finalizado != null && item.finalizado == null) item.finalizado = meta.finalizado;
@@ -3549,7 +3672,7 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   }
 
   // Descripción: si la FUENTE tiene español válido → conservar.
-  // Si no → IMDb ES / TMDB ES. Si no hay fuente usable, aceptar meta (aunque sea inglés).
+  // Si no → IMDb ES / TMDB ES. NUNCA dejar sinopsis solo en inglés.
   var descFuente = item.descripcion || '';
   var descFuenteEs = descFuente.length >= 40 && pareceEspanol(descFuente)
     && !/\.\.\.\s*$/.test(descFuente) && !/^(Pel[ií]cula|Serie|Anime)\s/i.test(descFuente);
@@ -3562,13 +3685,9 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
       item.descripcion = meta.descripcion;
     } else if (!pareceIngles(meta.descripcion)) {
       item.descripcion = meta.descripcion;
-    } else {
-      // Fuente sin sinopsis usable: usar meta aunque sea inglés (antes se dejaba vacío)
-      var descCortaOVacia = !descFuente || descFuente.length < 40
-        || (typeof esDescripcionBasura === 'function' && esDescripcionBasura(descFuente));
-      if (descCortaOVacia) {
-        item.descripcion = meta.descripcion;
-      }
+    } else if (!descFuente) {
+      // Solo inglés disponible: no asignar (evitar sinopsis en inglés)
+      // item.descripcion se deja vacío o la de fuente corta
     }
   }
   // Si la fuente era inglesa y meta trae español, reemplazar
@@ -3824,8 +3943,7 @@ async function scrapeFichaImdbEs(imdbId) {
         generos: [],
         descripcion: null,
         year: null,
-        titulo_original: null,
-        status: null
+        titulo_original: null
       };
 
       // JSON-LD
@@ -3940,17 +4058,6 @@ async function scrapeFichaImdbEs(imdbId) {
         if (pm2) {
           var plot = limpiarTexto(pm2[1].replace(/<[^>]+>/g, ' '));
           if (plot.length >= 40) out.descripcion = plot;
-        }
-      }
-
-
-      // Estado serie (IMDb): "TV Series (2023– )" = en emisión; "(2023–2024)" = finalizado
-      if (!out.status) {
-        var stm = html.match(/TV Series\s*\(\s*((?:19|20)\d{2})\s*[–—\-]\s*((?:19|20)\d{2})?\s*\)/i)
-          || html.match(/Serie de TV\s*\(\s*((?:19|20)\d{2})\s*[–—\-]\s*((?:19|20)\d{2})?\s*\)/i)
-          || html.match(/Mini[\- ]?Serie(?:s)?\s*\(\s*((?:19|20)\d{2})\s*[–—\-]\s*((?:19|20)\d{2})?\s*\)/i);
-        if (stm) {
-          out.status = stm[2] ? 'Ended' : 'Returning Series';
         }
       }
 
@@ -4324,7 +4431,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
             duracion: (ficha && ficha.duracion) || (extra && extra.Runtime && extra.Runtime !== 'N/A' ? parseInt(extra.Runtime, 10) || null : null),
             duracion_texto: (ficha && ficha.duracion_texto) || null,
             certificacion: (ficha && ficha.certificacion) || (extra && extra.Rated && extra.Rated !== 'N/A' ? extra.Rated : null),
-            status: (ficha && ficha.status) || null,
+            status: null,
             tagline: null,
             slug_tmdb: null
           };
@@ -4832,7 +4939,6 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
     if (!destino.duracion && origenMeta.duracion) destino.duracion = origenMeta.duracion;
     if (!destino.duracion_texto && origenMeta.duracion_texto) destino.duracion_texto = origenMeta.duracion_texto;
     if (!destino.certificacion && origenMeta.certificacion) destino.certificacion = origenMeta.certificacion;
-    if (!destino.status && origenMeta.status) destino.status = origenMeta.status;
     return destino;
   }
 
@@ -4967,7 +5073,7 @@ function slimResultadoLista(item, origin) {
     title: limpiarTitulo(item.titulo || item.nombre || item.title || '') || null,
     slug: slug,
     url: url,
-    portada: image,
+    image: image,
     year: year || null,
     source: fuente,
     type: tipo
@@ -5423,7 +5529,7 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   // fetchDetalle puede traer más campos
   if (metaFull.backdrop) meta.backdrop = metaFull.backdrop;
   if (metaFull.original_title) meta.titulo_original = metaFull.original_title;
-  if (metaFull.votos) meta.votos = metaFull.votos;
+  if (metaFull.votes) meta.votos = metaFull.votes;
   if (metaFull.runtime) meta.duracion = metaFull.runtime;
   if (metaFull.status) {
     meta.status = metaFull.status;
@@ -5454,8 +5560,7 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
 
   // No pisar datos buenos ya extraídos de la página fuente
   var descFuente = detalle.descripcion || '';
-  var descFuenteOk = descFuente.length > 60 && !/\.\.\.\s*$/.test(descFuente)
-    && !(typeof esDescripcionBasura === 'function' && esDescripcionBasura(descFuente));
+  var descFuenteOk = descFuente.length > 60 && !/\.\.\.\s*$/.test(descFuente);
   var portadaFuenteOk = detalle.portada && !esFuentePelisplus(detalle) && !esPortadaSospechosa(detalle.portada);
 
   if (descFuenteOk) meta.descripcion = null; // conservar scrape
@@ -5472,48 +5577,6 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
     detalle.calificacion = normalizarCalificacion(detalle.calificacion);
   }
   if (!detalle.votos && metaFull.votos) detalle.votos = metaFull.votos;
-
-  // Si aún no hay descripción usable, forzar la de meta (aunque sea inglés)
-  var descAhora = detalle.descripcion || '';
-  var descSigueMal = !descAhora || descAhora.length < 40
-    || (typeof esDescripcionBasura === 'function' && esDescripcionBasura(descAhora));
-  if (descSigueMal && metaFull.descripcion && String(metaFull.descripcion).length >= 40) {
-    detalle.descripcion = metaFull.descripcion;
-  }
-
-  // Si hay imdb_id pero falta estado/tmdb_id/descripcion → TMDB find por imdb_id
-  var imdbIdNow = detalle.imdb_id || metaFull.imdb_id || null;
-  var faltaEstado = !detalle.estado && !detalle.status;
-  var faltaTmdb = !detalle.tmdb_id;
-  var faltaDesc2 = !detalle.descripcion || String(detalle.descripcion).length < 40
-    || (typeof esDescripcionBasura === 'function' && esDescripcionBasura(detalle.descripcion));
-  if (imdbIdNow && (faltaEstado || faltaTmdb || faltaDesc2)) {
-    try {
-      var extraTmdb = await completarDesdeTmdbPorImdbId(imdbIdNow, tipoRuta || detalle.tipo);
-      if (extraTmdb) {
-        if (!detalle.tmdb_id && extraTmdb.tmdb_id) detalle.tmdb_id = extraTmdb.tmdb_id;
-        if (faltaDesc2 && extraTmdb.descripcion && String(extraTmdb.descripcion).length >= 40) {
-          detalle.descripcion = extraTmdb.descripcion;
-        }
-        if (!detalle.votos && extraTmdb.votos) detalle.votos = extraTmdb.votos;
-        if ((detalle.calificacion == null || detalle.calificacion === '') && extraTmdb.calificacion != null) {
-          detalle.calificacion = normalizarCalificacion(extraTmdb.calificacion);
-        }
-        if (!detalle.backdrop && extraTmdb.backdrop) detalle.backdrop = extraTmdb.backdrop;
-        if (!detalle.titulo_original && extraTmdb.titulo_original) detalle.titulo_original = extraTmdb.titulo_original;
-        if (!detalle.fecha_estreno && extraTmdb.fecha_estreno) detalle.fecha_estreno = extraTmdb.fecha_estreno;
-        if (extraTmdb.status) {
-          detalle.status = extraTmdb.status;
-          var st2 = normalizarEstadoEmision(extraTmdb.status);
-          if (st2.estado) {
-            if (!detalle.estado) detalle.estado = st2.estado;
-            if (detalle.en_emision == null) detalle.en_emision = st2.en_emision;
-            if (detalle.finalizado == null) detalle.finalizado = st2.finalizado;
-          }
-        }
-      }
-    } catch (eTmdbImdb) { /* silencioso */ }
-  }
 
   // Temporadas TMDB (solo meta; no pisa embeds)
   if (Array.isArray(metaFull.temporadas) && metaFull.temporadas.length) {
@@ -5551,7 +5614,6 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
 
   return detalle;
 }
-
 
 async function buscarUniversal(query, sourceFilter, limit) {
   sourceFilter = (sourceFilter || 'all').toLowerCase();
