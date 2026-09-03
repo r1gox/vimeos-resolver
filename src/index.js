@@ -27,7 +27,7 @@ var DORAMASFLIX_BASE = 'https://doramasflix.io';
 var DORAMASFLIX_GQL = 'https://user-api.fluxcedene.net/graphql';
 // Metadatos TMDB vía worker público (no cambia el flujo de embeds/fuentes)
 var TMDB_META_API = ''; // desactivado: meta solo de la página fuente (+ TMDB key si hay)
-
+/*
 var REPRODUCTORES_PERMITIDOS = [
   'vimeos.net', 'player.vimeos',
   'goodstream', 'streamwish', 'filemoon', 'voe.',
@@ -37,6 +37,25 @@ var REPRODUCTORES_PERMITIDOS = [
   'vidhide', 'vidguard', 'lulustream', 'filelions',
   'yourupload', 'supervideo', 'krakenfiles', 'ok.ru',
   'videoapp.zip', 'videoapp', 'waaw.', 'hqq.', 'netu.'
+];*/
+
+
+var REPRODUCTORES_PERMITIDOS = [
+  // Prioridad doramas / resolve HLS
+  'streamtape', 
+  'streamwish', 'flaswish', 'strwish', 'ahvsh', 'streamhg',
+  'voe.',
+  'vidhide', 'streamhide', 'filelions', 'earnvids', 'smoothpre',
+
+  // Resolve extra que ya tienes
+  'vimeos.net', 'player.vimeos',
+  'goodstream',
+  'yourupload',
+  'mp4upload',
+  'ryderjet',
+
+  // Opcional estable (embed / a veces útil)
+  'filemoon'
 ];
 
 var REPRODUCTORES_BLOQUEADOS = [
