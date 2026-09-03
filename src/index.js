@@ -448,13 +448,22 @@ async function handleRequest(request, env) {
         }
         if (resultadoPath) normalizarCamposResultado(resultadoPath);
       } else if (resultadoPath) {
-        resultadoPath.tipo = resultadoPath.tipo || 'Capitulo';
-        delete resultadoPath.descripcion;
-        delete resultadoPath.backdrop;
-        delete resultadoPath.tmdb;
-        delete resultadoPath.imdb;
-        delete resultadoPath.generos;
-        delete resultadoPath.genero;
+        // Capítulo: solo players (sin meta de serie)
+        resultadoPath = {
+          success: true,
+          tipo: 'Capitulo',
+          fuente: resultadoPath.fuente || forcedSource || null,
+          source_id: resultadoPath.fuente || resultadoPath.source_id || forcedSource || null,
+          slug: resultadoPath.slug || slug,
+          titulo: resultadoPath.titulo_serie || resultadoPath.titulo || slug,
+          temporada: commonOpts.season,
+          episodio: commonOpts.episode,
+          total: (resultadoPath.reproductores && resultadoPath.reproductores.length) ||
+            (resultadoPath.embeds && resultadoPath.embeds.length) || 0,
+          embeds: resultadoPath.reproductores || resultadoPath.embeds || [],
+          reproductores: resultadoPath.reproductores || resultadoPath.embeds || [],
+          descargas: resultadoPath.descargas || []
+        };
       }
       return json(resultadoPath);
     } catch (err) {
@@ -7400,27 +7409,20 @@ async function scrapearDoramasflix(pageUrl, opts) {
       }
     }
 
+    // Respuesta mínima de capítulo (la meta ya está en el detalle de la serie)
     return {
       success: true,
-      fuente: 'doramasflix',
-      source_id: '6',
       tipo: 'Capitulo',
-      link: DORAMASFLIX_BASE + '/capitulos/' + epSlug,
+      fuente: 'doramasflix',
+      source_id: 'doramasflix',
       slug: slug,
-      titulo: titulo + ' — ' + sN + 'x' + eN,
-      titulo_serie: titulo,
-      portada: portada,
-      backdrop: backdrop,
-      descripcion: descripcion,
-      year: year,
-      calificacion: calificacion,
-      estado: estadoInfo.estado,
+      titulo: titulo,
       temporada: sN,
       episodio: eN,
-      nota_players: 'HLS bajo demanda: usar /resolve?url={embed}&proxy=1 o campo hls_resolve. No se resuelven todos al listar.',
+      total: reproductores.length,
+      embeds: reproductores,
       reproductores: reproductores,
-      embeds: reproductores.map(function (r) { return r.url; }),
-      total: reproductores.length
+      descargas: []
     };
   }
 
