@@ -1,14 +1,17 @@
 var __LAST_ORIGIN__ = "";
 // src/index.js — MovieZone Worker (Lamovie + Hackstore + PelisPlusHD)
-// Compatible con Workers clásico y module workers
-addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request, event.env || self || {}));
-});
-
-// Module worker export (Wrangler moderno)
+// Module worker (Wrangler moderno). El patrón addEventListener('fetch', ...)
+// clásico se retiró: event.env no existe en ese modelo y es código muerto
+// junto al export default de abajo.
 export default {
   async fetch(request, env, ctx) {
-    return handleRequest(request, env || {});
+    try {
+      return await handleRequest(request, env || {});
+    } catch (eTop) {
+      // Red de seguridad: nunca dejar que una excepción no controlada
+      // devuelva la página de error genérica de Cloudflare (1101) en vez de JSON.
+      return json({ success: false, error: (eTop && eTop.message) || 'Error interno' }, 500);
+    }
   }
 };
 
@@ -55,6 +58,7 @@ async function handleRequest(request, env) {
   // API key TMDB opcional (Cloudflare Worker secret / var)
   try {
     if (env && env.TMDB_API_KEY) __TMDB_KEY__ = env.TMDB_API_KEY;
+    if (env && env.OMDB_API_KEY) __OMDB_KEY__ = env.OMDB_API_KEY;
   } catch (eEnv) { /* ok */ }
 
   var url = new URL(request.url);
@@ -128,33 +132,18 @@ async function handleRequest(request, env) {
     try {
       resolveUrl = decodeURIComponent(resolveUrl);
     } catch (eR) {}
-    if (!provider) {
-      provider = detectarProviderEmbedFull(resolveUrl) || detectarProviderEmbed(resolveUrl) || '';
-    }
+    if (!provider) provider = detectarProviderEmbed(resolveUrl) || 'vimeos';
     try {
       var resolved;
       // Soporta vimeos, streamwish, vidhide, voe, goodstream (auto-detect)
       var supported = ['vimeos', 'streamwish', 'vidhide', 'voe', 'goodstream'];
       if (!provider || supported.indexOf(provider) === -1) {
-        provider = detectarProviderEmbedFull(resolveUrl) || detectarProviderEmbed(resolveUrl) || '';
+        provider = detectarProviderEmbedFull(resolveUrl) || detectarProviderEmbed(resolveUrl) || 'vimeos';
       }
-      // Sin provider conocido: un solo intento streamwish (evita Too many subrequests)
-      if (!provider || supported.indexOf(provider) === -1) {
-        try {
-          resolved = await resolveByProvider(resolveUrl, 'streamwish', wantProxy ? origin : null);
-          provider = 'streamwish';
-        } catch (eTrySw) {
-          return json({
-            success: false,
-            provider: null,
-            error: 'Host no soportado o no resoluble. ' + (eTrySw.message || ''),
-            source: resolveUrl,
-            hint: 'Soportados: streamwish/flaswish, voe, vidhide, vimeos, goodstream'
-          }, 422);
-        }
-      } else {
-        resolved = await resolveByProvider(resolveUrl, provider, wantProxy ? origin : null);
+      if (supported.indexOf(provider) === -1) {
+        return json({ success: false, error: 'Provider no soportado: ' + provider + ' (usa vimeos|streamwish|vidhide|voe|goodstream)' }, 400);
       }
+      resolved = await resolveByProvider(resolveUrl, provider, wantProxy ? origin : null);
       // Si pidieron proxy=1 y aún no hay proxy_url
       if (wantProxy && resolved && resolved.url && !resolved.proxy_url) {
         resolved.proxy_url = origin + '/proxy?url=' + encodeURIComponent(resolved.url);
@@ -713,6 +702,12 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
         // No aceptar Anime cuando se pidió película (animeav1 contamina slugs live-action)
         var tipoRes = String(r.tipo || '').toLowerCase();
         if (tipoRuta === 'pelicula' && (tipoRes.indexOf('anime') !== -1 || c.fuente === 'animeav1' )) {
+          return null;
+        }
+        // No aceptar Anime cuando se pidió serie con fuente forzada distinta de animeav1
+        // (evita que la cascada "filtre" a animeav1 cuando pelisplushd falla en un slug)
+        if (tipoRuta === 'serie' && (tipoRes.indexOf('anime') !== -1 || c.fuente === 'animeav1') &&
+            sourceParam && sourceParam !== 'animeav1') {
           return null;
         }
         // No aceptar Película cuando se pidió anime (salvo que la fuente sea anime)
@@ -2004,18 +1999,11 @@ function detectarProviderEmbed(u) {
 function detectarProviderEmbedFull(u) {
   u = String(u || '').toLowerCase();
   if (u.indexOf('vimeos') !== -1) return 'vimeos';
-  // Streamwish y clones habituales
   if (u.indexOf('streamwish') !== -1 || u.indexOf('flaswish') !== -1 ||
-      u.indexOf('strwish') !== -1 || u.indexOf('ahvsh') !== -1 || u.indexOf('streamhg') !== -1 ||
-      u.indexOf('swishsrv') !== -1 || u.indexOf('hlswish') !== -1 ||
-      u.indexOf('playerwish') !== -1 || u.indexOf('streamwish') !== -1) return 'streamwish';
-  // Vidhide / Filelions clones
+      u.indexOf('strwish') !== -1 || u.indexOf('ahvsh') !== -1 || u.indexOf('streamhg') !== -1) return 'streamwish';
   if (u.indexOf('vidhide') !== -1 || u.indexOf('earnvids') !== -1 ||
-      u.indexOf('callistanise') !== -1 || u.indexOf('smoothpre') !== -1 ||
-      u.indexOf('filelions') !== -1 || u.indexOf('vidhidepre') !== -1 ||
-      u.indexOf('kinyz') !== -1) return 'vidhide';
-  if (u.indexOf('voe') !== -1 || u.indexOf('jilliandescribe') !== -1 ||
-      u.indexOf('voe-network') !== -1) return 'voe';
+      u.indexOf('callistanise') !== -1 || u.indexOf('smoothpre') !== -1 || u.indexOf('filelions') !== -1) return 'vidhide';
+  if (u.indexOf('voe') !== -1 || u.indexOf('jilliandescribe') !== -1) return 'voe';
   if (u.indexOf('goodstream') !== -1) return 'goodstream';
   return '';
 }
@@ -2032,32 +2020,16 @@ async function resolveByProvider(embedUrl, provider, origin) {
 
 /** Respuesta rica unificada para /streamurl y /wish/streamurl etc. */
 async function buildProviderRichResponse(embedUrl, origin, forceProvider) {
-  var provider = forceProvider || detectarProviderEmbedFull(embedUrl) || detectarProviderEmbed(embedUrl) || '';
+  var provider = forceProvider || detectarProviderEmbedFull(embedUrl) || 'streamwish';
   var base;
-  var lastErr = null;
-  // Solo 1 provider detectado; si no hay, un único intento streamwish (mismo packer en muchos clones).
-  // NO probar 5 providers: Cloudflare limita subrequests por invocación.
-  var tryList = [];
-  if (provider) tryList.push(provider);
-  else tryList.push('streamwish');
-  for (var ti = 0; ti < tryList.length; ti++) {
-    try {
-      base = await resolveByProvider(embedUrl, tryList[ti], null);
-      provider = tryList[ti];
-      lastErr = null;
-      break;
-    } catch (errTry) {
-      lastErr = errTry;
-      base = null;
-    }
-  }
-  if (!base) {
+  try {
+    base = await resolveByProvider(embedUrl, provider, null);
+  } catch (err) {
     return {
       success: false,
-      provider: provider || null,
+      provider: provider,
       source: embedUrl,
-      error: (lastErr && lastErr.message) || 'No se pudo resolver este embed (host no soportado o protegido)',
-      hint: 'primeload/do7go y similares no exponen HLS sin anti-bot; usa streamwish/flaswish/voe/vidhide/vimeos'
+      error: err.message || 'Error resolviendo'
     };
   }
 
@@ -2137,15 +2109,13 @@ async function buildStreamwishRichResponse(embedUrl, origin) {
 
 function attachStreamUrl(origin, rep) {
   if (!rep || !rep.url) return rep;
-  var sName = String(rep.servidor || rep.server || rep.name || '').toLowerCase();
+  var s = String(rep.servidor || '').toLowerCase();
   var u = String(rep.url);
-  // Ya es HLS/directo reproducible → proxy
-  if (/\.m3u8(\?|$)/i.test(u) || /master\.txt(\?|$)/i.test(u) || /\.mp4(\?|$)/i.test(u)) {
-    rep.hls = /\.m3u8|master\.txt/i.test(u) ? u : null;
-    rep.tipo = rep.tipo || (/\.mp4/i.test(u) ? 'mp4' : 'hls');
+  // Ya es HLS directo
+  if (/\.m3u8(\?|$)/i.test(u) || /master\.txt(\?|$)/i.test(u)) {
+    rep.hls = u;
+    rep.tipo = rep.tipo || 'hls';
     rep.stream_url = origin + '/proxy?url=' + encodeURIComponent(u);
-    rep.hls_resolve = rep.stream_url;
-    rep.playable = true;
     return rep;
   }
   var prov = null;
@@ -2153,42 +2123,25 @@ function attachStreamUrl(origin, rep) {
   if (!prov) {
     try { prov = detectarProviderEmbed(u); } catch (e2) {}
   }
-  // stream_url / hls_resolve = endpoint JSON del Worker (MovieZone llama y toma play_url)
-  if (prov === 'streamwish' || /streamwish|flaswish|strwish|ahvsh|streamhg/.test(sName)) {
+  if (prov === 'streamwish' || s.indexOf('streamwish') !== -1) {
     rep.stream_url = origin + '/wish/streamurl?url=' + encodeURIComponent(u);
     rep.hls_resolve = rep.stream_url;
-    rep.provider = 'streamwish';
-  } else if (prov === 'vidhide' || /vidhide|earnvids|filelions|smoothpre/.test(sName)) {
+  } else if (prov === 'vidhide' || s.indexOf('vidhide') !== -1) {
     rep.stream_url = origin + '/vidhide/streamurl?url=' + encodeURIComponent(u);
     rep.hls_resolve = rep.stream_url;
-    rep.provider = 'vidhide';
-  } else if (prov === 'voe' || /\bvoe\b|jilliandescribe/.test(sName)) {
+  } else if (prov === 'voe' || s.indexOf('voe') !== -1) {
     rep.stream_url = origin + '/voe/streamurl?url=' + encodeURIComponent(u);
     rep.hls_resolve = rep.stream_url;
-    rep.provider = 'voe';
-  } else if (prov === 'goodstream' || /goodstream/.test(sName)) {
+  } else if (prov === 'goodstream' || s.indexOf('goodstream') !== -1) {
     rep.stream_url = origin + '/goodstream/streamurl?url=' + encodeURIComponent(u);
     rep.hls_resolve = rep.stream_url;
-    rep.provider = 'goodstream';
-  } else if (prov === 'vimeos' || /vimeos/.test(sName) || /vimeos/i.test(u)) {
+  } else if (prov === 'vimeos' || s.indexOf('vimeos') !== -1) {
     rep.stream_url = origin + '/resolve/vimeos?url=' + encodeURIComponent(u) + '&proxy=1';
     rep.hls_resolve = rep.stream_url;
-    rep.provider = 'vimeos';
   } else {
-    // Hosts sin resolver real (primeload, do7go, CF-protegidos): no inventar stream
-    // El player debe usar el embed en iframe (url) si stream falla
-    var hostBad = /primeload|do7go|bysefujedu|dood|mixdrop|streamtape|uqload/i.test(u);
-    if (hostBad) {
-      rep.stream_url = null;
-      rep.hls_resolve = null;
-      rep.provider = 'iframe';
-      rep.playable = false;
-      rep.nota = 'Solo embed/iframe; no hay HLS público';
-    } else {
-      rep.stream_url = origin + '/streamurl?url=' + encodeURIComponent(u);
-      rep.hls_resolve = rep.stream_url;
-      rep.provider = 'auto';
-    }
+    // Genérico: intentar /resolve automático → m3u8
+    rep.stream_url = origin + '/resolve?url=' + encodeURIComponent(u) + '&proxy=1';
+    rep.hls_resolve = rep.stream_url;
   }
   return rep;
 }
@@ -3336,6 +3289,61 @@ async function fetchDetalleTmdbMeta(slugOrTitle, tipoHint) {
   return null;
 }
 
+/** Completa tmdb_id / status / descripción / votos usando IMDb ID (find + detail). */
+async function completarDesdeTmdbPorImdbId(imdbId, tipoHint) {
+  var key = __TMDB_KEY__ || null;
+  if (!key || !imdbId || String(imdbId).indexOf('tt') !== 0) return null;
+  try {
+    var findUrl = 'https://api.themoviedb.org/3/find/' + encodeURIComponent(imdbId)
+      + '?api_key=' + encodeURIComponent(key)
+      + '&external_source=imdb_id&language=es-ES';
+    var res = await fetchWithTimeout(findUrl, { headers: { Accept: 'application/json' } }, 9000);
+    if (!res || !res.ok) return null;
+    var data = await res.json();
+    var isTv = normalizarTipoKey(tipoHint) === 'serie' || normalizarTipoKey(tipoHint) === 'anime';
+    var hit = null;
+    var mediaType = null;
+    if (isTv) {
+      if (data.tv_results && data.tv_results.length) { hit = data.tv_results[0]; mediaType = 'tv'; }
+      else if (data.movie_results && data.movie_results.length) { hit = data.movie_results[0]; mediaType = 'movie'; }
+    } else {
+      if (data.movie_results && data.movie_results.length) { hit = data.movie_results[0]; mediaType = 'movie'; }
+      else if (data.tv_results && data.tv_results.length) { hit = data.tv_results[0]; mediaType = 'tv'; }
+    }
+    if (!hit || !hit.id) return null;
+
+    var detUrl = 'https://api.themoviedb.org/3/' + mediaType + '/' + hit.id
+      + '?api_key=' + encodeURIComponent(key) + '&language=es-ES';
+    var res2 = await fetchWithTimeout(detUrl, { headers: { Accept: 'application/json' } }, 9000);
+    if (!res2 || !res2.ok) {
+      return {
+        tmdb_id: hit.id,
+        descripcion: hit.overview || null,
+        votos: hit.vote_count || null,
+        calificacion: hit.vote_average != null ? Number(hit.vote_average) : null,
+        status: null,
+        fecha_estreno: hit.release_date || hit.first_air_date || null,
+        year: (hit.release_date || hit.first_air_date || '').slice(0, 4) || null
+      };
+    }
+    var d = await res2.json();
+    var release = d.release_date || d.first_air_date || null;
+    return {
+      tmdb_id: d.id || hit.id,
+      descripcion: d.overview || hit.overview || null,
+      votos: d.vote_count != null ? d.vote_count : (hit.vote_count || null),
+      calificacion: d.vote_average != null ? Number(d.vote_average) : null,
+      status: d.status || null,
+      fecha_estreno: release,
+      year: release ? String(release).slice(0, 4) : null,
+      backdrop: d.backdrop_path ? ('https://image.tmdb.org/t/p/w780' + d.backdrop_path) : null,
+      titulo_original: d.original_title || d.original_name || null
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 /** Extrae meta limpia desde un ítem de búsqueda tvymas (sin campos duplicados) */
 function mapMetaFromSearchItem(it) {
   if (!it) return null;
@@ -3541,7 +3549,7 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   }
 
   // Descripción: si la FUENTE tiene español válido → conservar.
-  // Si no → IMDb ES / TMDB ES. NUNCA dejar sinopsis solo en inglés.
+  // Si no → IMDb ES / TMDB ES. Si no hay fuente usable, aceptar meta (aunque sea inglés).
   var descFuente = item.descripcion || '';
   var descFuenteEs = descFuente.length >= 40 && pareceEspanol(descFuente)
     && !/\.\.\.\s*$/.test(descFuente) && !/^(Pel[ií]cula|Serie|Anime)\s/i.test(descFuente);
@@ -3554,9 +3562,13 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
       item.descripcion = meta.descripcion;
     } else if (!pareceIngles(meta.descripcion)) {
       item.descripcion = meta.descripcion;
-    } else if (!descFuente) {
-      // Solo inglés disponible: no asignar (evitar sinopsis en inglés)
-      // item.descripcion se deja vacío o la de fuente corta
+    } else {
+      // Fuente sin sinopsis usable: usar meta aunque sea inglés (antes se dejaba vacío)
+      var descCortaOVacia = !descFuente || descFuente.length < 40
+        || (typeof esDescripcionBasura === 'function' && esDescripcionBasura(descFuente));
+      if (descCortaOVacia) {
+        item.descripcion = meta.descripcion;
+      }
     }
   }
   // Si la fuente era inglesa y meta trae español, reemplazar
@@ -3685,7 +3697,7 @@ async function buscarMetaOmdb(titulo) {
   var q = String(titulo || '').replace(/\(\d{4}\)/g, '').trim();
   if (!q) return null;
   try {
-    var url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) + '&apikey=trilogy&plot=full';
+    var url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
     var res = await fetch(url, { headers: { Accept: 'application/json' } });
     if (!res.ok) return null;
     var d = await res.json();
@@ -3812,7 +3824,8 @@ async function scrapeFichaImdbEs(imdbId) {
         generos: [],
         descripcion: null,
         year: null,
-        titulo_original: null
+        titulo_original: null,
+        status: null
       };
 
       // JSON-LD
@@ -3930,6 +3943,17 @@ async function scrapeFichaImdbEs(imdbId) {
         }
       }
 
+
+      // Estado serie (IMDb): "TV Series (2023– )" = en emisión; "(2023–2024)" = finalizado
+      if (!out.status) {
+        var stm = html.match(/TV Series\s*\(\s*((?:19|20)\d{2})\s*[–—\-]\s*((?:19|20)\d{2})?\s*\)/i)
+          || html.match(/Serie de TV\s*\(\s*((?:19|20)\d{2})\s*[–—\-]\s*((?:19|20)\d{2})?\s*\)/i)
+          || html.match(/Mini[\- ]?Serie(?:s)?\s*\(\s*((?:19|20)\d{2})\s*[–—\-]\s*((?:19|20)\d{2})?\s*\)/i);
+        if (stm) {
+          out.status = stm[2] ? 'Ended' : 'Returning Series';
+        }
+      }
+
       if (out.calificacion != null || out.descripcion || out.duracion || out.certificacion) {
         return out;
       }
@@ -3943,6 +3967,77 @@ async function scrapeFichaImdbEs(imdbId) {
  * opts.descripcionHint: sinopsis de la fuente para elegir el tt correcto (homónimos).
  * Prioridad de portadas: imageUrl de suggestion → OMDb → ficha.
  */
+/**
+ * MyAnimeList vía Jikan (gratis, sin key). Solo se usa para tipo Anime,
+ * como primer intento antes de IMDb, porque MAL indexa el título
+ * romanizado japonés que usan las fuentes (animeav1/lamovie), mientras
+ * que IMDb/TMDB suelen tener solo el título oficial en inglés.
+ */
+async function buscarMetaMal(titulo, yearHint) {
+  var q = String(titulo || '').replace(/\(\d{4}\)/g, '').trim();
+  if (!q) return null;
+  try {
+    var url = 'https://api.jikan.moe/v4/anime?q=' + encodeURIComponent(q) + '&limit=5';
+    var res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 9000);
+    if (!res.ok) return null;
+    var data = await res.json();
+    var results = Array.isArray(data.data) ? data.data : [];
+    if (!results.length) return null;
+
+    var wantedTitle = normalizarTituloKey(q);
+    var wantedYearMatch = yearHint ? String(yearHint).match(/(19|20)\d{2}/) : null;
+    var wantedYear = wantedYearMatch ? wantedYearMatch[0] : null;
+
+    var best = null, bestScore = -999;
+    for (var i = 0; i < results.length; i++) {
+      var r = results[i];
+      var candidatos = [r.title, r.title_english, r.title_japanese].filter(Boolean);
+      var score = -999;
+      for (var c = 0; c < candidatos.length; c++) {
+        var ct = normalizarTituloKey(candidatos[c]);
+        var s = 0;
+        if (ct === wantedTitle) s = 100;
+        else if (ct && (ct.indexOf(wantedTitle) !== -1 || wantedTitle.indexOf(ct) !== -1)) s = 50;
+        if (s > score) score = s;
+      }
+      var ry = r.aired && r.aired.from ? String(r.aired.from).slice(0, 4) : (r.year ? String(r.year) : null);
+      if (wantedYear && ry && wantedYear !== ry) score -= 60;
+      if (score > bestScore) { bestScore = score; best = r; }
+    }
+    if (!best || bestScore < 40) return null;
+
+    var genres = (best.genres || []).map(function (g) { return g.name; }).filter(Boolean);
+    var poster = best.images && best.images.jpg ? (best.images.jpg.large_image_url || best.images.jpg.image_url) : null;
+    var fecha = best.aired && best.aired.from ? String(best.aired.from).slice(0, 10) : null;
+    var year = fecha ? fecha.slice(0, 4) : (best.year ? String(best.year) : null);
+
+    return {
+      mal_id: best.mal_id || null,
+      tmdb_id: null,
+      imdb_id: null,
+      titulo_tmdb: best.title || q,
+      portada_tmdb: null,
+      portada_imdb: poster,
+      backdrop: null,
+      calificacion: best.score != null ? Number(best.score) : null,
+      descripcion: best.synopsis || null,
+      generos: genres,
+      fecha_estreno: fecha,
+      year: year,
+      titulo_original: best.title_japanese || best.title || null,
+      votos: best.scored_by != null ? String(best.scored_by).replace(/\B(?=(\d{3})+(?!\d))/g, ',') : null,
+      duracion: null,
+      duracion_texto: best.duration || null,
+      certificacion: best.rating || null,
+      status: best.status || null,
+      tagline: null,
+      slug_tmdb: null
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
   opts = opts || {};
   var descHint = opts.descripcionHint || opts.descripcion || null;
@@ -4099,7 +4194,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
           var plotCand = null;
           var omdbCand = null;
           try {
-            var oUrl = 'https://www.omdbapi.com/?i=' + encodeURIComponent(cand.item.id) + '&apikey=trilogy&plot=full';
+            var oUrl = 'https://www.omdbapi.com/?i=' + encodeURIComponent(cand.item.id) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
             var oRes = await fetch(oUrl, { headers: { Accept: 'application/json' } });
             if (oRes.ok) {
               omdbCand = await oRes.json();
@@ -4229,7 +4324,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
             duracion: (ficha && ficha.duracion) || (extra && extra.Runtime && extra.Runtime !== 'N/A' ? parseInt(extra.Runtime, 10) || null : null),
             duracion_texto: (ficha && ficha.duracion_texto) || null,
             certificacion: (ficha && ficha.certificacion) || (extra && extra.Rated && extra.Rated !== 'N/A' ? extra.Rated : null),
-            status: null,
+            status: (ficha && ficha.status) || null,
             tagline: null,
             slug_tmdb: null
           };
@@ -4242,7 +4337,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
   if (wantedYear) {
     try {
       var omdbByYear = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) +
-        '&y=' + encodeURIComponent(wantedYear) + '&apikey=trilogy&plot=full';
+        '&y=' + encodeURIComponent(wantedYear) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
       var oY = await fetch(omdbByYear, { headers: { Accept: 'application/json' } });
       if (oY.ok) {
         var odY = await oY.json();
@@ -4281,7 +4376,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
         }
       }
       // Búsqueda listado OMDb filtrada por año
-      var omdbSearch = 'https://www.omdbapi.com/?s=' + encodeURIComponent(q) + '&type=movie&apikey=trilogy';
+      var omdbSearch = 'https://www.omdbapi.com/?s=' + encodeURIComponent(q) + '&type=movie&apikey=' + encodeURIComponent(__OMDB_KEY__) + '';
       var oS = await fetch(omdbSearch, { headers: { Accept: 'application/json' } });
       if (oS.ok) {
         var odS = await oS.json();
@@ -4291,7 +4386,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
           if (!row || !row.imdbID) continue;
           var yr = row.Year ? String(row.Year).slice(0, 4) : null;
           if (yr && yr !== wantedYear) continue;
-          var omdbUrl3 = 'https://www.omdbapi.com/?i=' + encodeURIComponent(row.imdbID) + '&apikey=trilogy&plot=full';
+          var omdbUrl3 = 'https://www.omdbapi.com/?i=' + encodeURIComponent(row.imdbID) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
           var oR3 = await fetch(omdbUrl3, { headers: { Accept: 'application/json' } });
           if (!oR3.ok) continue;
           var od3 = await oR3.json();
@@ -4365,7 +4460,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
     var cand = candidates[0];
     // Usar OMDb con el primer tt encontrado
     try {
-      var omdbUrl2 = 'https://www.omdbapi.com/?i=' + encodeURIComponent(cand.imdbId) + '&apikey=trilogy&plot=full';
+      var omdbUrl2 = 'https://www.omdbapi.com/?i=' + encodeURIComponent(cand.imdbId) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
       var omdbRes2 = await fetch(omdbUrl2, { headers: { Accept: 'application/json' } });
       if (omdbRes2.ok) {
         var od2 = await omdbRes2.json();
@@ -4518,6 +4613,7 @@ async function buscarMetaTmdbApi(titulo, tipoHint, yearHint) {
 }
 
 var __TMDB_KEY__ = null; // se asigna en handleRequest desde env
+var __OMDB_KEY__ = 'trilogy'; // se sobreescribe en handleRequest desde env.OMDB_API_KEY si existe
 
 // ======================================================
 // METADATA / PORTADAS ROBUSTAS
@@ -4689,6 +4785,7 @@ function metaCacheSet(key, value) {
 /**
  * Metadata combinada.
  * Orden:
+ *   0. MyAnimeList (Jikan) primero SOLO si tipoHint es Anime
  *   1. IMDb scrape sin key (poster fiable + ID + rating + año + géneros)
  *   2. TMDB oficial si existe TMDB_API_KEY (backdrop + respaldo)
  *   3. OMDb solo si todavía faltan datos
@@ -4726,6 +4823,7 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
     if (destino.calificacion == null && origenMeta.calificacion != null) destino.calificacion = origenMeta.calificacion;
     if (!destino.imdb_id && origenMeta.imdb_id) destino.imdb_id = origenMeta.imdb_id;
     if (!destino.tmdb_id && origenMeta.tmdb_id) destino.tmdb_id = origenMeta.tmdb_id;
+    if (!destino.mal_id && origenMeta.mal_id) destino.mal_id = origenMeta.mal_id;
     if ((!destino.generos || !destino.generos.length) && origenMeta.generos && origenMeta.generos.length) destino.generos = origenMeta.generos;
     if (!destino.year && origenMeta.year) destino.year = origenMeta.year;
     if (!destino.fecha_estreno && origenMeta.fecha_estreno) destino.fecha_estreno = origenMeta.fecha_estreno;
@@ -4734,7 +4832,24 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
     if (!destino.duracion && origenMeta.duracion) destino.duracion = origenMeta.duracion;
     if (!destino.duracion_texto && origenMeta.duracion_texto) destino.duracion_texto = origenMeta.duracion_texto;
     if (!destino.certificacion && origenMeta.certificacion) destino.certificacion = origenMeta.certificacion;
+    if (!destino.status && origenMeta.status) destino.status = origenMeta.status;
     return destino;
+  }
+
+  // 0) MyAnimeList primero SOLO para Anime (título romanizado JP; IMDb/TMDB
+  //    casi nunca coinciden con ese formato para anime nuevo/poco licenciado)
+  var esAnimeHint = normalizarTipoKey(tipoHint) === 'anime';
+  if (esAnimeHint) {
+    var maxVarMal = lightMeta ? 1 : 3;
+    for (var mi = 0; mi < Math.min(variantes.length, maxVarMal); mi++) {
+      try {
+        var mMal = await buscarMetaMal(variantes[mi], yearHint);
+        if (mMal) {
+          meta = completar(meta, mMal);
+          if (meta.mal_id && meta.descripcion && meta.calificacion != null) break;
+        }
+      } catch (eMal) { /* siguiente variante */ }
+    }
   }
 
   // 1) IMDb primero (suggestion + ficha ES + cruce por sinopsis)
@@ -4852,7 +4967,7 @@ function slimResultadoLista(item, origin) {
     title: limpiarTitulo(item.titulo || item.nombre || item.title || '') || null,
     slug: slug,
     url: url,
-    image: image,
+    portada: image,
     year: year || null,
     source: fuente,
     type: tipo
@@ -5022,6 +5137,9 @@ function formatearDetalleRespuesta(item, origin) {
   if (ratingImdb != null) {
     rating = ratingImdb;
     rating_source = 'imdb';
+  } else if (item.mal_id && ratingFuente != null) {
+    rating = ratingFuente;
+    rating_source = 'mal';
   } else if (item.imdb_id && ratingFuente != null) {
     rating = ratingFuente;
     rating_source = 'imdb';
@@ -5305,7 +5423,7 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   // fetchDetalle puede traer más campos
   if (metaFull.backdrop) meta.backdrop = metaFull.backdrop;
   if (metaFull.original_title) meta.titulo_original = metaFull.original_title;
-  if (metaFull.votes) meta.votos = metaFull.votes;
+  if (metaFull.votos) meta.votos = metaFull.votos;
   if (metaFull.runtime) meta.duracion = metaFull.runtime;
   if (metaFull.status) {
     meta.status = metaFull.status;
@@ -5336,7 +5454,8 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
 
   // No pisar datos buenos ya extraídos de la página fuente
   var descFuente = detalle.descripcion || '';
-  var descFuenteOk = descFuente.length > 60 && !/\.\.\.\s*$/.test(descFuente);
+  var descFuenteOk = descFuente.length > 60 && !/\.\.\.\s*$/.test(descFuente)
+    && !(typeof esDescripcionBasura === 'function' && esDescripcionBasura(descFuente));
   var portadaFuenteOk = detalle.portada && !esFuentePelisplus(detalle) && !esPortadaSospechosa(detalle.portada);
 
   if (descFuenteOk) meta.descripcion = null; // conservar scrape
@@ -5353,6 +5472,48 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
     detalle.calificacion = normalizarCalificacion(detalle.calificacion);
   }
   if (!detalle.votos && metaFull.votos) detalle.votos = metaFull.votos;
+
+  // Si aún no hay descripción usable, forzar la de meta (aunque sea inglés)
+  var descAhora = detalle.descripcion || '';
+  var descSigueMal = !descAhora || descAhora.length < 40
+    || (typeof esDescripcionBasura === 'function' && esDescripcionBasura(descAhora));
+  if (descSigueMal && metaFull.descripcion && String(metaFull.descripcion).length >= 40) {
+    detalle.descripcion = metaFull.descripcion;
+  }
+
+  // Si hay imdb_id pero falta estado/tmdb_id/descripcion → TMDB find por imdb_id
+  var imdbIdNow = detalle.imdb_id || metaFull.imdb_id || null;
+  var faltaEstado = !detalle.estado && !detalle.status;
+  var faltaTmdb = !detalle.tmdb_id;
+  var faltaDesc2 = !detalle.descripcion || String(detalle.descripcion).length < 40
+    || (typeof esDescripcionBasura === 'function' && esDescripcionBasura(detalle.descripcion));
+  if (imdbIdNow && (faltaEstado || faltaTmdb || faltaDesc2)) {
+    try {
+      var extraTmdb = await completarDesdeTmdbPorImdbId(imdbIdNow, tipoRuta || detalle.tipo);
+      if (extraTmdb) {
+        if (!detalle.tmdb_id && extraTmdb.tmdb_id) detalle.tmdb_id = extraTmdb.tmdb_id;
+        if (faltaDesc2 && extraTmdb.descripcion && String(extraTmdb.descripcion).length >= 40) {
+          detalle.descripcion = extraTmdb.descripcion;
+        }
+        if (!detalle.votos && extraTmdb.votos) detalle.votos = extraTmdb.votos;
+        if ((detalle.calificacion == null || detalle.calificacion === '') && extraTmdb.calificacion != null) {
+          detalle.calificacion = normalizarCalificacion(extraTmdb.calificacion);
+        }
+        if (!detalle.backdrop && extraTmdb.backdrop) detalle.backdrop = extraTmdb.backdrop;
+        if (!detalle.titulo_original && extraTmdb.titulo_original) detalle.titulo_original = extraTmdb.titulo_original;
+        if (!detalle.fecha_estreno && extraTmdb.fecha_estreno) detalle.fecha_estreno = extraTmdb.fecha_estreno;
+        if (extraTmdb.status) {
+          detalle.status = extraTmdb.status;
+          var st2 = normalizarEstadoEmision(extraTmdb.status);
+          if (st2.estado) {
+            if (!detalle.estado) detalle.estado = st2.estado;
+            if (detalle.en_emision == null) detalle.en_emision = st2.en_emision;
+            if (detalle.finalizado == null) detalle.finalizado = st2.finalizado;
+          }
+        }
+      }
+    } catch (eTmdbImdb) { /* silencioso */ }
+  }
 
   // Temporadas TMDB (solo meta; no pisa embeds)
   if (Array.isArray(metaFull.temporadas) && metaFull.temporadas.length) {
@@ -5390,6 +5551,7 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
 
   return detalle;
 }
+
 
 async function buscarUniversal(query, sourceFilter, limit) {
   sourceFilter = (sourceFilter || 'all').toLowerCase();
