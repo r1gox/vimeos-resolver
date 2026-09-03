@@ -430,22 +430,32 @@ async function handleRequest(request, env) {
     var forcedSource = pathSource || sourceParam || '';
 
     try {
+      var esCapPath = !!(commonOpts.season && commonOpts.episode);
       var resultadoPath = await scrapearPorSlug(tipoRuta, slug, forcedSource, commonOpts, origin);
-      // Enriquecer detalle con TMDB/IMDb (descripción, géneros, backdrop, portada…)
-      try {
-        resultadoPath = await enriquecerDetalleConTmdb(resultadoPath, tipoRuta);
-      } catch (eDet) { /* silencioso */ }
-      // Nunca dejar portada vacía si hay meta alternativa
-      if (resultadoPath && (!resultadoPath.portada || esPortadaSospechosa(resultadoPath.portada))) {
-        if (resultadoPath.portada_imdb && esPortadaUrlValida(resultadoPath.portada_imdb)) {
-          resultadoPath.portada = resultadoPath.portada_imdb;
-          resultadoPath.poster_source = 'imdb';
-        } else if (resultadoPath.portada_tmdb && esPortadaUrlValida(resultadoPath.portada_tmdb)) {
-          resultadoPath.portada = resultadoPath.portada_tmdb;
-          resultadoPath.poster_source = 'tmdb';
+      // CAPÍTULO: sin TMDB/IMDb (solo reproductores) → mucho más rápido
+      if (!esCapPath) {
+        try {
+          resultadoPath = await enriquecerDetalleConTmdb(resultadoPath, tipoRuta);
+        } catch (eDet) { /* silencioso */ }
+        if (resultadoPath && (!resultadoPath.portada || esPortadaSospechosa(resultadoPath.portada))) {
+          if (resultadoPath.portada_imdb && esPortadaUrlValida(resultadoPath.portada_imdb)) {
+            resultadoPath.portada = resultadoPath.portada_imdb;
+            resultadoPath.poster_source = 'imdb';
+          } else if (resultadoPath.portada_tmdb && esPortadaUrlValida(resultadoPath.portada_tmdb)) {
+            resultadoPath.portada = resultadoPath.portada_tmdb;
+            resultadoPath.poster_source = 'tmdb';
+          }
         }
+        if (resultadoPath) normalizarCamposResultado(resultadoPath);
+      } else if (resultadoPath) {
+        resultadoPath.tipo = resultadoPath.tipo || 'Capitulo';
+        delete resultadoPath.descripcion;
+        delete resultadoPath.backdrop;
+        delete resultadoPath.tmdb;
+        delete resultadoPath.imdb;
+        delete resultadoPath.generos;
+        delete resultadoPath.genero;
       }
-      if (resultadoPath) normalizarCamposResultado(resultadoPath);
       return json(resultadoPath);
     } catch (err) {
       return json({
@@ -663,6 +673,12 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     }
   }
 
+  // Capítulo con fuente en ruta (/6/.../1/1): SOLO esa fuente (sin cascada)
+  if (esCapitulo && sourceParam) {
+    var onlyPref = candidatos.filter(function (c) { return c.preferred; });
+    if (onlyPref.length) candidatos = onlyPref;
+  }
+
   candidatos.sort(function (a, b) {
     // preferred (source forzado en ruta /1/ /3/ etc.) SIEMPRE primero
     var p = (b.preferred ? 1 : 0) - (a.preferred ? 1 : 0);
@@ -753,6 +769,10 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     return reescribirLinksCortos(resultadoFinal, origin, slug, tipoRuta, resultadoFinal.fuente);
   }
 
+  // Fallback búsqueda universal — NO en capítulos (demasiado lento)
+  if (esCapitulo) {
+    throw lastErr || new Error('Capítulo no encontrado en fuente ' + (sourceParam || 'indicada'));
+  }
   // Fallback búsqueda universal — solo hits de la MISMA obra (slug/título exacto)
   var q = slug.replace(/-/g, ' ');
   var busqueda = await buscarUniversal(q, 'all', 12);
@@ -7138,11 +7158,12 @@ function decodificarEmbedShortener(url) {
 }
 
 /** Trae TODOS los episodios de un dorama vía GraphQL (paginación completa) */
-async function doramasflixListarEpisodios(serieId, seasonNumber) {
+async function doramasflixListarEpisodios(serieId, seasonNumber, stopAtEpisode) {
   var all = [];
   var page = 1;
-  var maxPages = 40;
+  var maxPages = stopAtEpisode ? 8 : 40; // capítulo: pocas páginas bastan
   var conTemporada = seasonNumber != null && !isNaN(seasonNumber);
+  var targetEp = stopAtEpisode != null ? Number(stopAtEpisode) : null;
   while (page <= maxPages) {
     var data;
     if (conTemporada) {
@@ -7159,7 +7180,12 @@ async function doramasflixListarEpisodios(serieId, seasonNumber) {
     var block = data && data.paginationEpisode;
     if (!block) break;
     var items = block.items || [];
-    for (var i = 0; i < items.length; i++) all.push(items[i]);
+    for (var i = 0; i < items.length; i++) {
+      all.push(items[i]);
+      if (targetEp != null && Number(items[i].episode_number) === targetEp) {
+        return all; // encontrado: no más páginas
+      }
+    }
     if (!block.pageInfo || !block.pageInfo.hasNextPage) break;
     page++;
   }
@@ -7228,7 +7254,9 @@ async function scrapearDoramasflix(pageUrl, opts) {
   var detail = null;
   try {
     var dData = await doramasflixGql(
-      'query($slug:String!){detailDorama(filter:{slug:$slug}){_id name slug name_es original_name overview rating rating_count number_of_episodes number_of_seasons poster_path backdrop_path first_air_date last_air_date isFinish tmdb_id genres{name} labels{name}}}',
+      (season && episode)
+        ? 'query($slug:String!){detailDorama(filter:{slug:$slug}){_id name slug name_es poster_path}}'
+        : 'query($slug:String!){detailDorama(filter:{slug:$slug}){_id name slug name_es original_name overview rating rating_count number_of_episodes number_of_seasons poster_path backdrop_path first_air_date last_air_date isFinish tmdb_id genres{name} labels{name}}}',
       { slug: slug }
     );
     detail = dData && dData.detailDorama;
@@ -7296,7 +7324,7 @@ async function scrapearDoramasflix(pageUrl, opts) {
     var epSlug = slug + '-' + sN + 'x' + eN;
     // Buscar episode_id en la página de episodios de esa temporada
     try {
-      var epsSeason = await doramasflixListarEpisodios(serieId, sN);
+      var epsSeason = await doramasflixListarEpisodios(serieId, sN, eN);
       for (var ei = 0; ei < epsSeason.length; ei++) {
         if (Number(epsSeason[ei].episode_number) === eN) {
           epId = epsSeason[ei]._id;
