@@ -62,7 +62,7 @@ var REPRODUCTORES_BLOQUEADOS = [
   'lamovie.org', 'lamovie', 'youtube.com', 'youtu.be',
   'youtube-nocookie', 'example.com',
   'sblongvu', 'sbfull', 'fembed', '4shared',
-  'oembed', 'wp-json', 'hackstore.fo', 'hackstore'
+  'oembed', 'wp-json', 'hackstore.fo', 'hackstore', 'primeload.co'
 ];
 
 var PALABRAS_BLOQUEADAS_BUSQUEDA = ['estrenos', 'populares', 'genero', 'categoria', 'pagina'];
@@ -8133,7 +8133,8 @@ async function scrapearDoramasflix(pageUrl, opts) {
       }
     } catch (eEp) { /* ok */ }
 
-    var reproductores = epId ? await doramasflixEpisodeLinks(epId) : [];
+   // var reproductores = epId ? await doramasflixEpisodeLinks(epId) : [];
+    var reproductores = await doramasflixEpisodeLinks(epId, true);
     // Intentar resolver a HLS los que se puedan (vimeos/streamwish/vidhide/voe)
     for (var ri = 0; ri < reproductores.length; ri++) {
       var rp = reproductores[ri];
