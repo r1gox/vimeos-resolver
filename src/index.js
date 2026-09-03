@@ -27,7 +27,7 @@ var DORAMASFLIX_BASE = 'https://doramasflix.io';
 var DORAMASFLIX_GQL = 'https://user-api.fluxcedene.net/graphql';
 // Metadatos TMDB vía worker público (no cambia el flujo de embeds/fuentes)
 var TMDB_META_API = ''; // desactivado: meta solo de la página fuente (+ TMDB key si hay)
-/*
+
 var REPRODUCTORES_PERMITIDOS = [
   'vimeos.net', 'player.vimeos',
   'goodstream', 'streamwish', 'filemoon', 'voe.',
@@ -37,32 +37,13 @@ var REPRODUCTORES_PERMITIDOS = [
   'vidhide', 'vidguard', 'lulustream', 'filelions',
   'yourupload', 'supervideo', 'krakenfiles', 'ok.ru',
   'videoapp.zip', 'videoapp', 'waaw.', 'hqq.', 'netu.'
-];*/
-
-
-var REPRODUCTORES_PERMITIDOS = [
-  // Prioridad doramas / resolve HLS
-  'streamtape', 
-  'streamwish', 'flaswish', 'strwish', 'ahvsh', 'streamhg',
-  'voe.',
-  'vidhide', 'streamhide', 'filelions', 'earnvids', 'smoothpre',
-
-  // Resolve extra que ya tienes
-  'vimeos.net', 'player.vimeos',
-  'goodstream',
-  'yourupload',
-  'mp4upload',
-  'ryderjet',
-
-  // Opcional estable (embed / a veces útil)
-  'filemoon'
 ];
 
 var REPRODUCTORES_BLOQUEADOS = [
   'lamovie.org', 'lamovie', 'youtube.com', 'youtu.be',
   'youtube-nocookie', 'example.com',
   'sblongvu', 'sbfull', 'fembed', '4shared',
-  'oembed', 'wp-json', 'hackstore.fo', 'hackstore', 'primeload.co'
+  'oembed', 'wp-json', 'hackstore.fo', 'hackstore'
 ];
 
 var PALABRAS_BLOQUEADAS_BUSQUEDA = ['estrenos', 'populares', 'genero', 'categoria', 'pagina'];
@@ -74,7 +55,6 @@ async function handleRequest(request, env) {
   // API key TMDB opcional (Cloudflare Worker secret / var)
   try {
     if (env && env.TMDB_API_KEY) __TMDB_KEY__ = env.TMDB_API_KEY;
-    if (env && env.OMDB_API_KEY) __OMDB_KEY__ = env.OMDB_API_KEY;
   } catch (eEnv) { /* ok */ }
 
   var url = new URL(request.url);
@@ -184,10 +164,6 @@ async function handleRequest(request, env) {
     (parts[0] === 'vidhide' && parts[1] === 'streamurl') ||
     (parts[0] === 'voe' && parts[1] === 'streamurl') ||
     (parts[0] === 'goodstream' && parts[1] === 'streamurl') ||
-    (parts[0] === 'streamtape' && parts[1] === 'streamurl') ||
-    (parts[0] === 'yourupload' && parts[1] === 'streamurl') ||
-    (parts[0] === 'mp4upload' && parts[1] === 'streamurl') ||
-    (parts[0] === 'ryderjet' && parts[1] === 'streamurl') ||
     parts[0] === 'streamurl'
   ) {
     var swUrl = url.searchParams.get('url') || '';
@@ -200,10 +176,6 @@ async function handleRequest(request, env) {
           vidhide: origin + '/vidhide/streamurl?url=https://vidhidepro.com/v/XXXX',
           voe: origin + '/voe/streamurl?url=https://voe.sx/e/XXXX',
           goodstream: origin + '/goodstream/streamurl?url=https://goodstream.one/embed-XXXX.html',
-          streamtape: origin + '/streamtape/streamurl?url=https://streamtape.com/e/XXXX',
-          yourupload: origin + '/yourupload/streamurl?url=https://www.yourupload.com/embed/XXXX',
-          mp4upload: origin + '/mp4upload/streamurl?url=https://www.mp4upload.com/embed-XXXX.html',
-          ryderjet: origin + '/ryderjet/streamurl?url=https://ryderjet.com/embed/XXXX',
           auto: origin + '/streamurl?url={embed}'
         }
       }, 400);
@@ -214,10 +186,6 @@ async function handleRequest(request, env) {
     else if (parts[0] === 'vidhide') forceProv = 'vidhide';
     else if (parts[0] === 'voe') forceProv = 'voe';
     else if (parts[0] === 'goodstream') forceProv = 'goodstream';
-    else if (parts[0] === 'streamtape') forceProv = 'streamtape';
-    else if (parts[0] === 'yourupload') forceProv = 'yourupload';
-    else if (parts[0] === 'mp4upload') forceProv = 'mp4upload';
-    else if (parts[0] === 'ryderjet') forceProv = 'ryderjet';
     try {
       var rich = await buildProviderRichResponse(swUrl, origin, forceProv);
       return json(rich);
@@ -247,9 +215,6 @@ async function handleRequest(request, env) {
         estrenos_peliculas: origin + '/3/peliculas/estrenos',
         estrenos_series: origin + '/3/series/estrenos',
         estrenos_animes: origin + '/3/animes/estrenos',
-        estrenos_animeav1: origin + '/4/animes/estrenos',
-        emision_animeav1: origin + '/4/animes/emision',
-        proximamente_animeav1: origin + '/4/animes/proximamente',
         populares_peliculas: origin + '/3/peliculas/populares',
         por_url: origin + '/?url={url_completa}',
         resolve_vimeos: origin + '/resolve/vimeos?url={embed}&proxy=1',
@@ -285,8 +250,9 @@ async function handleRequest(request, env) {
     if (!query) return json({ error: 'Falta q. Usa /search?q=texto' }, 400);
     try {
       var sourceFilter = sourceParam || 'all';
-      var limit = parseInt(url.searchParams.get('limit') || '40', 10);
-      if (!isFinite(limit) || limit < 1) limit = 40;
+      // Default 30: animeav1 pagina de a 20; con más limit se traen más páginas
+      var limit = parseInt(url.searchParams.get('limit') || '30', 10);
+      if (!isFinite(limit) || limit < 1) limit = 30;
       if (limit > 80) limit = 80;
       var resultados = await buscarUniversal(query, sourceFilter, limit);
       if (resultados.resultados) {
@@ -304,22 +270,73 @@ async function handleRequest(request, env) {
           delete r.link;
           delete r.url;
         }
-        // LISTADO/BÚSQUEDA: solo campos esenciales (meta completa va en detalle)
+        // Enriquecer con IMDb/TMDB/OMDb: géneros, sinopsis, rating, poster, backdrop.
+        // NUNCA dejar portadas vacías si hay meta disponible.
         try {
+          // Ligero y top N: search debe ser rápido (meta completa al detalle)
+          resultados.resultados = await enriquecerListaConTmdb(resultados.resultados, query, {
+            light: true,
+            maxItems: Math.min(8, (resultados.resultados && resultados.resultados.length) || 0),
+            concurrency: 3
+          });
           for (var cj = 0; cj < resultados.resultados.length; cj++) {
-            resultados.resultados[cj] = slimResultadoLista(resultados.resultados[cj], origin);
+            var itc = resultados.resultados[cj];
+            delete itc.success;
+            delete itc.tmdb_overview;
+            delete itc.overview_tmdb;
+            delete itc.description;
+            delete itc.tmdb_genres;
+            delete itc.genres_tmdb;
+            delete itc.genres;
+            delete itc.tmdb_poster;
+            delete itc.poster_tmdb;
+            // Conservar rating antes de borrar aliases
+            if ((itc.calificacion == null || itc.calificacion === '') && itc.rating != null) {
+              itc.calificacion = itc.rating;
+            }
+            if ((itc.calificacion == null || itc.calificacion === '') && itc.tmdb_rating != null) {
+              itc.calificacion = itc.tmdb_rating;
+            }
+            delete itc.tmdb_rating;
+            delete itc.rating;
+            delete itc.tmdb_release_date;
+            delete itc.release_date;
+            delete itc.tmdb_title;
+            delete itc.original_title;
+            delete itc.image;
+            delete itc.alternativas; // sin fusión entre fuentes
+            // Garantizar portada: preferir la ya elegida, luego portada_imdb, luego portada_tmdb
+            if (!itc.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(itc.portada))) {
+              if (itc.portada_imdb && esPortadaUrlValida(itc.portada_imdb)) {
+                itc.portada = itc.portada_imdb;
+                itc.poster_source = 'imdb';
+              } else if (itc.portada_tmdb && esPortadaUrlValida(itc.portada_tmdb)) {
+                itc.portada = itc.portada_tmdb;
+                itc.poster_source = 'tmdb';
+              }
+            }
+            // Normalizar calificación (número 0–10)
+            if (itc.calificacion != null && itc.calificacion !== '') {
+              itc.calificacion = normalizarCalificacion(itc.calificacion);
+            }
+            // Esquema uniforme de campos en todos los resultados
+            normalizarCamposResultado(itc);
+            if (itc.slug) {
+              var sidFinal = sourceIdFromName(itc.fuente);
+              var tipoPathFinal = (itc.tipo === 'Serie' || itc.tipo === 'Anime')
+                ? (itc.tipo === 'Anime' ? 'anime' : 'serie')
+                : 'pelicula';
+              itc.source_id = sidFinal;
+              itc.url_extract = origin + '/' + sidFinal + '/' + tipoPathFinal + '/' + itc.slug;
+            }
+            if (Array.isArray(itc.fuentes) && itc.fuentes.length) {
+              itc.fuente = itc.fuentes[0];
+            }
           }
           resultados.total = resultados.resultados.length;
-        } catch (eSlim) { /* silencioso */ }
+        } catch (eEnrich) { /* silencioso */ }
       }
-      var pageNum = parseInt(url.searchParams.get('page') || '1', 10) || 1;
-      var lista = (resultados && resultados.resultados) ? resultados.resultados : [];
-      return json({
-        query: query,
-        page: pageNum,
-        count: lista.length,
-        results: lista
-      });
+      return json(resultados);
     } catch (err) {
       return json({ success: false, error: err.message }, 500);
     }
@@ -355,63 +372,39 @@ async function handleRequest(request, env) {
   var catFiltro = (parts[catTipoIdx + 1] || '').toLowerCase(); // estrenos|populares|''
 
   if ((catSeccion === 'peliculas' || catSeccion === 'series' || catSeccion === 'animes') &&
-      (catFiltro === 'estrenos' || catFiltro === 'populares' || catFiltro === 'emision' || catFiltro === 'proximo' || catFiltro === 'proximamente' || catFiltro === '' || catFiltro === 'page')) {
+      (catFiltro === 'estrenos' || catFiltro === 'populares' || catFiltro === '' || catFiltro === 'page')) {
     var pageNum = parseInt(url.searchParams.get('page') || '1', 10);
     if (catFiltro === 'page' && parts[catTipoIdx + 2]) {
       pageNum = parseInt(parts[catTipoIdx + 2], 10) || 1;
       catFiltro = '';
     }
-    var srcCat = catSource || sourceParam || '';
-    // AnimeAV1: /4/animes/estrenos o /4/animes/emision → catálogo en emisión
-    var esAnimeAv1Cat =
-      String(parts[0]) === '4' ||
-      parts[0] === 'animeav1' ||
-      parts[0] === 'av1' ||
-      srcCat === 'animeav1' ||
-      srcCat === '4' ||
-      srcCat === 'av1';
-
-    try {
-      var catalogo = null;
-      if (esAnimeAv1Cat && catSeccion === 'animes') {
-        var filtroAv1 = 'emision';
-        if (catFiltro === 'populares') filtroAv1 = 'populares';
-        else if (catFiltro === 'proximo' || catFiltro === 'proximamente') filtroAv1 = 'proximo';
-        else if (catFiltro === 'estrenos' || catFiltro === 'emision' || !catFiltro) filtroAv1 = 'emision';
-        catalogo = await listarAnimeAv1Catalogo(filtroAv1, pageNum, origin);
-      } else {
-        // PelisPlus (flujo original)
-        if (srcCat !== 'pelisplushd' && srcCat !== '3') {
-          if (String(parts[0]) !== '3' && parts[0] !== 'pelisplushd' && parts[0] !== 'pp') {
-            return json({
-              success: false,
-              error: 'Catalogos: PelisPlus /3/... o AnimeAV1 /4/animes/estrenos',
-              ejemplos: {
-                pelisplus: origin + '/3/peliculas/estrenos',
-                animeav1: origin + '/4/animes/estrenos'
-              }
-            }, 400);
-          }
-        }
-        catalogo = await listarPelisplusCatalogo(catSeccion, catFiltro || null, pageNum, origin);
+    // Solo PelisPlus tiene estas listas públicas; id 3 o sin id con source=3
+    var srcCat = catSource || sourceParam || 'pelisplushd';
+    if (srcCat !== 'pelisplushd' && srcCat !== '3') {
+      // permitir /3/... forzado
+      if (String(parts[0]) !== '3' && parts[0] !== 'pelisplushd' && parts[0] !== 'pp') {
+        return json({
+          success: false,
+          error: 'Los catalogos estrenos/populares solo estan disponibles para PelisPlus (id 3)',
+          ejemplo: origin + '/3/peliculas/estrenos'
+        }, 400);
       }
+      srcCat = 'pelisplushd';
+    }
+    try {
+      var catalogo = await listarPelisplusCatalogo(catSeccion, catFiltro || null, pageNum, origin);
       if (catalogo && catalogo.resultados && catalogo.resultados.length) {
         try {
-          if (catalogo && Array.isArray(catalogo.resultados)) {
-            for (var ci = 0; ci < catalogo.resultados.length; ci++) {
-              catalogo.resultados[ci] = slimResultadoLista(catalogo.resultados[ci], origin);
-            }
-            catalogo.total = catalogo.resultados.length;
-          }
-        } catch (eCat) { /* ok */ }
+          // Catálogo: enriquecimiento LIGERO (sin ficha PelisPlus ni scrape IMDb ES por ítem)
+          // Evita error 1102/503 por CPU timeout en Cloudflare Workers
+          catalogo.resultados = await enriquecerListaConTmdb(catalogo.resultados, '', {
+            light: true,
+            maxItems: 16,
+            concurrency: 2
+          });
+        } catch (eCat) { /* devolver catálogo sin meta */ }
       }
-      var catLista = (catalogo && catalogo.resultados) ? catalogo.resultados : [];
-      return json({
-        page: pageNum || 1,
-        count: catLista.length,
-        results: catLista,
-        fuente: esAnimeAv1Cat ? 'animeav1' : 'pelisplushd'
-      });
+      return json(catalogo);
     } catch (err) {
       return json({ success: false, error: err.message }, 500);
     }
@@ -438,24 +431,11 @@ async function handleRequest(request, env) {
 
     try {
       var resultadoPath = await scrapearPorSlug(tipoRuta, slug, forcedSource, commonOpts, origin);
-      var esReqCapitulo = !!(commonOpts.season && commonOpts.episode);
-
-      // Capítulo: solo reproductores (la meta está en el detalle de la serie)
-      if (esReqCapitulo || (resultadoPath && (resultadoPath.tipo === 'Capitulo' || resultadoPath.tipo === 'Capítulo'))) {
-        resultadoPath = formatearCapituloRespuesta(resultadoPath, origin, {
-          slug: slug,
-          source_id: forcedSource || (resultadoPath && resultadoPath.source_id),
-          season: commonOpts.season,
-          episode: commonOpts.episode,
-          tipoRuta: tipoRuta
-        });
-        return json(resultadoPath);
-      }
-
-      // Serie / película / anime (ficha completa)
+      // Enriquecer detalle con TMDB/IMDb (descripción, géneros, backdrop, portada…)
       try {
         resultadoPath = await enriquecerDetalleConTmdb(resultadoPath, tipoRuta);
       } catch (eDet) { /* silencioso */ }
+      // Nunca dejar portada vacía si hay meta alternativa
       if (resultadoPath && (!resultadoPath.portada || esPortadaSospechosa(resultadoPath.portada))) {
         if (resultadoPath.portada_imdb && esPortadaUrlValida(resultadoPath.portada_imdb)) {
           resultadoPath.portada = resultadoPath.portada_imdb;
@@ -465,10 +445,7 @@ async function handleRequest(request, env) {
           resultadoPath.poster_source = 'tmdb';
         }
       }
-      if (resultadoPath) {
-        normalizarCamposResultado(resultadoPath);
-        resultadoPath = formatearDetalleRespuesta(resultadoPath, origin);
-      }
+      if (resultadoPath) normalizarCamposResultado(resultadoPath);
       return json(resultadoPath);
     } catch (err) {
       return json({
@@ -525,10 +502,6 @@ async function handleRequest(request, env) {
         resultado.portada = resultado.portada_tmdb;
         resultado.poster_source = 'tmdb';
       }
-    }
-    if (resultado) {
-      normalizarCamposResultado(resultado);
-      resultado = formatearDetalleRespuesta(resultado, origin);
     }
     return json(resultado);
   } catch (err) {
@@ -1321,9 +1294,10 @@ var VOE_MIRRORS = [
   'donaldlineelse.com', 'kathleenmemberhistory.com'
 ];
 
-// Cache simple en memoria (por invocación del Worker)
+// Cache en memoria del isolate (rápido mientras el Worker esté caliente)
 var __RESOLVE_CACHE__ = Object.create(null);
-var CACHE_TTL_MS = 45000; // 45 segundos
+var CACHE_TTL_MS = 30 * 60 * 1000; // 30 min (antes 45s)
+var __RESOLVE_CACHE_MAX__ = 200;
 
 function cacheGet(key) {
   var e = __RESOLVE_CACHE__[key];
@@ -1335,6 +1309,16 @@ function cacheGet(key) {
   return e.data;
 }
 function cacheSet(key, data) {
+  var keys = Object.keys(__RESOLVE_CACHE__);
+  if (keys.length >= __RESOLVE_CACHE_MAX__) {
+    // Evict entradas más viejas
+    keys.sort(function (a, b) {
+      return (__RESOLVE_CACHE__[a].ts || 0) - (__RESOLVE_CACHE__[b].ts || 0);
+    });
+    for (var i = 0; i < Math.min(40, keys.length); i++) {
+      delete __RESOLVE_CACHE__[keys[i]];
+    }
+  }
   __RESOLVE_CACHE__[key] = { ts: Date.now(), data: data };
 }
 
@@ -2009,60 +1993,6 @@ async function resolveVoeEmbed(embedUrl, origin) {
   return out;
 }
 
-/**
- * Streamtape: NO usa .m3u8, el link final es un mp4 directo armado en dos
- * pedazos para dificultar el scraping: un <div id="...link" style="display:
- * none"> con la URL parcial (//tapecontent.net/get_video?...) y una línea
- * JS que hace getElementById('...link').innerHTML = "&token=XXXX...".
- * Método documentado y usado por varios extractores públicos; si Streamtape
- * cambia el HTML esto puede necesitar un ajuste de regex — el error de abajo
- * lo deja claro en vez de fallar en silencio.
- */
-async function resolveStreamtapeEmbed(embedUrl, origin) {
-  var pageUrl = String(embedUrl || '').replace('/e/', '/v/');
-  var res;
-  try {
-    res = await fetchWithTimeout(pageUrl, { headers: HEADERS, redirect: 'follow' }, 12000);
-  } catch (e) {
-    throw new Error('Streamtape: bloqueado o no accesible desde el worker (' + (e.message || e) + ').');
-  }
-  if (!res.ok) throw new Error('Streamtape: HTTP ' + res.status);
-  var html = await res.text();
-
-  var mToken = html.match(/document\.getElementById\(['"]([a-z0-9_]*link)['"]\)\.innerHTML\s*=\s*(.+?);/i);
-  if (!mToken) throw new Error('Streamtape: no se encontró el bloque del token (posible cambio de HTML)');
-  var tokenPart = mToken[2];
-  var mTokenVal = tokenPart.match(/token=([^&'"]+)/i);
-  if (!mTokenVal) throw new Error('Streamtape: token no encontrado dentro del bloque');
-  var token = mTokenVal[1];
-
-  var idBase = mToken[1]; // ej "norobotlink" -> el otro div suele ser "ideoooolink", pero puede variar
-  var mBase =
-    html.match(/id\s*=\s*["']ideoooolink["'][^>]*>([^<]+)/i) ||
-    html.match(new RegExp('id\\s*=\\s*["\']' + idBase.replace('norobot', 'ideooo') + '["\'][^>]*>([^<]+)', 'i')) ||
-    html.match(/get_video\?[^"'<]+/i);
-  if (!mBase) throw new Error('Streamtape: no se encontró la URL base del video');
-  var basePart = (mBase[1] || mBase[0]).trim();
-  if (basePart.charAt(0) !== '/') basePart = '/' + basePart.replace(/^\/+/, '');
-
-  var direct = 'https:' + basePart + (basePart.indexOf('?') === -1 ? '?' : '&') + 'token=' + token;
-
-  var out = {
-    success: true,
-    provider: 'streamtape',
-    source: embedUrl,
-    resolved_embed: pageUrl,
-    type: 'mp4',
-    url: direct,
-    master: direct,
-    all_sources: [direct]
-  };
-  if (origin) {
-    out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(direct) + '&ref=' + encodeURIComponent(pageUrl);
-  }
-  return out;
-}
-
 function detectarProviderEmbed(u) {
   u = String(u || '').toLowerCase();
   if (u.indexOf('vimeos') !== -1) return 'vimeos';
@@ -2070,106 +2000,6 @@ function detectarProviderEmbed(u) {
       u.indexOf('strwish') !== -1 || u.indexOf('ahvsh') !== -1 ||
       u.indexOf('streamhg') !== -1) return 'streamwish';
   return '';
-}
-
-/** YourUpload: mp4 directo en el HTML del embed */
-async function resolveYourUploadEmbed(embedUrl, origin) {
-  var res;
-  try {
-    res = await fetchWithTimeout(embedUrl, {
-      headers: Object.assign({}, HEADERS, { Referer: 'https://www.yourupload.com/' })
-    }, 12000);
-  } catch (e) {
-    throw new Error('YourUpload: bloqueado o no accesible desde el worker (' + (e.message || e) + ').');
-  }
-  if (!res.ok) throw new Error('YourUpload: HTTP ' + res.status);
-  var html = await res.text();
-  var m =
-    html.match(/file\s*:\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i) ||
-    html.match(/(https?:\/\/vidcache\.net[^"'\s]+\.mp4)/i) ||
-    html.match(/(https?:\/\/[^"'\s]+\/video\.mp4)/i);
-  if (!m) throw new Error('YourUpload: no se encontró el MP4 (posible cambio de HTML)');
-  var mp4 = m[1];
-  var out = {
-    success: true,
-    provider: 'yourupload',
-    source: embedUrl,
-    resolved_embed: embedUrl,
-    type: 'mp4',
-    url: mp4,
-    master: mp4,
-    all_sources: [mp4]
-  };
-  if (origin) out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(mp4) + '&ref=' + encodeURIComponent(embedUrl);
-  return out;
-}
-
-/** MP4Upload: mp4 directo en el HTML del embed */
-async function resolveMp4UploadEmbed(embedUrl, origin) {
-  var res;
-  try {
-    res = await fetchWithTimeout(embedUrl, {
-      headers: Object.assign({}, HEADERS, { Referer: 'https://www.mp4upload.com/' })
-    }, 12000);
-  } catch (e) {
-    throw new Error('MP4Upload: bloqueado o no accesible desde el worker (' + (e.message || e) + ').');
-  }
-  if (!res.ok) throw new Error('MP4Upload: HTTP ' + res.status);
-  var html = await res.text();
-  var m =
-    html.match(/player\.src\s*\(\s*\{[^}]*src\s*:\s*["'](https?:\/\/[^"']+)["']/i) ||
-    html.match(/src\s*:\s*["'](https?:\/\/[^"']+video\.mp4[^"']*)["']/i) ||
-    html.match(/(https?:\/\/[^"'\s]*mp4upload\.com[^"'\s]*\/video\.mp4)/i);
-  if (!m) throw new Error('MP4Upload: no se encontró el MP4 (posible cambio de HTML)');
-  var mp4 = m[1];
-  var out = {
-    success: true,
-    provider: 'mp4upload',
-    source: embedUrl,
-    resolved_embed: embedUrl,
-    type: 'mp4',
-    url: mp4,
-    master: mp4,
-    all_sources: [mp4]
-  };
-  if (origin) out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(mp4) + '&ref=' + encodeURIComponent(embedUrl);
-  return out;
-}
-
-/** Ryderjet: HLS ofuscado con Packer (mismo patrón que Streamwish) */
-async function resolveRyderjetEmbed(embedUrl, origin) {
-  var res;
-  try {
-    res = await fetchWithTimeout(embedUrl, {
-      headers: Object.assign({}, HEADERS, { Referer: 'https://ryderjet.com/' })
-    }, 12000);
-  } catch (e) {
-    throw new Error('Ryderjet: bloqueado o no accesible desde el worker (' + (e.message || e) + ').');
-  }
-  if (!res.ok) throw new Error('Ryderjet: HTTP ' + res.status);
-  var html = await res.text();
-  var decoded;
-  try {
-    decoded = unpackPacker(html);
-  } catch (e2) {
-    throw new Error('Ryderjet: ' + (e2.message || 'no se pudo desempacar el Packer'));
-  }
-  var urls = findStreamUrlsInDecoded(decoded);
-  urls = urls.filter(function (u) { return /\.m3u8|\.mp4|hls/i.test(u); });
-  if (!urls.length) throw new Error('Ryderjet: HTML obtenido pero sin fuentes HLS');
-  var master = pickMasterUrl(urls);
-  var out = {
-    success: true,
-    provider: 'ryderjet',
-    source: embedUrl,
-    resolved_embed: embedUrl,
-    type: 'hls',
-    url: master,
-    master: master,
-    all_sources: urls
-  };
-  if (origin) out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(master) + '&ref=' + encodeURIComponent(embedUrl);
-  return out;
 }
 
 function detectarProviderEmbedFull(u) {
@@ -2181,25 +2011,39 @@ function detectarProviderEmbedFull(u) {
       u.indexOf('callistanise') !== -1 || u.indexOf('smoothpre') !== -1 || u.indexOf('filelions') !== -1) return 'vidhide';
   if (u.indexOf('voe') !== -1 || u.indexOf('jilliandescribe') !== -1) return 'voe';
   if (u.indexOf('goodstream') !== -1) return 'goodstream';
-  if (u.indexOf('streamtape') !== -1 || u.indexOf('stape.') !== -1 || u.indexOf('streamta.pe') !== -1) return 'streamtape';
-  if (u.indexOf('yourupload.com') !== -1) return 'yourupload';
-  if (u.indexOf('mp4upload.com') !== -1) return 'mp4upload';
-  if (u.indexOf('ryderjet.com') !== -1) return 'ryderjet';
   return '';
 }
 
 async function resolveByProvider(embedUrl, provider, origin) {
   provider = provider || detectarProviderEmbedFull(embedUrl);
-  if (provider === 'streamwish') return resolveStreamwishEmbed(embedUrl, origin);
-  if (provider === 'vidhide') return resolveVidhideEmbed(embedUrl, origin);
-  if (provider === 'goodstream') return resolveGoodstreamEmbed(embedUrl, origin);
-  if (provider === 'voe') return resolveVoeEmbed(embedUrl, origin);
-  if (provider === 'streamtape') return resolveStreamtapeEmbed(embedUrl, origin);
-  if (provider === 'yourupload') return resolveYourUploadEmbed(embedUrl, origin);
-  if (provider === 'mp4upload') return resolveMp4UploadEmbed(embedUrl, origin);
-  if (provider === 'ryderjet') return resolveRyderjetEmbed(embedUrl, origin);
-  if (provider === 'vimeos') return resolveVimeosEmbed(embedUrl, origin);
-  throw new Error('Provider no soportado: ' + (provider || 'desconocido'));
+  var cacheKey = 'rp:' + (provider || 'x') + ':' + String(embedUrl || '').slice(0, 300);
+  var hit = cacheGet(cacheKey);
+  if (hit) {
+    // Reinyectar proxy_url si piden origin
+    if (origin && hit.url && !hit.proxy_url) {
+      hit = Object.assign({}, hit, {
+        proxy_url: origin + '/proxy?url=' + encodeURIComponent(hit.url),
+        from_cache: true
+      });
+      if (hit.master) {
+        hit.proxy_master = origin + '/proxy?url=' + encodeURIComponent(hit.master);
+      }
+    } else if (hit) {
+      hit = Object.assign({}, hit, { from_cache: true });
+    }
+    return hit;
+  }
+  var resolved;
+  if (provider === 'streamwish') resolved = await resolveStreamwishEmbed(embedUrl, origin);
+  else if (provider === 'vidhide') resolved = await resolveVidhideEmbed(embedUrl, origin);
+  else if (provider === 'goodstream') resolved = await resolveGoodstreamEmbed(embedUrl, origin);
+  else if (provider === 'voe') resolved = await resolveVoeEmbed(embedUrl, origin);
+  else if (provider === 'vimeos') resolved = await resolveVimeosEmbed(embedUrl, origin);
+  else throw new Error('Provider no soportado: ' + (provider || 'desconocido'));
+  if (resolved && resolved.success !== false && (resolved.url || resolved.master)) {
+    try { cacheSet(cacheKey, resolved); } catch (eC) {}
+  }
+  return resolved;
 }
 
 /** Respuesta rica unificada para /streamurl y /wish/streamurl etc. */
@@ -2228,15 +2072,19 @@ async function buildProviderRichResponse(embedUrl, origin, forceProvider) {
     return sa - sb;
   });
 
+  // Rápido: no comprobar 6 m3u8 en serie. Usar la mejor URL del resolve.
+  // checkHlsStatus solo si no hay master/url clara (modo debug).
   var hlsStatus = [];
   var activePlaylist = null;
-  var activeMaster = null;
-  for (var j = 0; j < Math.min(hlsList.length, 6); j++) {
-    var st = await checkHlsStatus(hlsList[j], referer);
-    hlsStatus.push({ url: st.url, status: st.status });
-    if (!activePlaylist && st.status === 'activo' && st.body && st.body.indexOf('#EXT') !== -1) {
-      activePlaylist = st.body;
-      activeMaster = st.url;
+  var activeMaster = base.master || base.url || (hlsList.length ? hlsList[0] : null);
+  if (!activeMaster && hlsList.length) {
+    for (var j = 0; j < Math.min(hlsList.length, 2); j++) {
+      var st = await checkHlsStatus(hlsList[j], referer);
+      hlsStatus.push({ url: st.url, status: st.status });
+      if (!activePlaylist && st.status === 'activo' && st.body && st.body.indexOf('#EXT') !== -1) {
+        activePlaylist = st.body;
+        activeMaster = st.url;
+      }
     }
   }
 
@@ -2318,18 +2166,6 @@ function attachStreamUrl(origin, rep) {
     rep.hls_resolve = rep.stream_url;
   } else if (prov === 'goodstream' || s.indexOf('goodstream') !== -1) {
     rep.stream_url = origin + '/goodstream/streamurl?url=' + encodeURIComponent(u);
-    rep.hls_resolve = rep.stream_url;
-  } else if (prov === 'streamtape' || s.indexOf('streamtape') !== -1) {
-    rep.stream_url = origin + '/streamtape/streamurl?url=' + encodeURIComponent(u);
-    rep.hls_resolve = rep.stream_url;
-  } else if (prov === 'yourupload' || s.indexOf('yourupload') !== -1) {
-    rep.stream_url = origin + '/yourupload/streamurl?url=' + encodeURIComponent(u);
-    rep.hls_resolve = rep.stream_url;
-  } else if (prov === 'mp4upload' || s.indexOf('mp4upload') !== -1) {
-    rep.stream_url = origin + '/mp4upload/streamurl?url=' + encodeURIComponent(u);
-    rep.hls_resolve = rep.stream_url;
-  } else if (prov === 'ryderjet' || s.indexOf('ryderjet') !== -1) {
-    rep.stream_url = origin + '/ryderjet/streamurl?url=' + encodeURIComponent(u);
     rep.hls_resolve = rep.stream_url;
   } else if (prov === 'vimeos' || s.indexOf('vimeos') !== -1) {
     rep.stream_url = origin + '/resolve/vimeos?url=' + encodeURIComponent(u) + '&proxy=1';
@@ -3623,18 +3459,6 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
 
   if (meta.tmdb_id) item.tmdb_id = meta.tmdb_id;
   if (meta.imdb_id) item.imdb_id = meta.imdb_id;
-  if (meta.mal_id) item.mal_id = meta.mal_id;
-  if (meta.estado && !item.estado) item.estado = meta.estado;
-  if (meta.en_emision != null && item.en_emision == null) item.en_emision = meta.en_emision;
-  if (meta.finalizado != null && item.finalizado == null) item.finalizado = meta.finalizado;
-  if (meta.status && !item.estado) {
-    var stAp = normalizarEstadoEmision(meta.status);
-    if (stAp.estado) {
-      item.estado = stAp.estado;
-      if (item.en_emision == null) item.en_emision = stAp.en_emision;
-      if (item.finalizado == null) item.finalizado = stAp.finalizado;
-    }
-  }
   if (meta.titulo_tmdb) item.titulo_tmdb = meta.titulo_tmdb;
   if (meta.titulo_original) item.titulo_original = meta.titulo_original;
 
@@ -3835,7 +3659,7 @@ async function buscarMetaOmdb(titulo) {
   var q = String(titulo || '').replace(/\(\d{4}\)/g, '').trim();
   if (!q) return null;
   try {
-    var url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
+    var url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) + '&apikey=trilogy&plot=full';
     var res = await fetch(url, { headers: { Accept: 'application/json' } });
     if (!res.ok) return null;
     var d = await res.json();
@@ -4093,77 +3917,6 @@ async function scrapeFichaImdbEs(imdbId) {
  * opts.descripcionHint: sinopsis de la fuente para elegir el tt correcto (homónimos).
  * Prioridad de portadas: imageUrl de suggestion → OMDb → ficha.
  */
-/**
- * MyAnimeList vía Jikan (gratis, sin key). Solo se usa para tipo Anime,
- * como primer intento antes de IMDb, porque MAL indexa el título
- * romanizado japonés que usan las fuentes (animeav1/lamovie), mientras
- * que IMDb/TMDB suelen tener solo el título oficial en inglés.
- */
-async function buscarMetaMal(titulo, yearHint) {
-  var q = String(titulo || '').replace(/\(\d{4}\)/g, '').trim();
-  if (!q) return null;
-  try {
-    var url = 'https://api.jikan.moe/v4/anime?q=' + encodeURIComponent(q) + '&limit=5';
-    var res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 9000);
-    if (!res.ok) return null;
-    var data = await res.json();
-    var results = Array.isArray(data.data) ? data.data : [];
-    if (!results.length) return null;
-
-    var wantedTitle = normalizarTituloKey(q);
-    var wantedYearMatch = yearHint ? String(yearHint).match(/(19|20)\d{2}/) : null;
-    var wantedYear = wantedYearMatch ? wantedYearMatch[0] : null;
-
-    var best = null, bestScore = -999;
-    for (var i = 0; i < results.length; i++) {
-      var r = results[i];
-      var candidatos = [r.title, r.title_english, r.title_japanese].filter(Boolean);
-      var score = -999;
-      for (var c = 0; c < candidatos.length; c++) {
-        var ct = normalizarTituloKey(candidatos[c]);
-        var s = 0;
-        if (ct === wantedTitle) s = 100;
-        else if (ct && (ct.indexOf(wantedTitle) !== -1 || wantedTitle.indexOf(ct) !== -1)) s = 50;
-        if (s > score) score = s;
-      }
-      var ry = r.aired && r.aired.from ? String(r.aired.from).slice(0, 4) : (r.year ? String(r.year) : null);
-      if (wantedYear && ry && wantedYear !== ry) score -= 60;
-      if (score > bestScore) { bestScore = score; best = r; }
-    }
-    if (!best || bestScore < 40) return null;
-
-    var genres = (best.genres || []).map(function (g) { return g.name; }).filter(Boolean);
-    var poster = best.images && best.images.jpg ? (best.images.jpg.large_image_url || best.images.jpg.image_url) : null;
-    var fecha = best.aired && best.aired.from ? String(best.aired.from).slice(0, 10) : null;
-    var year = fecha ? fecha.slice(0, 4) : (best.year ? String(best.year) : null);
-
-    return {
-      mal_id: best.mal_id || null,
-      tmdb_id: null,
-      imdb_id: null,
-      titulo_tmdb: best.title || q,
-      portada_tmdb: null,
-      portada_imdb: poster,
-      backdrop: null,
-      calificacion: best.score != null ? Number(best.score) : null,
-      descripcion: best.synopsis || null,
-      generos: genres,
-      fecha_estreno: fecha,
-      year: year,
-      titulo_original: best.title_japanese || best.title || null,
-      votos: best.scored_by != null ? String(best.scored_by).replace(/\B(?=(\d{3})+(?!\d))/g, ',') : null,
-      duracion: null,
-      duracion_texto: best.duration || null,
-      certificacion: best.rating || null,
-      status: best.status || null,
-      tagline: null,
-      slug_tmdb: null
-    };
-  } catch (e) {
-    return null;
-  }
-}
-
 async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
   opts = opts || {};
   var descHint = opts.descripcionHint || opts.descripcion || null;
@@ -4320,7 +4073,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
           var plotCand = null;
           var omdbCand = null;
           try {
-            var oUrl = 'https://www.omdbapi.com/?i=' + encodeURIComponent(cand.item.id) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
+            var oUrl = 'https://www.omdbapi.com/?i=' + encodeURIComponent(cand.item.id) + '&apikey=trilogy&plot=full';
             var oRes = await fetch(oUrl, { headers: { Accept: 'application/json' } });
             if (oRes.ok) {
               omdbCand = await oRes.json();
@@ -4463,7 +4216,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
   if (wantedYear) {
     try {
       var omdbByYear = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) +
-        '&y=' + encodeURIComponent(wantedYear) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
+        '&y=' + encodeURIComponent(wantedYear) + '&apikey=trilogy&plot=full';
       var oY = await fetch(omdbByYear, { headers: { Accept: 'application/json' } });
       if (oY.ok) {
         var odY = await oY.json();
@@ -4502,7 +4255,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
         }
       }
       // Búsqueda listado OMDb filtrada por año
-      var omdbSearch = 'https://www.omdbapi.com/?s=' + encodeURIComponent(q) + '&type=movie&apikey=' + encodeURIComponent(__OMDB_KEY__) + '';
+      var omdbSearch = 'https://www.omdbapi.com/?s=' + encodeURIComponent(q) + '&type=movie&apikey=trilogy';
       var oS = await fetch(omdbSearch, { headers: { Accept: 'application/json' } });
       if (oS.ok) {
         var odS = await oS.json();
@@ -4512,7 +4265,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
           if (!row || !row.imdbID) continue;
           var yr = row.Year ? String(row.Year).slice(0, 4) : null;
           if (yr && yr !== wantedYear) continue;
-          var omdbUrl3 = 'https://www.omdbapi.com/?i=' + encodeURIComponent(row.imdbID) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
+          var omdbUrl3 = 'https://www.omdbapi.com/?i=' + encodeURIComponent(row.imdbID) + '&apikey=trilogy&plot=full';
           var oR3 = await fetch(omdbUrl3, { headers: { Accept: 'application/json' } });
           if (!oR3.ok) continue;
           var od3 = await oR3.json();
@@ -4586,7 +4339,7 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
     var cand = candidates[0];
     // Usar OMDb con el primer tt encontrado
     try {
-      var omdbUrl2 = 'https://www.omdbapi.com/?i=' + encodeURIComponent(cand.imdbId) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
+      var omdbUrl2 = 'https://www.omdbapi.com/?i=' + encodeURIComponent(cand.imdbId) + '&apikey=trilogy&plot=full';
       var omdbRes2 = await fetch(omdbUrl2, { headers: { Accept: 'application/json' } });
       if (omdbRes2.ok) {
         var od2 = await omdbRes2.json();
@@ -4739,7 +4492,6 @@ async function buscarMetaTmdbApi(titulo, tipoHint, yearHint) {
 }
 
 var __TMDB_KEY__ = null; // se asigna en handleRequest desde env
-var __OMDB_KEY__ = 'trilogy'; // se sobreescribe en handleRequest desde env.OMDB_API_KEY si existe
 
 // ======================================================
 // METADATA / PORTADAS ROBUSTAS
@@ -4911,7 +4663,6 @@ function metaCacheSet(key, value) {
 /**
  * Metadata combinada.
  * Orden:
- *   0. MyAnimeList (Jikan) primero SOLO si tipoHint es Anime
  *   1. IMDb scrape sin key (poster fiable + ID + rating + año + géneros)
  *   2. TMDB oficial si existe TMDB_API_KEY (backdrop + respaldo)
  *   3. OMDb solo si todavía faltan datos
@@ -4949,7 +4700,6 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
     if (destino.calificacion == null && origenMeta.calificacion != null) destino.calificacion = origenMeta.calificacion;
     if (!destino.imdb_id && origenMeta.imdb_id) destino.imdb_id = origenMeta.imdb_id;
     if (!destino.tmdb_id && origenMeta.tmdb_id) destino.tmdb_id = origenMeta.tmdb_id;
-    if (!destino.mal_id && origenMeta.mal_id) destino.mal_id = origenMeta.mal_id;
     if ((!destino.generos || !destino.generos.length) && origenMeta.generos && origenMeta.generos.length) destino.generos = origenMeta.generos;
     if (!destino.year && origenMeta.year) destino.year = origenMeta.year;
     if (!destino.fecha_estreno && origenMeta.fecha_estreno) destino.fecha_estreno = origenMeta.fecha_estreno;
@@ -4959,22 +4709,6 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
     if (!destino.duracion_texto && origenMeta.duracion_texto) destino.duracion_texto = origenMeta.duracion_texto;
     if (!destino.certificacion && origenMeta.certificacion) destino.certificacion = origenMeta.certificacion;
     return destino;
-  }
-
-  // 0) MyAnimeList primero SOLO para Anime (título romanizado JP; IMDb/TMDB
-  //    casi nunca coinciden con ese formato para anime nuevo/poco licenciado)
-  var esAnimeHint = normalizarTipoKey(tipoHint) === 'anime';
-  if (esAnimeHint) {
-    var maxVarMal = lightMeta ? 1 : 3;
-    for (var mi = 0; mi < Math.min(variantes.length, maxVarMal); mi++) {
-      try {
-        var mMal = await buscarMetaMal(variantes[mi], yearHint);
-        if (mMal) {
-          meta = completar(meta, mMal);
-          if (meta.mal_id && meta.descripcion && meta.calificacion != null) break;
-        }
-      } catch (eMal) { /* siguiente variante */ }
-    }
   }
 
   // 1) IMDb primero (suggestion + ficha ES + cruce por sinopsis)
@@ -5050,387 +4784,11 @@ function normalizarCalificacion(val) {
  * Garantiza el mismo esquema de campos en búsqueda y detalle.
  * No inventa datos: solo asegura claves presentes (null si faltan).
  */
-
-/** Listado/búsqueda: solo lo esencial (meta completa en el detalle) */
-
-function esDescripcionBasura(texto) {
-  if (!texto || typeof texto !== 'string') return true;
-  var t = texto.trim();
-  if (t.length < 40) return true;
-  if (/ver\s+.+\s+online\s+gratis/i.test(t)) return true;
-  if (/cuevana|pelisplus|repelis|seriesyonkis/i.test(t) && t.length < 120) return true;
-  if (/temporada\s+\d+\s+episodio\s+\d+/i.test(t) && /latino|subtitulad/i.test(t)) return true;
-  if (/^ver\s+/i.test(t) && /gratis|hd\b|online/i.test(t)) return true;
-  return false;
-}
-
-/**
- * Listado compacto:
- * title, slug, url, image, year, source, type
- * + episodes (solo serie/anime si se conoce)
- */
-function slimResultadoLista(item, origin) {
-  if (!item || typeof item !== 'object') return item;
-  var fuente = item.fuente || (Array.isArray(item.fuentes) && item.fuentes[0]) || null;
-  var sid = item.source_id != null ? String(item.source_id) : sourceIdFromName(fuente);
-  var slug = item.slug || null;
-  var tipo = item.tipo || 'Pelicula';
-  var tipoPath = (tipo === 'Serie' || tipo === 'Anime')
-    ? (tipo === 'Anime' ? 'anime' : 'serie')
-    : 'pelicula';
-  var url = item.url_extract || item.url || item.link || null;
-  if (!url && slug && sid) {
-    url = (origin || '') + '/' + sid + '/' + tipoPath + '/' + slug;
-  }
-  var image = item.portada || item.image || item.portada_fuente_raw || null;
-  var year = item.year;
-  if (year != null) {
-    var ym = String(year).match(/(19|20)\d{2}/);
-    year = ym ? ym[0] : String(year);
-  }
-  var out = {
-    title: limpiarTitulo(item.titulo || item.nombre || item.title || '') || null,
-    slug: slug,
-    url: url,
-    image: image,
-    year: year || null,
-    source: fuente,
-    type: tipo
-  };
-  if (sid) out.source_id = sid;
-  // total episodios solo en DETALLE (junto a temporadas), no en listado
-  Object.keys(out).forEach(function (k) {
-    if (out[k] == null) delete out[k];
-  });
-  return out;
-}
-
-/** Minutos → "1h 31min" */
-function minutosATexto(mins) {
-  var n = parseInt(mins, 10);
-  if (!n || n <= 0 || !isFinite(n)) return null;
-  var h = Math.floor(n / 60);
-  var m = n % 60;
-  if (h > 0 && m > 0) return h + 'h ' + m + 'min';
-  if (h > 0) return h + 'h';
-  return m + 'min';
-}
-
-/**
- * Detalle: respuesta ordenada con meta IMDb/TMDB y atribución de fuente.
- * Descripción: prioridad página fuente; si no hay, IMDb/TMDB.
- */
-/** Episodio en listado de serie: mínimo para navegar/reproducir */
-function slimEpisodio(ep) {
-  if (!ep || typeof ep !== 'object') return ep;
-  var temporada = ep.temporada != null ? ep.temporada : (ep.season != null ? ep.season : null);
-  var episodio = ep.episodio != null ? ep.episodio : (ep.episode != null ? ep.episode : null);
-
-  // Título: solo nombre del capítulo, no "Serie 1x1"
-  var titulo = ep.titulo || ep.name || ep.nombre || null;
-  if (titulo) {
-    titulo = String(titulo).trim();
-    // Quitar prefijos tipo "Acaramelados 1x1", "Serie - T1E1", "1x1 - "
-    titulo = titulo
-      .replace(/^.*?\b\d+\s*[x×]\s*\d+\s*[-–:|]?\s*/i, '')
-      .replace(/^.*?\bT\s*\d+\s*E\s*\d+\s*[-–:|]?\s*/i, '')
-      .replace(/^.*?\bTemporada\s*\d+\s*(Episodio|Cap[ií]tulo)?\s*\d+\s*[-–:|]?\s*/i, '')
-      .replace(/^(Episodio|Cap[ií]tulo|Episode|Chapter)\s*\d+\s*[-–:|]?\s*/i, '')
-      .trim();
-    // Si quedó vacío o es solo el nombre de la serie repetido, no mandar titulo
-    if (!titulo || /^\d+$/.test(titulo)) titulo = null;
-  }
-
-  var out = {};
-  if (temporada != null) out.temporada = temporada;
-  if (episodio != null) out.episodio = episodio;
-  if (titulo) out.titulo = titulo;
-  if (ep.slug) out.slug = ep.slug;
-  if (ep.link) out.link = ep.link;
-  if (ep.episode_id != null) out.episode_id = ep.episode_id;
-  if (ep.postId != null) out.postId = ep.postId;
-
-  // Players solo si ya vienen en este ítem (capítulo resuelto)
-  var reps = ep.reproductores || [];
-  var embeds = ep.embeds || [];
-  var descargas = ep.descargas || ep.downloads || [];
-  if (reps.length) out.reproductores = reps;
-  if (embeds.length) out.embeds = embeds;
-  if (descargas.length) out.descargas = descargas;
-
-  return out;
-}
-
-function slimTemporada(t) {
-  if (!t || typeof t !== 'object') return t;
-  var eps = t.episodios || t.capitulos || [];
-  var lista = eps.map(slimEpisodio);
-  var out = {
-    temporada: t.temporada != null ? t.temporada : (t.season_number != null ? t.season_number : null),
-    episodios: lista.length
-  };
-  if (lista.length) out.lista = lista;
-  if (out.temporada == null) delete out.temporada;
-  return out;
-}
-
-/**
- * Detalle limpio:
- * - rating + rating_source (imdb | tmdb | fuente)
- * - imdb/tmdb solo id + rating + votos (sin duplicar géneros/duración/portada)
- * - sin titulo_tmdb
- * - sin campos null innecesarios
- */
-
-/** Capítulo: solo lo necesario para reproducir (meta en detalle de la serie) */
-function formatearCapituloRespuesta(item, origin, ctx) {
-  ctx = ctx || {};
-  item = item || {};
-  var sid = ctx.source_id || item.source_id || sourceIdFromName(item.fuente) || null;
-  var slug = ctx.slug || item.slug || null;
-  var temporada = ctx.season != null ? ctx.season : (item.temporada != null ? item.temporada : null);
-  var episodio = ctx.episode != null ? ctx.episode : (item.episodio != null ? item.episodio : null);
-  var tipoRuta = ctx.tipoRuta || 'serie';
-  if (tipoRuta === 'anime') tipoRuta = 'anime';
-  else if (tipoRuta === 'pelicula') tipoRuta = 'pelicula';
-  else tipoRuta = 'serie';
-
-  var reproductores = item.reproductores || [];
-  var embeds = item.embeds || [];
-  // Si embeds son strings, normalizar
-  if (embeds.length && typeof embeds[0] === 'string') {
-    embeds = embeds.map(function (u) { return { url: u }; });
-  }
-  var descargas = item.descargas || item.downloads || [];
-
-  var urlExtract = null;
-  if (slug && sid && origin && temporada != null && episodio != null) {
-    urlExtract = origin + '/' + sid + '/' + tipoRuta + '/' + slug + '/' + temporada + '/' + episodio;
-  }
-
-  var out = {
-    success: item.success !== false,
-    tipo: 'Capitulo',
-    fuente: item.fuente || null,
-    source_id: sid != null ? String(sid) : null,
-    slug: slug,
-    titulo: item.titulo_serie || item.titulo || null,
-    temporada: temporada,
-    episodio: episodio,
-    total: reproductores.length || embeds.length || 0,
-    embeds: embeds,
-    reproductores: reproductores,
-    descargas: descargas
-  };
-  if (urlExtract) out.url_extract = urlExtract;
-  if (item.link) out.link = item.link;
-  if (item.postId != null) out.postId = item.postId;
-
-  Object.keys(out).forEach(function (k) {
-    if (out[k] == null) delete out[k];
-  });
-  return out;
-}
-
-/**
- * Detalle organizado, sin duplicados:
- * rating + rating_source en raíz; imdb/tmdb solo ids (y rating si difiere)
- * generos (array) sin "genero" string; estado sin triplicar en_emision/finalizado
- * series: sin embeds/reproductores vacíos (van por capítulo)
- */
-function formatearDetalleRespuesta(item, origin) {
-  if (!item || typeof item !== 'object') return item;
-
-  var desc = item.descripcion || null;
-  if (desc && typeof esDescripcionBasura === 'function' && esDescripcionBasura(desc)) desc = null;
-  if (!desc && item.imdb && item.imdb.descripcion) desc = item.imdb.descripcion;
-  if (!desc && item.descripcion_imdb) desc = item.descripcion_imdb;
-  if (!desc && item.descripcion_tmdb) desc = item.descripcion_tmdb;
-
-  var ratingImdb = null;
-  var ratingTmdb = null;
-  if (item.imdb && item.imdb.rating != null) ratingImdb = normalizarCalificacion(item.imdb.rating);
-  if (ratingImdb == null && item.rating_imdb != null) ratingImdb = normalizarCalificacion(item.rating_imdb);
-  if (item.tmdb && item.tmdb.rating != null) ratingTmdb = normalizarCalificacion(item.tmdb.rating);
-  if (ratingTmdb == null && item.rating_tmdb != null) ratingTmdb = normalizarCalificacion(item.rating_tmdb);
-
-  var ratingFuente = item.rating != null ? normalizarCalificacion(item.rating) : null;
-  if (ratingFuente == null && item.calificacion != null) ratingFuente = normalizarCalificacion(item.calificacion);
-
-  var rating = null;
-  var rating_source = null;
-  if (ratingImdb != null) {
-    rating = ratingImdb;
-    rating_source = 'imdb';
-  } else if (item.mal_id && ratingFuente != null) {
-    rating = ratingFuente;
-    rating_source = 'mal';
-  } else if (item.imdb_id && ratingFuente != null) {
-    rating = ratingFuente;
-    rating_source = 'imdb';
-  } else if (ratingTmdb != null) {
-    rating = ratingTmdb;
-    rating_source = 'tmdb';
-  } else if (item.tmdb_id && ratingFuente != null) {
-    rating = ratingFuente;
-    rating_source = 'tmdb';
-  } else if (ratingFuente != null) {
-    rating = ratingFuente;
-    rating_source = 'fuente';
-  }
-
-  var votos = null;
-  if (item.imdb && item.imdb.votos != null) votos = item.imdb.votos;
-  else if (item.votos != null) votos = item.votos;
-  else if (item.votos_imdb != null) votos = item.votos_imdb;
-
-  var duracion = item.duracion != null ? item.duracion : (item.imdb && item.imdb.duracion != null ? item.imdb.duracion : null);
-  var duracionTexto = item.duracion_texto || minutosATexto(duracion) || (item.imdb && item.imdb.duracion_texto) || null;
-  var certificacion = item.certificacion || (item.imdb && item.imdb.certificacion) || item.clasificacion || null;
-
-  var generos = Array.isArray(item.generos) && item.generos.length
-    ? item.generos
-    : (item.imdb && Array.isArray(item.imdb.generos) ? item.imdb.generos : null);
-  if ((!generos || !generos.length) && item.genero) {
-    generos = String(item.genero).split(',').map(function (g) { return g.trim(); }).filter(Boolean);
-  }
-  if (generos && !generos.length) generos = null;
-
-  var imdbId = item.imdb_id || (item.imdb && item.imdb.id) || null;
-  var tmdbId = item.tmdb_id || (item.tmdb && item.tmdb.id) || null;
-
-  // IDs solo en raíz (imdb_id / tmdb_id); sin objetos {id} duplicados
-  var imdbObj = null;
-  var tmdbObj = null;
-
-  var tipo = item.tipo || 'Pelicula';
-  var sid = item.source_id != null ? String(item.source_id) : sourceIdFromName(item.fuente);
-  var slug = item.slug || null;
-  var tipoPath = (tipo === 'Serie' || tipo === 'Anime')
-    ? (tipo === 'Anime' ? 'anime' : 'serie')
-    : 'pelicula';
-  var urlExtract = item.url_extract || null;
-  if (!urlExtract && slug && sid && origin) {
-    urlExtract = origin + '/' + sid + '/' + tipoPath + '/' + slug;
-  }
-
-  var portada = item.portada || item.portada_imdb || item.portada_tmdb || null;
-  var titulo = limpiarTitulo(item.titulo || '') || null;
-  var tituloOrig = item.titulo_original || null;
-  if (!tituloOrig && item.titulo_tmdb && String(item.titulo_tmdb).toLowerCase() !== String(titulo || '').toLowerCase()) {
-    tituloOrig = item.titulo_tmdb;
-  }
-  if (tituloOrig && titulo && String(tituloOrig).toLowerCase() === String(titulo).toLowerCase()) {
-    tituloOrig = null;
-  }
-
-  // Estado unificado (series)
-  var estado = item.estado || null;
-  if (!estado && item.status) {
-    var stFmt = normalizarEstadoEmision(item.status);
-    estado = stFmt.estado;
-    if (item.en_emision == null) item.en_emision = stFmt.en_emision;
-    if (item.finalizado == null) item.finalizado = stFmt.finalizado;
-  }
-  if (!estado) {
-    if (item.finalizado === true) estado = 'Finalizado';
-    else if (item.en_emision === true) estado = 'En emisión';
-  }
-
-  var esSerieAnime = (tipo === 'Serie' || tipo === 'Anime');
-  var reps = item.reproductores || [];
-  var embeds = item.embeds || [];
-  var descargas = item.descargas || item.downloads || [];
-  // En ficha de serie no tiene sentido lista vacía de players (van por capítulo)
-  var incluirPlayers = !esSerieAnime || reps.length > 0 || embeds.length > 0;
-
-  // Orden lógico de campos
-  var out = {
-    success: item.success !== false,
-    fuente: item.fuente || null,
-    source_id: sid,
-    tipo: tipo,
-    link: item.link || null,
-    slug: slug,
-    titulo: titulo,
-    titulo_original: tituloOrig,
-    portada: portada,
-    backdrop: item.backdrop || null,
-    descripcion: desc,
-    year: item.year || null,
-    fecha_estreno: item.fecha_estreno || null,
-    rating: rating,
-    rating_source: rating_source,
-    votos: votos,
-    generos: generos,
-    duracion: duracion,
-    duracion_texto: duracionTexto,
-    certificacion: certificacion,
-    actores: Array.isArray(item.actores) && item.actores.length ? item.actores : null,
-    estado: esSerieAnime ? estado : null,
-    imdb_id: imdbId,
-    tmdb_id: tmdbId,
-    imdb: imdbObj,
-    tmdb: tmdbObj,
-    poster_source: item.poster_source || null,
-    url_extract: urlExtract
-  };
-
-  if (esSerieAnime) {
-    var totalEps = item.total_episodios != null ? parseInt(item.total_episodios, 10) : null;
-    var totalTemps = item.total_temporadas != null ? parseInt(item.total_temporadas, 10) : null;
-    if (Array.isArray(item.temporadas) && item.temporadas.length) {
-      out.temporadas = item.temporadas.map(slimTemporada);
-      if (!totalTemps) totalTemps = out.temporadas.length;
-      if (!totalEps || !isFinite(totalEps)) {
-        totalEps = 0;
-        for (var ti = 0; ti < out.temporadas.length; ti++) {
-          var te = out.temporadas[ti];
-          if (!te) continue;
-          if (typeof te.episodios === 'number') totalEps += te.episodios;
-          else if (Array.isArray(te.lista)) totalEps += te.lista.length;
-          else if (Array.isArray(te.episodios)) totalEps += te.episodios.length;
-        }
-      }
-    } else if (Array.isArray(item.episodios) && item.episodios.length) {
-      out.episodios = item.episodios.map(slimEpisodio);
-      if (!totalEps) totalEps = out.episodios.length;
-    }
-    // Totales junto a temporadas (solo detalle)
-    if (totalTemps && isFinite(totalTemps)) out.total_temporadas = totalTemps;
-    if (totalEps && isFinite(totalEps) && totalEps > 0) out.total_episodios = totalEps;
-  }
-
-  if (incluirPlayers) {
-    out.total = reps.length || embeds.length || (item.total != null ? item.total : 0);
-    out.reproductores = reps;
-    out.embeds = embeds;
-    out.descargas = descargas;
-  }
-
-  if (tipo === 'Capitulo' || (item.temporada != null && item.episodio != null && !esSerieAnime)) {
-    if (item.temporada != null) out.temporada = item.temporada;
-    if (item.episodio != null) out.episodio = item.episodio;
-    if (item.titulo_serie) out.titulo_serie = item.titulo_serie;
-  }
-
-  if (item.postId != null) out.postId = item.postId;
-  if (item.formato) out.formato = item.formato;
-
-  // Limpiar nulls / vacíos
-  Object.keys(out).forEach(function (k) {
-    if (out[k] == null) delete out[k];
-    if (Array.isArray(out[k]) && !out[k].length) delete out[k];
-  });
-
-  return out;
-}
-
 function normalizarCamposResultado(item) {
   if (!item || typeof item !== 'object') return item;
   var campos = [
     'titulo', 'titulo_original', 'tipo', 'formato', 'fuente', 'source_id', 'slug',
-    'portada', 'backdrop', 'descripcion', 'rating', 'calificacion', 'votos', 'year', 'fecha_estreno',
+    'portada', 'backdrop', 'descripcion', 'calificacion', 'votos', 'year', 'fecha_estreno',
     'generos', 'genero', 'duracion', 'estado', 'en_emision', 'finalizado',
     'imdb_id', 'tmdb_id', 'url_extract'
   ];
@@ -5438,8 +4796,6 @@ function normalizarCamposResultado(item) {
     if (item[campos[i]] === undefined) item[campos[i]] = null;
   }
   if (item.calificacion != null) item.calificacion = normalizarCalificacion(item.calificacion);
-  if (item.rating != null) item.rating = normalizarCalificacion(item.rating);
-  else if (item.calificacion != null) item.rating = item.calificacion;
   if (item.year != null) {
     var y = String(item.year).match(/(19|20)\d{2}/);
     item.year = y ? y[0] : null;
@@ -5550,15 +4906,7 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   if (metaFull.original_title) meta.titulo_original = metaFull.original_title;
   if (metaFull.votes) meta.votos = metaFull.votes;
   if (metaFull.runtime) meta.duracion = metaFull.runtime;
-  if (metaFull.status) {
-    meta.status = metaFull.status;
-    var stMeta = normalizarEstadoEmision(metaFull.status);
-    if (stMeta.estado) {
-      meta.estado = stMeta.estado;
-      meta.en_emision = stMeta.en_emision;
-      meta.finalizado = stMeta.finalizado;
-    }
-  }
+  if (metaFull.status) meta.status = metaFull.status;
   if (metaFull.tagline) meta.tagline = metaFull.tagline;
   if (metaFull.imdb_id) meta.imdb_id = metaFull.imdb_id;
   if (metaFull.overview_tmdb || metaFull.tmdb_overview) {
@@ -5657,13 +5005,12 @@ async function buscarUniversal(query, sourceFilter, limit) {
     ]);
   }
 
+  var TIMEOUT_MS = 4000;
   var jobs = [];
   for (var i = 0; i < cadena.length; i++) {
     var c = cadena[i];
     if (sourceFilter !== 'all' && c.aliases.indexOf(sourceFilter) === -1) continue;
-    // animeav1 pagina varias veces: más tiempo
-    var tms = (c.id === 'animeav1') ? 12000 : 5000;
-    jobs.push({ id: c.id, p: withTimeout(c.fn(), tms) });
+    jobs.push({ id: c.id, p: withTimeout(c.fn(), TIMEOUT_MS) });
   }
 
   var settled = await Promise.all(jobs.map(function (j) { return j.p; }));
@@ -7224,76 +6571,82 @@ function mapAnimeAv1Embeds(embedsObj) {
   return { reproductores: reproductores, descargas: descargas };
 }
 
+/** status numérico animeav1 → texto (0 finalizado, 2 en emisión, …) */
+function animeAv1EstadoDesdeStatus(status, endDate) {
+  var n = status;
+  if (status && typeof status === 'object' && status.number != null) n = status.number;
+  n = parseInt(n, 10);
+  if (n === 2) return { estado: 'En emisión', en_emision: true, finalizado: false };
+  if (n === 1) return { estado: 'Próximamente', en_emision: false, finalizado: false };
+  if (n === 3) return { estado: 'Pausado', en_emision: false, finalizado: false };
+  // 0 u otros: si hay endDate → finalizado
+  if (endDate || n === 0) return { estado: 'Finalizado', en_emision: false, finalizado: true };
+  return { estado: null, en_emision: null, finalizado: null };
+}
 
-/**
- * Catálogo AnimeAV1 (estrenos / en emisión)
- * https://animeav1.com/catalogo?status=emision
- * Ruta: /4/animes/estrenos  o  /4/animes/emision
- */
-async function listarAnimeAv1Catalogo(filtro, page, origin) {
-  page = page || 1;
-  filtro = (filtro || 'emision').toLowerCase();
-  // AnimeAV1: emision | proximo (status=1) | populares (sin filtro)
-  var statusParam = 'emision';
-  if (filtro === 'populares') statusParam = '';
-  else if (filtro === 'proximo' || filtro === 'proximamente' || filtro === 'upcoming') statusParam = '1';
-  else if (filtro === 'estrenos' || filtro === 'emision') statusParam = 'emision';
-  var path = '/catalogo/__data.json?page=' + page;
-  if (statusParam) path += '&status=' + encodeURIComponent(statusParam);
+function animeAv1PortadaDesdeItem(it) {
+  if (!it) return null;
+  var portadaAv1 = it.poster || it.image || it.cover || it.thumbnail || it.coverImage || null;
+  if (!portadaAv1 && it.id != null && String(it.id).match(/^\d+$/)) {
+    portadaAv1 = 'https://cdn.animeav1.com/covers/' + it.id + '.jpg';
+  }
+  if (portadaAv1 && typeof portadaAv1 === 'string' && portadaAv1.indexOf('http') !== 0) {
+    if (/^\/?covers\//i.test(portadaAv1) || /^\d+\.jpe?g$/i.test(portadaAv1)) {
+      portadaAv1 = 'https://cdn.animeav1.com/covers/' + String(portadaAv1).replace(/^.*\//, '');
+    } else {
+      portadaAv1 = ANIMEAV1_BASE + (portadaAv1.charAt(0) === '/' ? portadaAv1 : '/' + portadaAv1);
+    }
+  }
+  return portadaAv1 || null;
+}
 
-  var raw = await fetchAnimeAv1Data(path);
-  var data = decodeSvelteKitData(raw);
-  var results = (data && Array.isArray(data.results)) ? data.results : [];
-  var out = [];
-  for (var i = 0; i < results.length; i++) {
-    var it = results[i];
-    if (!it || !it.slug) continue;
-    var catName = (it.category && it.category.name) || '';
-    var tit = it.title || it.slug;
-    var formato = detectarFormatoAnime(tit, catName, it.slug);
-    var tipo = formato === 'Pelicula' ? 'Pelicula' : 'Anime';
-    var portada = it.poster || it.image || it.cover || it.thumbnail || null;
-    if (!portada && it.id != null && String(it.id).match(/^\d+$/)) {
-      portada = 'https://cdn.animeav1.com/covers/' + it.id + '.jpg';
+function mapAnimeAv1SearchHit(it) {
+  if (!it || !it.slug) return null;
+  var catName = (it.category && it.category.name) || '';
+  var titAv1 = it.title || it.slug;
+  var formatoAv1 = detectarFormatoAnime(titAv1, catName, it.slug);
+  var tipo = formatoAv1 === 'Pelicula' ? 'Pelicula' : 'Anime';
+  var yearAv = extraerYearFlexible(titAv1, it.slug, it.startDate || it.year);
+  var st = animeAv1EstadoDesdeStatus(it.status, it.endDate);
+  var tituloOrig = null;
+  if (it.aka && typeof it.aka === 'object') {
+    tituloOrig = it.aka['ja-jp'] || it.aka['en'] || it.aka['en-us'] || null;
+    if (!tituloOrig) {
+      var ak = Object.keys(it.aka);
+      if (ak.length) tituloOrig = it.aka[ak[0]];
     }
-    if (portada && typeof portada === 'string' && portada.indexOf('http') !== 0) {
-      portada = 'https://cdn.animeav1.com/covers/' + String(portada).replace(/^.*\//, '');
-    }
-    var yearAv = extraerYearFlexible(tit, it.slug, it.startDate || it.year);
-    out.push({
-      fuente: 'animeav1',
-      source_id: '4',
-      tipo: tipo,
-      formato: formato,
-      titulo: tit,
-      slug: it.slug,
-      portada: portada,
-      year: yearAv,
-      link: ANIMEAV1_BASE + '/media/' + it.slug,
-      url_extract: (origin || '') + '/4/anime/' + it.slug,
-      estado: statusParam === 'emision' ? 'En emisión' : (statusParam === '1' ? 'Próximamente' : null),
-      en_emision: statusParam === 'emision' ? true : false,
-      finalizado: false
-    });
   }
   return {
-    success: true,
     fuente: 'animeav1',
-    seccion: 'animes',
-    filtro: filtro,
-    page: page,
-    total: out.length,
-    resultados: out
+    tipo: tipo,
+    formato: formatoAv1,
+    titulo: titAv1,
+    titulo_original: tituloOrig,
+    slug: it.slug,
+    descripcion: it.synopsis || null,
+    portada: animeAv1PortadaDesdeItem(it),
+    link: ANIMEAV1_BASE + '/media/' + it.slug,
+    year: yearAv,
+    temporada: extraerNumeroTemporada(titAv1, it.slug),
+    calificacion: it.score != null ? Number(Number(it.score).toFixed(1)) : null,
+    votos: it.votes != null ? String(it.votes) : null,
+    estado: st.estado,
+    en_emision: st.en_emision,
+    finalizado: st.finalizado,
+    generos: Array.isArray(it.genres)
+      ? it.genres.map(function (g) { return (g && g.name) || g; }).filter(Boolean)
+      : null
   };
 }
 
 async function buscarAnimeAv1(query, limit) {
-  limit = limit || 30;
+  limit = limit || 15;
+  // La API de catálogo devuelve 20 por página; pedir varias páginas si hace falta
+  var maxPages = Math.min(8, Math.max(1, Math.ceil(limit / 20) + 1));
   var out = [];
   var seen = Object.create(null);
   var totalApi = null;
-  // Paginar: animeav1 suele devolver ~20 por página
-  var maxPages = Math.min(6, Math.max(2, Math.ceil(limit / 15) + 1));
+
   for (var page = 1; page <= maxPages && out.length < limit * 2; page++) {
     var path = '/catalogo/__data.json?search=' + encodeURIComponent(query) + '&page=' + page;
     var raw;
@@ -7305,47 +6658,22 @@ async function buscarAnimeAv1(query, limit) {
     var data = decodeSvelteKitData(raw);
     if (!data || !Array.isArray(data.results) || !data.results.length) break;
     if (totalApi == null && data.total != null) totalApi = Number(data.total) || null;
+
     var added = 0;
     for (var i = 0; i < data.results.length; i++) {
-      var it = data.results[i];
-      if (!it || !it.slug || seen[it.slug]) continue;
-      seen[it.slug] = true;
-      var catName = (it.category && it.category.name) || '';
-      var titAv1 = it.title || it.slug;
-      var formatoAv1 = detectarFormatoAnime(titAv1, catName, it.slug);
-      var tipo = formatoAv1 === 'Pelicula' ? 'Pelicula' : 'Anime';
-      var portadaAv1 = it.poster || it.image || it.cover || it.thumbnail || it.coverImage || null;
-      if (!portadaAv1 && it.id != null && String(it.id).match(/^\d+$/)) {
-        portadaAv1 = 'https://cdn.animeav1.com/covers/' + it.id + '.jpg';
-      }
-      if (portadaAv1 && typeof portadaAv1 === 'string' && portadaAv1.indexOf('http') !== 0) {
-        if (/^\/?covers\//i.test(portadaAv1) || /^\d+\.jpe?g$/i.test(portadaAv1)) {
-          portadaAv1 = 'https://cdn.animeav1.com/covers/' + String(portadaAv1).replace(/^.*\//, '');
-        } else {
-          portadaAv1 = ANIMEAV1_BASE + (portadaAv1.charAt(0) === '/' ? portadaAv1 : '/' + portadaAv1);
-        }
-      }
-      var yearAv = extraerYearFlexible(titAv1, it.slug, it.startDate || it.year);
-      out.push({
-        fuente: 'animeav1',
-        tipo: tipo,
-        formato: formatoAv1,
-        titulo: titAv1,
-        slug: it.slug,
-        portada: portadaAv1 || null,
-        link: ANIMEAV1_BASE + '/media/' + it.slug,
-        year: yearAv,
-        temporada: extraerNumeroTemporada(titAv1, it.slug)
-      });
+      var hit = mapAnimeAv1SearchHit(data.results[i]);
+      if (!hit || !hit.slug || seen[hit.slug]) continue;
+      seen[hit.slug] = true;
+      out.push(hit);
       added++;
     }
+    // Sin más resultados o ya cubrimos el total
     if (added === 0) break;
     if (totalApi != null && out.length >= totalApi) break;
-    if (data.results.length < 15) break;
+    if (data.results.length < 20) break; // última página
   }
 
   // Ocultar temporadas sueltas si ya existe el título base
-  // Patrones: -season-2, -2nd-season, -temporada-2, -part-2, -s2
   var slugs = {};
   for (var j = 0; j < out.length; j++) slugs[out[j].slug] = out[j];
   out = out.filter(function (item) {
@@ -7357,11 +6685,10 @@ async function buscarAnimeAv1(query, limit) {
     var base = m[1];
     if (slugs[base]) {
       if (!item.portada && slugs[base].portada) item.portada = slugs[base].portada;
-      return false; // ocultar season suelto (el detalle del base une T1+T2)
+      return false;
     }
     return true;
   });
-  // Portada: si un season quedó y no tiene portada, intentar base
   for (var k = 0; k < out.length; k++) {
     if (out[k].portada) continue;
     var slug2 = String(out[k].slug || '');
@@ -7374,67 +6701,6 @@ async function buscarAnimeAv1(query, limit) {
   }
   return out.slice(0, limit);
 }
-
-
-/**
- * Estado unificado anime/series.
- * AnimeAV1 usa status numérico: 0=Finalizado, 1=Próximamente, 2=En emisión
- * También acepta booleanos y textos TMDB/IMDb.
- */
-function normalizarEstadoEmision(raw) {
-  if (raw == null || raw === '') return { estado: null, en_emision: null, finalizado: null };
-  // Códigos numéricos AnimeAV1
-  if (typeof raw === 'number' || (typeof raw === 'string' && /^\d+$/.test(String(raw).trim()))) {
-    var code = parseInt(raw, 10);
-    if (code === 0) return { estado: 'Finalizado', en_emision: false, finalizado: true };
-    if (code === 1) return { estado: 'Próximamente', en_emision: false, finalizado: false };
-    if (code === 2) return { estado: 'En emisión', en_emision: true, finalizado: false };
-    if (code === 3) return { estado: 'Pausado', en_emision: false, finalizado: false };
-  }
-  if (typeof raw === 'boolean') {
-    return raw
-      ? { estado: 'En emisión', en_emision: true, finalizado: false }
-      : { estado: 'Finalizado', en_emision: false, finalizado: true };
-  }
-  var t = String(raw).trim().toLowerCase();
-  if (!t) return { estado: null, en_emision: null, finalizado: null };
-  if (/final|ended|complet|finish|finished|concluded|terminad/.test(t)) {
-    return { estado: 'Finalizado', en_emision: false, finalizado: true };
-  }
-  if (/emisi[oó]n|airing|ongoing|returning|current|releasing|en\s*curso|transmission/.test(t)) {
-    return { estado: 'En emisión', en_emision: true, finalizado: false };
-  }
-  if (/paus|hiatus|on\s*hold/.test(t)) {
-    return { estado: 'Pausado', en_emision: false, finalizado: false };
-  }
-  if (/pr[oó]xim|upcoming|not yet|soon|announced|tba/.test(t)) {
-    return { estado: 'Próximamente', en_emision: false, finalizado: false };
-  }
-  if (/cancel/.test(t)) {
-    return { estado: 'Cancelado', en_emision: false, finalizado: true };
-  }
-  return { estado: String(raw).trim(), en_emision: null, finalizado: null };
-}
-
-/** Estado desde objeto media de AnimeAV1 (status + endDate) */
-function estadoDesdeAnimeAv1Media(media) {
-  if (!media) return { estado: null, en_emision: null, finalizado: null };
-  // Preferir código status
-  if (media.status != null && media.status !== '') {
-    var st = normalizarEstadoEmision(media.status);
-    if (st.estado) return st;
-  }
-  // Heurística: endDate presente → finalizado; si no y hay startDate → en emisión
-  if (media.endDate) return { estado: 'Finalizado', en_emision: false, finalizado: true };
-  if (media.nextDate || media.waitDays != null) {
-    return { estado: 'En emisión', en_emision: true, finalizado: false };
-  }
-  if (media.startDate && !media.endDate) {
-    return { estado: 'En emisión', en_emision: true, finalizado: false };
-  }
-  return { estado: null, en_emision: null, finalizado: null };
-}
-
 
 async function scrapearAnimeAv1(pageUrl, opts) {
   opts = opts || {};
@@ -7460,20 +6726,21 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   var media = (mediaData && mediaData.media) || {};
   var titulo = media.title || slug;
   var sinopsis = media.synopsis || null;
-  var epsCount = media.episodesCount || 0;
-  var score = media.score || null;
+  // episodesCount a veces se resuelve mal (string largo); preferir lista de episodios
+  var epsCount = 0;
+  if (Array.isArray(media.episodes) && media.episodes.length) {
+    epsCount = media.episodes.length;
+  } else if (typeof media.episodesCount === 'number' && media.episodesCount > 0 && media.episodesCount < 5000) {
+    epsCount = media.episodesCount;
+  } else if (media.episodesCount != null) {
+    var nEc = parseInt(media.episodesCount, 10);
+    if (nEc > 0 && nEc < 5000) epsCount = nEc;
+  }
+  var score = media.score != null ? Number(media.score) : null;
+  if (score != null && !isFinite(score)) score = null;
+  var votosAv1 = media.votes != null ? String(media.votes) : null;
   var malId = media.malId || null;
-  var portada = media.poster || media.cover || media.image || null;
-  if (!portada && media.id != null && String(media.id).match(/^\d+$/)) {
-    portada = 'https://cdn.animeav1.com/covers/' + media.id + '.jpg';
-  }
-  if (portada && typeof portada === 'string' && portada.indexOf('http') !== 0) {
-    if (/^\/?covers\//i.test(portada) || /^\d+\.jpe?g$/i.test(portada)) {
-      portada = 'https://cdn.animeav1.com/covers/' + String(portada).replace(/^.*\//, '');
-    } else {
-      portada = ANIMEAV1_BASE + (portada.charAt(0) === '/' ? portada : '/' + portada);
-    }
-  }
+  var portada = animeAv1PortadaDesdeItem(media);
   // Si sigue sin portada → Jikan/MAL
   if (!portada && malId) {
     try {
@@ -7482,9 +6749,28 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   }
   var catName = (media.category && media.category.name) || 'TV Anime';
   var formato = detectarFormatoAnime(titulo, catName, slug);
+  if (catName && /tv\s*anime/i.test(catName)) formato = formato || 'TV';
   var tipo = formato === 'Pelicula' ? 'Pelicula' : 'Anime';
   // Año: startDate → título/slug
   var yearAv1 = extraerYearFlexible(titulo, slug, media.startDate || media.year);
+  var estadoInfo = animeAv1EstadoDesdeStatus(media.status, media.endDate);
+  var tituloOrigAv1 = null;
+  if (media.aka && typeof media.aka === 'object') {
+    tituloOrigAv1 = media.aka['ja-jp'] || media.aka['en'] || null;
+    if (!tituloOrigAv1) {
+      var akaKeys = Object.keys(media.aka);
+      if (akaKeys.length) tituloOrigAv1 = media.aka[akaKeys[0]];
+    }
+  }
+  var generosAv1 = [];
+  if (Array.isArray(media.genres)) {
+    for (var gi = 0; gi < media.genres.length; gi++) {
+      var g = media.genres[gi];
+      if (g && g.name) generosAv1.push(g.name);
+      else if (typeof g === 'string') generosAv1.push(g);
+    }
+  }
+  var fechaEstrenoAv1 = media.startDate || null;
   // Temporada real del título/slug (One Punch Man 3 → 3, 2nd Season → 2)
   var temporadaDetectada = extraerNumeroTemporada(titulo, slug);
   var temporadaBase = temporadaDetectada;
@@ -7676,26 +6962,30 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     }
   }
 
-  // Estado AnimeAV1: status numérico (0 finalizado, 2 en emisión) + endDate/nextDate
-  var estadoInfo = estadoDesdeAnimeAv1Media(media);
-
   return {
     success: true,
     fuente: 'animeav1',
     source_id: '4',
     tipo: tipo,
-    formato: formato,
+    formato: formato || catName || 'TV',
+    categoria: catName || null,
     link: ANIMEAV1_BASE + '/media/' + slug,
     slug: slug,
     titulo: titulo,
+    titulo_original: tituloOrigAv1,
     portada: portada,
+    backdrop: media.backdrop || null,
     descripcion: sinopsis,
-    calificacion: score,
+    calificacion: score != null ? Number(Number(score).toFixed(1)) : null,
+    votos: votosAv1,
     year: yearAv1,
-    fecha_estreno: media.startDate || media.airedFrom || media.premiereDate || null,
+    fecha_estreno: fechaEstrenoAv1,
     estado: estadoInfo.estado,
     en_emision: estadoInfo.en_emision,
     finalizado: estadoInfo.finalizado,
+    generos: generosAv1.length ? generosAv1 : null,
+    genero: generosAv1.length ? generosAv1.join(', ') : null,
+    mal_id: malId || null,
     total_episodios: totalEps,
     total_temporadas: temporadas.length,
     temporada_principal: tempPrincipal,
@@ -7707,7 +6997,10 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     reproductores: [],
     descargas: [],
     temporadas: temporadas,
-    nota: 'Temporada principal=' + tempPrincipal + (formato !== 'TV' ? ' (' + formato + ')' : '') +
+    nota: (catName ? catName + ' • ' : '') +
+      (yearAv1 ? yearAv1 + ' • ' : '') +
+      (estadoInfo.estado ? estadoInfo.estado + ' • ' : '') +
+      'Temporada principal=' + tempPrincipal + (formato && formato !== 'TV' ? ' (' + formato + ')' : '') +
       '. Players: /4/anime/' + slug + '/' + tempPrincipal + '/{ep}'
   };
 }
@@ -7874,155 +7167,35 @@ async function doramasflixListarEpisodios(serieId, seasonNumber) {
 }
 
 /** Links de un episodio concreto */
-// ======================================================
-// Prioridad: VOE → VidHide → Streamtape (Doramasflix)
-// ======================================================
-function detectarServidorImportante(url) {
-  var u = String(url || "").toLowerCase();
-  if (!u) return null;
-
-  if (
-    u.indexOf("streamtape.com") !== -1 ||
-    u.indexOf("streamtape.to") !== -1 ||
-    u.indexOf("strtape") !== -1
-  ) return "streamtape";
-
-  if (
-    u.indexOf("streamwish") !== -1 ||
-    u.indexOf("flaswish") !== -1 ||
-    u.indexOf("strwish") !== -1 ||
-    u.indexOf("ahvsh.com") !== -1 ||
-    u.indexOf("streamhg.com") !== -1 ||
-    u.indexOf("streamwish.") !== -1
-  ) return "streamwish";
-
-  if (
-    u.indexOf("voe.sx") !== -1 ||
-    u.indexOf("voe-network") !== -1 ||
-    u.indexOf("jilliandescribecompany") !== -1 ||
-    u.indexOf("voe.") !== -1
-  ) return "voe";
-
-  if (
-    u.indexOf("vidhide") !== -1 ||
-    u.indexOf("streamhide") !== -1 ||
-    u.indexOf("vidhidepro") !== -1 ||
-    u.indexOf("filelions") !== -1
-  ) return "vidhide";
-
-  return null;
-}
-
-function scoreServidorImportante(url) {
-  var s = detectarServidorImportante(url);
-  if (s === "streamtape") return 100; // 1º
-  if (s === "streamwish") return 90;  // 2º
-  if (s === "voe") return 80;         // 3º
-  if (s === "vidhide") return 70;     // 4º
-  return 0;
-}
-
-/**
- * importantes primero; si soloImportantes=true y hay alguno, descarta el resto
- */
-function filtrarReproductoresImportantes(reproductores, soloImportantes) {
-  var list = Array.isArray(reproductores) ? reproductores.slice() : [];
-  var top = [];
-  var rest = [];
-  for (var i = 0; i < list.length; i++) {
-    var r = list[i];
-    if (!r || !r.url) continue;
-    if (scoreServidorImportante(r.url) > 0) top.push(r);
-    else rest.push(r);
-  }
-  top.sort(function (a, b) {
-    return scoreServidorImportante(b.url) - scoreServidorImportante(a.url);
-  });
-  if (soloImportantes && top.length) return top;
-  return top.concat(rest);
-}
-
-function normalizarLinkDoramasflix(L) {
-  if (!L || !L.link) return null;
-  var real = null;
-  try {
-    real = typeof decodificarEmbedShortener === "function"
-      ? decodificarEmbedShortener(L.link) || L.link
-      : L.link;
-  } catch (e) {
-    real = L.link;
-  }
-  if (!real || String(real).indexOf("http") !== 0) return null;
-
-  var lang = String(L.lang || "");
-  var idioma =
-    lang === "38" || /lat|es.?lat|latino/i.test(lang)
-      ? "Latino"
-      : lang === "13109" || /sub/i.test(lang)
-        ? "Subtitulado"
-        : "Otro";
-
-  var srv =
-    detectarServidorImportante(real) ||
-    (typeof extraerServidor === "function" ? extraerServidor(real) : null) ||
-    ("server-" + (L.server || ""));
-
-  return {
-    url: real,
-    servidor: srv,
-    idioma: idioma,
-    lang: lang,
-    tipo: "reproductor",
-    fuente: "doramasflix",
-    is_recommended: !!L.is_recommended,
-  };
-}
-
-/**
- * Sustituye tu doramasflixEpisodeLinks por esta.
- * - Pide android + web y fusiona
- * - Prioriza VOE → VidHide → Streamtape
- * - soloImportantes: true = solo esos 3 si existen; false = esos primero + resto
- */
-async function doramasflixEpisodeLinks(episodeId, soloImportantes) {
+async function doramasflixEpisodeLinks(episodeId) {
   if (!episodeId) return [];
-  if (soloImportantes == null) soloImportantes = false;
-
-  async function fetchApp(app) {
-    try {
-      var data = await doramasflixGql(
-        'query($episode_id:ID!){getEpisodeLinks(id:$episode_id,app:"' +
-          app +
-          '"){links_online{server lang link _id is_recommended}}}',
-        { episode_id: episodeId }
-      );
-      return (data && data.getEpisodeLinks && data.getEpisodeLinks.links_online) || [];
-    } catch (e) {
-      return [];
+  try {
+    var data = await doramasflixGql(
+      'query($episode_id:ID!){getEpisodeLinks(id:$episode_id,app:"android"){links_online{server lang link _id is_recommended}}}',
+      { episode_id: episodeId }
+    );
+    var links = (data && data.getEpisodeLinks && data.getEpisodeLinks.links_online) || [];
+    var out = [];
+    for (var i = 0; i < links.length; i++) {
+      var L = links[i];
+      if (!L || !L.link) continue;
+      var real = decodificarEmbedShortener(L.link) || L.link;
+      var lang = String(L.lang || '');
+      var idioma = (lang === '38' || /lat|es/i.test(lang)) ? 'Latino'
+        : (lang === '13109' || /sub/i.test(lang)) ? 'Subtitulado' : 'Otro';
+      out.push({
+        url: real,
+        servidor: extraerServidor(real) || ('server-' + (L.server || '')),
+        idioma: idioma,
+        lang: lang,
+        tipo: 'reproductor',
+        fuente: 'doramasflix'
+      });
     }
+    return out;
+  } catch (e) {
+    return [];
   }
-
-  var raw = [].concat(await fetchApp("android"), await fetchApp("web"));
-  var seen = Object.create(null);
-  var out = [];
-
-  for (var i = 0; i < raw.length; i++) {
-    var item = normalizarLinkDoramasflix(raw[i]);
-    if (!item || !item.url) continue;
-    var key = String(item.url).split("?")[0].toLowerCase();
-    if (seen[key]) continue;
-    seen[key] = 1;
-    out.push(item);
-  }
-
-  // recomendados un poco arriba dentro del mismo tier
-  out.sort(function (a, b) {
-    var ds = scoreServidorImportante(b.url) - scoreServidorImportante(a.url);
-    if (ds !== 0) return ds;
-    return (b.is_recommended ? 1 : 0) - (a.is_recommended ? 1 : 0);
-  });
-
-  return filtrarReproductoresImportantes(out, soloImportantes);
 }
 
 async function scrapearDoramasflix(pageUrl, opts) {
@@ -8133,30 +7306,48 @@ async function scrapearDoramasflix(pageUrl, opts) {
       }
     } catch (eEp) { /* ok */ }
 
-   // var reproductores = epId ? await doramasflixEpisodeLinks(epId) : [];
-    var reproductores = await doramasflixEpisodeLinks(epId, true);
-    // Intentar resolver a HLS los que se puedan (vimeos/streamwish/vidhide/voe)
+    var reproductores = epId ? await doramasflixEpisodeLinks(epId) : [];
+    // RÁPIDO: NO resolver todos los embeds a HLS aquí (eso tardaba mucho).
+    // Solo marcar m3u8 directo y dejar hls_resolve para /resolve?url=...
+    // Opcional: ?resolve_hls=1 resuelve solo el PRIMERO (compat).
+    var wantResolveHls = !!(opts.resolve_hls || opts.resolveHls || opts.players);
     for (var ri = 0; ri < reproductores.length; ri++) {
       var rp = reproductores[ri];
       if (!rp || !rp.url) continue;
       if (/\.m3u8(\?|$)/i.test(rp.url)) {
         rp.hls = rp.url;
+        rp.stream_url = rp.url;
         rp.tipo = 'hls';
         continue;
       }
-      try {
-        var prov = null;
-        if (typeof detectarProviderEmbedFull === 'function') prov = detectarProviderEmbedFull(rp.url);
-        if (!prov && typeof detectarProviderEmbed === 'function') prov = detectarProviderEmbed(rp.url);
-        if (prov && typeof resolveByProvider === 'function') {
-          var resolved = await resolveByProvider(rp.url, prov, null);
-          if (resolved && (resolved.url || resolved.master)) {
-            rp.hls = resolved.master || resolved.url;
-            rp.tipo = 'hls';
-            if (resolved.qualities) rp.qualities = resolved.qualities;
+      var provFast = null;
+      if (typeof detectarProviderEmbedFull === 'function') provFast = detectarProviderEmbedFull(rp.url);
+      if (!provFast && typeof detectarProviderEmbed === 'function') provFast = detectarProviderEmbed(rp.url);
+      if (provFast) {
+        rp.provider = provFast;
+        // El cliente puede llamar: /resolve?url=...&proxy=1
+        rp.hls_resolve = '/resolve?url=' + encodeURIComponent(rp.url) + '&proxy=1';
+        rp.tipo = rp.tipo || 'reproductor';
+      }
+    }
+    // Solo el primer embed si piden resolve_hls=1 (no todos)
+    if (wantResolveHls && reproductores.length) {
+      var rp0 = reproductores[0];
+      if (rp0 && rp0.url && !rp0.hls) {
+        try {
+          var prov0 = rp0.provider ||
+            (typeof detectarProviderEmbedFull === 'function' && detectarProviderEmbedFull(rp0.url)) ||
+            (typeof detectarProviderEmbed === 'function' && detectarProviderEmbed(rp0.url));
+          if (prov0 && typeof resolveByProvider === 'function') {
+            var resolved0 = await resolveByProvider(rp0.url, prov0, null);
+            if (resolved0 && (resolved0.url || resolved0.master)) {
+              rp0.hls = resolved0.master || resolved0.url;
+              rp0.stream_url = rp0.hls;
+              rp0.tipo = 'hls';
+            }
           }
-        }
-      } catch (eRes) { /* dejar embed */ }
+        } catch (eRes0) { /* dejar embed */ }
+      }
     }
 
     return {
@@ -8176,6 +7367,7 @@ async function scrapearDoramasflix(pageUrl, opts) {
       estado: estadoInfo.estado,
       temporada: sN,
       episodio: eN,
+      nota_players: 'HLS bajo demanda: usar /resolve?url={embed}&proxy=1 o campo hls_resolve. No se resuelven todos al listar.',
       reproductores: reproductores,
       embeds: reproductores.map(function (r) { return r.url; }),
       total: reproductores.length
