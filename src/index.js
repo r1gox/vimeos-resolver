@@ -8057,49 +8057,94 @@ async function doramasflixListarEpisodios(serieId, seasonNumber) {
 // ======================================================
 // Prioridad: VOE → VidHide → Streamtape (Doramasflix)
 // ======================================================
-
+// ======================================================
+// Prioridad HLS: vimeos → streamwish → vidhide → goodstream → voe
+// Streamtape al final (sin resolve HLS)
+// ======================================================
 function detectarServidorImportante(url) {
   var u = String(url || "").toLowerCase();
   if (!u) return null;
 
-  if (
-    u.indexOf("streamtape.com") !== -1 ||
-    u.indexOf("streamtape.to") !== -1 ||
-    u.indexOf("strtape") !== -1
-  ) return "streamtape";
+  // Vimeos
+  if (u.indexOf("vimeos") !== -1 || u.indexOf("player.vimeos") !== -1) {
+    return "vimeos";
+  }
 
+  // Streamwish + mirrors
   if (
     u.indexOf("streamwish") !== -1 ||
     u.indexOf("flaswish") !== -1 ||
     u.indexOf("strwish") !== -1 ||
-    u.indexOf("ahvsh.com") !== -1 ||
-    u.indexOf("streamhg.com") !== -1 ||
-    u.indexOf("streamwish.") !== -1
-  ) return "streamwish";
+    u.indexOf("ahvsh") !== -1 ||
+    u.indexOf("streamhg") !== -1 ||
+    u.indexOf("swhoi") !== -1 ||
+    u.indexOf("obeywish") !== -1
+  ) {
+    return "streamwish";
+  }
 
-  if (
-    u.indexOf("voe.sx") !== -1 ||
-    u.indexOf("voe-network") !== -1 ||
-    u.indexOf("jilliandescribecompany") !== -1 ||
-    u.indexOf("voe.") !== -1
-  ) return "voe";
-
+  // VidHide / Filelions + mirrors
   if (
     u.indexOf("vidhide") !== -1 ||
     u.indexOf("streamhide") !== -1 ||
     u.indexOf("vidhidepro") !== -1 ||
-    u.indexOf("filelions") !== -1
-  ) return "vidhide";
+    u.indexOf("vidhidepre") !== -1 ||
+    u.indexOf("vidhideplus") !== -1 ||
+    u.indexOf("filelions") !== -1 ||
+    u.indexOf("smoothpre") !== -1 ||
+    u.indexOf("callistanise") !== -1 ||
+    u.indexOf("earnvids") !== -1 ||
+    u.indexOf("lulustream") !== -1 ||
+    u.indexOf("luluvdo") !== -1
+  ) {
+    return "vidhide";
+  }
+
+  // Goodstream
+  if (u.indexOf("goodstream") !== -1) {
+    return "goodstream";
+  }
+
+  // VOE + mirrors
+  if (
+    u.indexOf("voe.sx") !== -1 ||
+    u.indexOf("voe-network") !== -1 ||
+    u.indexOf("jilliandescribe") !== -1 ||
+    u.indexOf("timbercoolingblaze") !== -1 ||
+    u.indexOf("reputationsheriffkenneth") !== -1 ||
+    u.indexOf("voe.") !== -1 ||
+    u.indexOf("voe-unblock") !== -1
+  ) {
+    return "voe";
+  }
+
+  // Streamtape (sin HLS en el worker)
+  if (
+    u.indexOf("streamtape.com") !== -1 ||
+    u.indexOf("streamtape.to") !== -1 ||
+    u.indexOf("strtape") !== -1 ||
+    u.indexOf("streamtapeadblock") !== -1
+  ) {
+    return "streamtape";
+  }
+
+  // Ya es HLS directo
+  if (/\.m3u8(\?|$)/i.test(u) || /master\.txt(\?|$)/i.test(u)) {
+    return "m3u8";
+  }
 
   return null;
 }
 
 function scoreServidorImportante(url) {
   var s = detectarServidorImportante(url);
-  if (s === "streamtape") return 100; // 1º
-  if (s === "streamwish") return 90;  // 2º
-  if (s === "vidhide") return 80;     // 4º
-  if (s === "voe") return 70;         // 3º
+  if (s === "vimeos") return 100;
+  if (s === "streamwish") return 90;
+  if (s === "vidhide") return 80;
+  if (s === "goodstream") return 70;
+  if (s === "streamtape") return 65; // último, sin HLS
+  if (s === "m3u8") return 60;
+  if (s === "voe") return 50;
   return 0;
 }
 
@@ -8127,14 +8172,14 @@ function normalizarLinkDoramasflix(L) {
   if (!L || !L.link) return null;
   var real = null;
   try {
-    real = typeof decodificarEmbedShortener === "function"
-      ? decodificarEmbedShortener(L.link) || L.link
-      : L.link;
+    real =
+      typeof decodificarEmbedShortener === "function"
+        ? decodificarEmbedShortener(L.link) || L.link
+        : L.link;
   } catch (e) {
     real = L.link;
   }
   if (!real || String(real).indexOf("http") !== 0) return null;
-
   var lang = String(L.lang || "");
   var idioma =
     lang === "38" || /lat|es.?lat|latino/i.test(lang)
@@ -8142,12 +8187,10 @@ function normalizarLinkDoramasflix(L) {
       : lang === "13109" || /sub/i.test(lang)
         ? "Subtitulado"
         : "Otro";
-
   var srv =
     detectarServidorImportante(real) ||
     (typeof extraerServidor === "function" ? extraerServidor(real) : null) ||
     ("server-" + (L.server || ""));
-
   return {
     url: real,
     servidor: srv,
@@ -8160,10 +8203,8 @@ function normalizarLinkDoramasflix(L) {
 }
 
 /**
- * Sustituye tu doramasflixEpisodeLinks por esta.
- * - Pide android + web y fusiona
- * - Prioriza VOE → VidHide → Streamtape
- * - soloImportantes: true = solo esos 3 si existen; false = esos primero + resto
+ * android + web, prioriza HLS, fusiona sin duplicar
+ * soloImportantes=true → solo los de la lista si hay alguno
  */
 async function doramasflixEpisodeLinks(episodeId, soloImportantes) {
   if (!episodeId) return [];
@@ -8177,7 +8218,10 @@ async function doramasflixEpisodeLinks(episodeId, soloImportantes) {
           '"){links_online{server lang link _id is_recommended}}}',
         { episode_id: episodeId }
       );
-      return (data && data.getEpisodeLinks && data.getEpisodeLinks.links_online) || [];
+      return (
+        (data && data.getEpisodeLinks && data.getEpisodeLinks.links_online) ||
+        []
+      );
     } catch (e) {
       return [];
     }
@@ -8186,7 +8230,6 @@ async function doramasflixEpisodeLinks(episodeId, soloImportantes) {
   var raw = [].concat(await fetchApp("android"), await fetchApp("web"));
   var seen = Object.create(null);
   var out = [];
-
   for (var i = 0; i < raw.length; i++) {
     var item = normalizarLinkDoramasflix(raw[i]);
     if (!item || !item.url) continue;
@@ -8196,7 +8239,6 @@ async function doramasflixEpisodeLinks(episodeId, soloImportantes) {
     out.push(item);
   }
 
-  // recomendados un poco arriba dentro del mismo tier
   out.sort(function (a, b) {
     var ds = scoreServidorImportante(b.url) - scoreServidorImportante(a.url);
     if (ds !== 0) return ds;
