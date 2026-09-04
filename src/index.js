@@ -5185,18 +5185,12 @@ function esReproductorHlsResoluble(rep) {
   return rankingReproductorHls(rep) < 900;
 }
 
-/** Deja 1 HLS (mejor rank) + el resto no-HLS (iframe). Si no hay HLS, lista igual. */
+/** Ordena todos los reproductores (vimeos primero, voe último). NO elimina ninguno. */
 function elegirReproductoresRapidos(list) {
   if (!Array.isArray(list) || !list.length) return list || [];
-  var hls = [];
-  var otros = [];
-  for (var i = 0; i < list.length; i++) {
-    if (esReproductorHlsResoluble(list[i])) hls.push(list[i]);
-    else otros.push(list[i]);
-  }
-  if (!hls.length) return list;
-  hls.sort(function (a, b) { return rankingReproductorHls(a) - rankingReproductorHls(b); });
-  return [hls[0]].concat(otros);
+  return list.slice().sort(function (a, b) {
+    return rankingReproductorHls(a) - rankingReproductorHls(b);
+  });
 }
 
 /** Capítulo: solo lo necesario para reproducir (meta en detalle de la serie) */
@@ -5483,17 +5477,34 @@ function formatearDetalleRespuesta(item, origin) {
   }
 
   if (incluirPlayers) {
-    // Película/capítulo: solo 1 HLS resoluble (mismo orden que capítulos)
+    // Película: mostrar TODOS los links; solo 1 con stream_url/hls (orden prioridad)
     var repsAll = reps.length ? reps : embeds;
+    // Normalizar embeds string → objetos
+    if (repsAll.length && typeof repsAll[0] === 'string') {
+      repsAll = repsAll.map(function (u) { return { url: u, tipo: 'reproductor' }; });
+    }
+    // Dedupe
+    var seenP = Object.create(null);
+    var repsDedup = [];
+    for (var pi = 0; pi < repsAll.length; pi++) {
+      var pr = repsAll[pi];
+      if (!pr || !pr.url) continue;
+      var pk = String(pr.url);
+      if (seenP[pk]) continue;
+      seenP[pk] = true;
+      repsDedup.push(pr);
+    }
+    repsAll = repsDedup;
     if (typeof elegirReproductoresRapidos === 'function') {
       repsAll = elegirReproductoresRapidos(repsAll);
     }
+    // attachStreamUrlList: solo el primero resoluble recibe stream_url
     if (origin && typeof attachStreamUrlList === 'function') {
       repsAll = attachStreamUrlList(origin, repsAll);
     }
     out.total = repsAll.length || (item.total != null ? item.total : 0);
     out.reproductores = repsAll;
-    out.descargas = descargas;
+    if (descargas && descargas.length) out.descargas = descargas;
   }
 
   if (tipo === 'Capitulo' || (item.temporada != null && item.episodio != null && !esSerieAnime)) {
@@ -5827,6 +5838,25 @@ async function buscarUniversal(query, sourceFilter, limit) {
     }
     relevantes = dedupePorSlugFuente(relevantes);
     for (var rj = 0; rj < relevantes.length; rj++) todos.push(relevantes[rj]);
+  }
+
+  // AnimeAV1 exclusivo para anime: si trajo hits → SOLO esos
+  var hitsAv1 = [];
+  for (var ha = 0; ha < todos.length; ha++) {
+    if (todos[ha] && todos[ha].fuente === 'animeav1') hitsAv1.push(todos[ha]);
+  }
+  if (hitsAv1.length) {
+    todos = hitsAv1;
+  } else {
+    // Sin animeav1: no marcar como Anime resultados de pelisplus/otras
+    var sinAnimeFalso = [];
+    for (var ha2 = 0; ha2 < todos.length; ha2++) {
+      var it2 = todos[ha2];
+      if (!it2) continue;
+      if (String(it2.tipo || '') === 'Anime' && it2.fuente !== 'animeav1') continue;
+      sinAnimeFalso.push(it2);
+    }
+    todos = sinAnimeFalso;
   }
 
   // Fusionar misma obra entre fuentes (sin duplicados)
