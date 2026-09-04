@@ -3746,16 +3746,16 @@ function metaCoincideConItem(item, meta) {
 function aplicarMetaAResultadoBusqueda(item, meta) {
   if (!item || !meta) return item;
 
-  /*
+  
   var coincide = metaCoincideConItem(item, meta);
   // Mismo año + imdb → aceptar (La captura / Facing El Chapo, Vértigo 2 / Fall 2)
-  var yIt0 = extraerYearItem(item);
-  var yMt0 = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
-  if (!coincide && meta.imdb_id && yIt0 && yMt0 && String(yIt0) === String(yMt0)) {
-    coincide = true;
-  }
-  var sinPortada = !item.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(item.portada));
-*/
+ // var yIt0 = extraerYearItem(item);
+  //var yMt0 = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
+//  if (!coincide && meta.imdb_id && yIt0 && yMt0 && String(yIt0) === String(yMt0)) {
+ //   coincide = true;
+ // }
+//  var sinPortada = !item.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(item.portada));
+
   // Mismo año + imdb: traducciones OK; otra obra con palabras distintas → NO
   var yIt0 = extraerYearItem(item);
   var yMt0 = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
