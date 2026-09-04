@@ -8315,7 +8315,7 @@ async function scrapearDoramasflix(pageUrl, opts) {
     } catch (eEp) { /* ok */ }
 
   //  var reproductores = epId ? await doramasflixEpisodeLinks(epId) : [];
-    await doramasflixEpisodeLinks(epId, true)
+    var reproductores = epId ? await doramasflixEpisodeLinks(epId, true) : [];
     // RÁPIDO: no resolver HLS de todos aquí (usa /resolve al elegir server). NO toca filtro ads.
     for (var ri = 0; ri < reproductores.length; ri++) {
       var rp = reproductores[ri];
