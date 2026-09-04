@@ -458,7 +458,8 @@ async function handleRequest(request, env) {
       try {
         resultadoPath = await enriquecerDetalleConTmdb(resultadoPath, tipoRuta);
       } catch (eDet) { /* silencioso */ }
-      if (resultadoPath && (!resultadoPath.portada || esPortadaSospechosa(resultadoPath.portada))) {
+      // Siempre usar la mejor portada disponible (IMDb > TMDB
+      if (resultadoPath) {
         if (resultadoPath.portada_imdb && esPortadaUrlValida(resultadoPath.portada_imdb)) {
           resultadoPath.portada = resultadoPath.portada_imdb;
           resultadoPath.poster_source = 'imdb';
@@ -467,6 +468,16 @@ async function handleRequest(request, env) {
           resultadoPath.poster_source = 'tmdb';
         }
       }
+/*
+      if (resultadoPath && (!resultadoPath.portada || esPortadaSospechosa(resultadoPath.portada))) {
+        if (resultadoPath.portada_imdb && esPortadaUrlValida(resultadoPath.portada_imdb)) {
+          resultadoPath.portada = resultadoPath.portada_imdb;
+          resultadoPath.poster_source = 'imdb';
+        } else if (resultadoPath.portada_tmdb && esPortadaUrlValida(resultadoPath.portada_tmdb)) {
+          resultadoPath.portada = resultadoPath.portada_tmdb;
+          resultadoPath.poster_source = 'tmdb';
+        }
+      }*/
       if (resultadoPath) {
         normalizarCamposResultado(resultadoPath);
         resultadoPath = formatearDetalleRespuesta(resultadoPath, origin);
