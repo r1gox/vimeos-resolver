@@ -458,17 +458,6 @@ async function handleRequest(request, env) {
       try {
         resultadoPath = await enriquecerDetalleConTmdb(resultadoPath, tipoRuta);
       } catch (eDet) { /* silencioso */ }
-      // Siempre usar la mejor portada disponible (IMDb > TMDB
-      if (resultadoPath) {
-        if (resultadoPath.portada_imdb && esPortadaUrlValida(resultadoPath.portada_imdb)) {
-          resultadoPath.portada = resultadoPath.portada_imdb;
-          resultadoPath.poster_source = 'imdb';
-        } else if (resultadoPath.portada_tmdb && esPortadaUrlValida(resultadoPath.portada_tmdb)) {
-          resultadoPath.portada = resultadoPath.portada_tmdb;
-          resultadoPath.poster_source = 'tmdb';
-        }
-      }
-/*
       if (resultadoPath && (!resultadoPath.portada || esPortadaSospechosa(resultadoPath.portada))) {
         if (resultadoPath.portada_imdb && esPortadaUrlValida(resultadoPath.portada_imdb)) {
           resultadoPath.portada = resultadoPath.portada_imdb;
@@ -477,7 +466,7 @@ async function handleRequest(request, env) {
           resultadoPath.portada = resultadoPath.portada_tmdb;
           resultadoPath.poster_source = 'tmdb';
         }
-      }*/
+      }
       if (resultadoPath) {
         normalizarCamposResultado(resultadoPath);
         resultadoPath = formatearDetalleRespuesta(resultadoPath, origin);
@@ -530,17 +519,6 @@ async function handleRequest(request, env) {
     try {
       resultado = await enriquecerDetalleConTmdb(resultado, resultado.tipo || '');
     } catch (eUrl) { /* ok */ }
-    // Siempre usar la mejor portada (IMDb > TMDB)
-    if (resultado) {
-      if (resultado.portada_imdb && esPortadaUrlValida(resultado.portada_imdb)) {
-        resultado.portada = resultado.portada_imdb;
-        resultado.poster_source = 'imdb';
-      } else if (resultado.portada_tmdb && esPortadaUrlValida(resultado.portada_tmdb)) {
-        resultado.portada = resultado.portada_tmdb;
-        resultado.poster_source = 'tmdb';
-      }
-    }
-    /*
     if (resultado && (!resultado.portada || esPortadaSospechosa(resultado.portada))) {
       if (resultado.portada_imdb && esPortadaUrlValida(resultado.portada_imdb)) {
         resultado.portada = resultado.portada_imdb;
@@ -549,7 +527,7 @@ async function handleRequest(request, env) {
         resultado.portada = resultado.portada_tmdb;
         resultado.poster_source = 'tmdb';
       }
-    }*/
+    }
     if (resultado) {
       normalizarCamposResultado(resultado);
       resultado = formatearDetalleRespuesta(resultado, origin);
