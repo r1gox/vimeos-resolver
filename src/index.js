@@ -713,6 +713,14 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
   // si lamovie falla, se prueba pelisplus/hackstore del MISMO tipo.
   // animeav1 ya no está en candidatos de pelicula.
 
+  if (sourceParam) {
+    var soloForced = [];
+    for (var fi = 0; fi < candidatos.length; fi++) {
+      if (candidatos[fi].fuente === sourceParam) soloForced.push(candidatos[fi]);
+    }
+    if (soloForced.length) candidatos = soloForced;
+  }
+  
   // Cascada: primera fuente que responda bien gana. Sin fusión entre fuentes.
   var lastErr = null;
 
@@ -848,7 +856,12 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     }
   }
 
-  throw lastErr || new Error('No se encontro "' + slug + '" en ninguna fuente');
+  throw new Error(
+  (sourceParam
+    ? ('No se encontro "' + slug + '" en ' + sourceParam)
+    : ('No se encontro "' + slug + '" en ninguna fuente')) +
+  (lastErr && lastErr.message ? (': ' + lastErr.message) : '')
+  );
 }
 
 /** Normaliza URL de embed para deduplicar entre fuentes (misma URL = mismo player) */
