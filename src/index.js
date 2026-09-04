@@ -3715,16 +3715,30 @@ function metaCoincideConItem(item, meta) {
   var eItem = extras(tItem);
   var eMeta = extras(tMeta);
 
-  if (eItem.length) {
-    var shared = 0;
-    for (var i = 0; i < eItem.length; i++) {
-      if (tMeta.indexOf(eItem[i]) !== -1) shared++;
-    }
-    if (shared === 0) return false;
-    if (shared < Math.ceil(eItem.length / 2)) return false;
-  } else {
-    if (eMeta.length > 0) return false;
+  if (!eItem.length) return false;
+
+  var shared = 0;
+  for (var i = 0; i < eItem.length; i++) {
+    if (tMeta.indexOf(eItem[i]) !== -1) shared++;
   }
+  if (shared === 0) return false;
+
+  // 1–2 palabras clave: deben coincidir TODAS (no solo "maldicion")
+  if (eItem.length <= 2) {
+    if (shared < eItem.length) return false;
+  } else {
+    if (shared < Math.ceil(eItem.length * 0.7)) return false;
+  }
+
+  // Si el meta trae muchas palabras de otra obra → rechazar
+  var extraMeta = 0;
+  for (var j = 0; j < eMeta.length; j++) {
+    if ((tItem || '').indexOf(eMeta[j]) === -1 &&
+        (typeof tSlug !== 'undefined' ? (tSlug || '') : '').indexOf(eMeta[j]) === -1) {
+      extraMeta++;
+    }
+  }
+  if (extraMeta >= 2 && shared < eItem.length) return false;
 
   return true;
 }
@@ -3737,9 +3751,9 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   // confiar en el match aunque el título IMDb sea distinto ("La captura" vs "Facing El Chapo")
   var yIt0 = extraerYearItem(item);
   var yMt0 = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
-  if (!coincide && meta.imdb_id && yIt0 && yMt0 && String(yIt0) === String(yMt0)) {
+  /*if (!coincide && meta.imdb_id && yIt0 && yMt0 && String(yIt0) === String(yMt0)) {
     coincide = true;
-  }
+  }*/
   var sinPortada = !item.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(item.portada));
 
   // Soft poster: solo si NO hay conflicto de año (evita portada 2012 en película 2026)
