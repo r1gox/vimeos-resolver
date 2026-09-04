@@ -7046,11 +7046,17 @@ async function scrapearPelisplus(pageUrl, opts) {
   var reproductores = extraerPlayurlsPelisplus(html);
   var descargas = extraerDescargas(html);
   var capMatch = pageUrl.match(/\/temporada\/(\d+)\/capitulo\/(\d+)/i);
+  
+  var slugFromUrl = null;
+  var sm = pageUrl.match(/\/(?:pelicula|serie|anime)\/([^\/\?#]+)/i);
+  if (sm) slugFromUrl = decodeURIComponent(sm[1]).replace(/\/$/, '');
+  
   return {
     success: true,
     fuente: 'pelisplushd',
     tipo: esCapitulo ? 'Capitulo' : 'Pelicula',
     link: pageUrl,
+    slug: slugFromUrl,
     titulo: titulo,
     portada: portada,
     descripcion: descripcion,
