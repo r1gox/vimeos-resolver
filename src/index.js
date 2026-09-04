@@ -3785,7 +3785,7 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
       if (tLocN.indexOf(eMeta[xj]) === -1) extraX++;
     }
     // Ej: falta "tiburon" y meta tiene familia/barrio/partido
-    var conflictoTitulo = missingX >= 1 && extraX >= 2 && sharedX < eLoc.length;
+    var conflictoTitulo = sharedX >= 1 && missingX >= 1 && extraX >= 2 && sharedX < eLoc.length;
 
     if (!conflictoTitulo) {
       coincide = true;
