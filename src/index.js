@@ -3747,37 +3747,12 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   if (!item || !meta) return item;
 
   var coincide = metaCoincideConItem(item, meta);
-  // Si IMDb ya filtró por año (year fuente = year meta) y trajo imdb_id,
-  // confiar en el match aunque el título IMDb sea distinto ("La captura" vs "Facing El Chapo")
+  // Mismo año + imdb → aceptar (La captura / Facing El Chapo, Vértigo 2 / Fall 2)
   var yIt0 = extraerYearItem(item);
   var yMt0 = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
-  /*if (!coincide && meta.imdb_id && yIt0 && yMt0 && String(yIt0) === String(yMt0)) {
+  if (!coincide && meta.imdb_id && yIt0 && yMt0 && String(yIt0) === String(yMt0)) {
     coincide = true;
-  }*/
-    // Títulos en otro idioma: "La captura" ↔ "Facing El Chapo"
-  // Solo si mismo año Y (slug EN encaja O sinopsis parecida). Nunca solo por año.
-  if (!coincide && meta.imdb_id) {
-    var yItX = extraerYearItem(item);
-    var yMtX = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
-    if (yItX && yMtX && String(yItX) === String(yMtX)) {
-      var slugEn = normalizarTituloKey(String(item.slug || '').replace(/-/g, ' '));
-      var tOrig = normalizarTituloKey(meta.titulo_original || meta.titulo_tmdb || '');
-      var slugParts = slugEn.split(/\s+/).filter(function (w) { return w.length >= 4; });
-      var slugHits = 0;
-      for (var sx = 0; sx < slugParts.length; sx++) {
-        if (tOrig.indexOf(slugParts[sx]) !== -1) slugHits++;
-      }
-      if (slugParts.length >= 2 && slugHits >= 2) {
-        coincide = true;
-      } else if (item.descripcion && meta.descripcion &&
-        String(item.descripcion).length > 40 && String(meta.descripcion).length > 40) {
-        var simX = similitudDescripcion(item.descripcion, meta.descripcion);
-        if (simX >= 0.14) coincide = true;
-      }
-    }
   }
-
-  
   var sinPortada = !item.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(item.portada));
 
   // Soft poster: solo si NO hay conflicto de año (evita portada 2012 en película 2026)
@@ -3842,7 +3817,6 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   if (coincide && meta.titulo_original) {
     item.titulo_original = meta.titulo_original;
   }
-
   // Portada: preferir IMDb cuando el match es válido (año OK)
   var yItemP = extraerYearItem(item);
   var yMetaP = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
