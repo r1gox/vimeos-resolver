@@ -186,6 +186,10 @@ async function handleRequest(request, env) {
     (parts[0] === 'vidhide' && parts[1] === 'streamurl') ||
     (parts[0] === 'voe' && parts[1] === 'streamurl') ||
     (parts[0] === 'goodstream' && parts[1] === 'streamurl') ||
+    (parts[0] === 'streamtape' && parts[1] === 'streamurl') ||
+    (parts[0] === 'yourupload' && parts[1] === 'streamurl') ||
+    (parts[0] === 'mp4upload' && parts[1] === 'streamurl') ||
+    (parts[0] === 'ryderjet' && parts[1] === 'streamurl') ||
     parts[0] === 'streamurl'
   ) {
     var swUrl = url.searchParams.get('url') || '';
@@ -198,6 +202,10 @@ async function handleRequest(request, env) {
           vidhide: origin + '/vidhide/streamurl?url=https://vidhidepro.com/v/XXXX',
           voe: origin + '/voe/streamurl?url=https://voe.sx/e/XXXX',
           goodstream: origin + '/goodstream/streamurl?url=https://goodstream.one/embed-XXXX.html',
+          streamtape: origin + '/streamtape/streamurl?url=https://streamtape.com/e/XXXX',
+          yourupload: origin + '/yourupload/streamurl?url=https://www.yourupload.com/embed/XXXX',
+          mp4upload: origin + '/mp4upload/streamurl?url=https://www.mp4upload.com/embed-XXXX.html',
+          ryderjet: origin + '/ryderjet/streamurl?url=https://ryderjet.com/embed/XXXX',
           auto: origin + '/streamurl?url={embed}'
         }
       }, 400);
@@ -208,6 +216,10 @@ async function handleRequest(request, env) {
     else if (parts[0] === 'vidhide') forceProv = 'vidhide';
     else if (parts[0] === 'voe') forceProv = 'voe';
     else if (parts[0] === 'goodstream') forceProv = 'goodstream';
+    else if (parts[0] === 'streamtape') forceProv = 'streamtape';
+    else if (parts[0] === 'yourupload') forceProv = 'yourupload';
+    else if (parts[0] === 'mp4upload') forceProv = 'mp4upload';
+    else if (parts[0] === 'ryderjet') forceProv = 'ryderjet';
     try {
       var rich = await buildProviderRichResponse(swUrl, origin, forceProv);
       return json(rich);
@@ -2005,6 +2017,155 @@ async function resolveVoeEmbed(embedUrl, origin) {
   return out;
 }
 
+/**
+ * Streamtape: NO usa .m3u8, el link final es un mp4 directo armado en dos
+ * pedazos para dificultar el scraping: un <div id="...link" style="display:
+ * none"> con la URL parcial (//tapecontent.net/get_video?...) y una línea
+ * JS que hace getElementById('...link').innerHTML = "&token=XXXX...".
+ */
+async function resolveStreamtapeEmbed(embedUrl, origin) {
+  var pageUrl = String(embedUrl || '').replace('/e/', '/v/');
+  var res;
+  try {
+    res = await fetchWithTimeout(pageUrl, { headers: HEADERS, redirect: 'follow' }, 12000);
+  } catch (e) {
+    throw new Error('Streamtape: bloqueado o no accesible desde el worker (' + (e.message || e) + ').');
+  }
+  if (!res.ok) throw new Error('Streamtape: HTTP ' + res.status);
+  var html = await res.text();
+
+  var mToken = html.match(/document\.getElementById\(['"]([a-z0-9_]*link)['"]\)\.innerHTML\s*=\s*(.+?);/i);
+  if (!mToken) throw new Error('Streamtape: no se encontró el bloque del token (posible cambio de HTML)');
+  var tokenPart = mToken[2];
+  var mTokenVal = tokenPart.match(/token=([^&'"]+)/i);
+  if (!mTokenVal) throw new Error('Streamtape: token no encontrado dentro del bloque');
+  var token = mTokenVal[1];
+
+  var idBase = mToken[1];
+  var mBase =
+    html.match(/id\s*=\s*["']ideoooolink["'][^>]*>([^<]+)/i) ||
+    html.match(new RegExp('id\\s*=\\s*["\']' + idBase.replace('norobot', 'ideooo') + '["\'][^>]*>([^<]+)', 'i')) ||
+    html.match(/get_video\?[^"'<]+/i);
+  if (!mBase) throw new Error('Streamtape: no se encontró la URL base del video');
+  var basePart = (mBase[1] || mBase[0]).trim();
+  if (basePart.charAt(0) !== '/') basePart = '/' + basePart.replace(/^\/+/, '');
+
+  var direct = 'https:' + basePart + (basePart.indexOf('?') === -1 ? '?' : '&') + 'token=' + token;
+
+  var out = {
+    success: true,
+    provider: 'streamtape',
+    source: embedUrl,
+    resolved_embed: pageUrl,
+    type: 'mp4',
+    url: direct,
+    master: direct,
+    all_sources: [direct]
+  };
+  if (origin) out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(direct) + '&ref=' + encodeURIComponent(pageUrl);
+  return out;
+}
+
+/** YourUpload: mp4 directo en el HTML del embed */
+async function resolveYourUploadEmbed(embedUrl, origin) {
+  var res;
+  try {
+    res = await fetchWithTimeout(embedUrl, {
+      headers: Object.assign({}, HEADERS, { Referer: 'https://www.yourupload.com/' })
+    }, 12000);
+  } catch (e) {
+    throw new Error('YourUpload: bloqueado o no accesible desde el worker (' + (e.message || e) + ').');
+  }
+  if (!res.ok) throw new Error('YourUpload: HTTP ' + res.status);
+  var html = await res.text();
+  var m =
+    html.match(/file\s*:\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i) ||
+    html.match(/(https?:\/\/vidcache\.net[^"'\s]+\.mp4)/i) ||
+    html.match(/(https?:\/\/[^"'\s]+\/video\.mp4)/i);
+  if (!m) throw new Error('YourUpload: no se encontró el MP4 (posible cambio de HTML)');
+  var mp4 = m[1];
+  var out = {
+    success: true,
+    provider: 'yourupload',
+    source: embedUrl,
+    resolved_embed: embedUrl,
+    type: 'mp4',
+    url: mp4,
+    master: mp4,
+    all_sources: [mp4]
+  };
+  if (origin) out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(mp4) + '&ref=' + encodeURIComponent(embedUrl);
+  return out;
+}
+
+/** MP4Upload: mp4 directo en el HTML del embed */
+async function resolveMp4UploadEmbed(embedUrl, origin) {
+  var res;
+  try {
+    res = await fetchWithTimeout(embedUrl, {
+      headers: Object.assign({}, HEADERS, { Referer: 'https://www.mp4upload.com/' })
+    }, 12000);
+  } catch (e) {
+    throw new Error('MP4Upload: bloqueado o no accesible desde el worker (' + (e.message || e) + ').');
+  }
+  if (!res.ok) throw new Error('MP4Upload: HTTP ' + res.status);
+  var html = await res.text();
+  var m =
+    html.match(/player\.src\s*\(\s*\{[^}]*src\s*:\s*["'](https?:\/\/[^"']+)["']/i) ||
+    html.match(/src\s*:\s*["'](https?:\/\/[^"']+video\.mp4[^"']*)["']/i) ||
+    html.match(/(https?:\/\/[^"'\s]*mp4upload\.com[^"'\s]*\/video\.mp4)/i);
+  if (!m) throw new Error('MP4Upload: no se encontró el MP4 (posible cambio de HTML)');
+  var mp4 = m[1];
+  var out = {
+    success: true,
+    provider: 'mp4upload',
+    source: embedUrl,
+    resolved_embed: embedUrl,
+    type: 'mp4',
+    url: mp4,
+    master: mp4,
+    all_sources: [mp4]
+  };
+  if (origin) out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(mp4) + '&ref=' + encodeURIComponent(embedUrl);
+  return out;
+}
+
+/** Ryderjet: HLS ofuscado con Packer (mismo patrón que Streamwish) */
+async function resolveRyderjetEmbed(embedUrl, origin) {
+  var res;
+  try {
+    res = await fetchWithTimeout(embedUrl, {
+      headers: Object.assign({}, HEADERS, { Referer: 'https://ryderjet.com/' })
+    }, 12000);
+  } catch (e) {
+    throw new Error('Ryderjet: bloqueado o no accesible desde el worker (' + (e.message || e) + ').');
+  }
+  if (!res.ok) throw new Error('Ryderjet: HTTP ' + res.status);
+  var html = await res.text();
+  var decoded;
+  try {
+    decoded = unpackPacker(html);
+  } catch (e2) {
+    throw new Error('Ryderjet: ' + (e2.message || 'no se pudo desempacar el Packer'));
+  }
+  var urls = findStreamUrlsInDecoded(decoded);
+  urls = urls.filter(function (u) { return /\.m3u8|\.mp4|hls/i.test(u); });
+  if (!urls.length) throw new Error('Ryderjet: HTML obtenido pero sin fuentes HLS');
+  var master = pickMasterUrl(urls);
+  var out = {
+    success: true,
+    provider: 'ryderjet',
+    source: embedUrl,
+    resolved_embed: embedUrl,
+    type: 'hls',
+    url: master,
+    master: master,
+    all_sources: urls
+  };
+  if (origin) out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(master) + '&ref=' + encodeURIComponent(embedUrl);
+  return out;
+}
+
 function detectarProviderEmbed(u) {
   u = String(u || '').toLowerCase();
   if (u.indexOf('vimeos') !== -1) return 'vimeos';
@@ -2039,6 +2200,10 @@ function detectarProviderEmbedFull(u) {
     return 'voe';
   }
   if (u.indexOf('goodstream') !== -1) return 'goodstream';
+  if (u.indexOf('streamtape') !== -1 || u.indexOf('stape.') !== -1 || u.indexOf('streamta.pe') !== -1) return 'streamtape';
+  if (u.indexOf('yourupload.com') !== -1) return 'yourupload';
+  if (u.indexOf('mp4upload.com') !== -1) return 'mp4upload';
+  if (u.indexOf('ryderjet.com') !== -1) return 'ryderjet';
   return '';
 }
 
@@ -2071,6 +2236,10 @@ async function resolveByProvider(embedUrl, provider, origin) {
   else if (provider === 'goodstream') resolved = await resolveGoodstreamEmbed(embedUrl, origin);
   else if (provider === 'voe') resolved = await resolveVoeEmbed(embedUrl, origin);
   else if (provider === 'vimeos') resolved = await resolveVimeosEmbed(embedUrl, origin);
+  else if (provider === 'streamtape') resolved = await resolveStreamtapeEmbed(embedUrl, origin);
+  else if (provider === 'yourupload') resolved = await resolveYourUploadEmbed(embedUrl, origin);
+  else if (provider === 'mp4upload') resolved = await resolveMp4UploadEmbed(embedUrl, origin);
+  else if (provider === 'ryderjet') resolved = await resolveRyderjetEmbed(embedUrl, origin);
   else throw new Error('Provider no soportado: ' + (provider || 'desconocido'));
   if (resolved && (resolved.url || resolved.master)) {
     try { cacheSet(cacheKey, resolved); } catch (eC) {}
@@ -2229,6 +2398,22 @@ function attachStreamUrl(origin, rep) {
   } else if (prov === 'vimeos') {
     rep.provider = 'vimeos';
     rep.stream_url = origin + '/resolve/vimeos?url=' + encodeURIComponent(u) + '&proxy=1';
+  } else if (prov === 'streamtape') {
+    rep.provider = 'streamtape';
+    rep.stream_url = origin + '/streamtape/streamurl?url=' + encodeURIComponent(u);
+    rep.hls_resolve = rep.stream_url;
+  } else if (prov === 'yourupload') {
+    rep.provider = 'yourupload';
+    rep.stream_url = origin + '/yourupload/streamurl?url=' + encodeURIComponent(u);
+    rep.hls_resolve = rep.stream_url;
+  } else if (prov === 'mp4upload') {
+    rep.provider = 'mp4upload';
+    rep.stream_url = origin + '/mp4upload/streamurl?url=' + encodeURIComponent(u);
+    rep.hls_resolve = rep.stream_url;
+  } else if (prov === 'ryderjet') {
+    rep.provider = 'ryderjet';
+    rep.stream_url = origin + '/ryderjet/streamurl?url=' + encodeURIComponent(u);
+    rep.hls_resolve = rep.stream_url;
     rep.hls_resolve = rep.stream_url;
   }
   // Otros (streamtape, ok.ru, etc.): sin stream_url — se usan como embed
