@@ -2175,11 +2175,12 @@ function attachStreamUrl(origin, rep) {
   if (!rep || !rep.url) return rep;
   var s = String(rep.servidor || '').toLowerCase();
   var u = String(rep.url);
-  // Ya es HLS directo
+  // Ya es HLS directo → proxy
   if (/\.m3u8(\?|$)/i.test(u) || /master\.txt(\?|$)/i.test(u)) {
     rep.hls = u;
     rep.tipo = rep.tipo || 'hls';
     rep.stream_url = origin + '/proxy?url=' + encodeURIComponent(u);
+    rep.hls_resolve = rep.stream_url;
     return rep;
   }
   var prov = null;
@@ -2187,32 +2188,58 @@ function attachStreamUrl(origin, rep) {
   if (!prov) {
     try { prov = detectarProviderEmbed(u); } catch (e2) {}
   }
-  if (prov === 'streamwish' || s.indexOf('streamwish') !== -1) {
+  if (!prov) {
+    try { prov = detectarProviderPorServidor(s); } catch (e3) {}
+  }
+  // Solo estos tienen resolve HLS (sin ads)
+  if (prov === 'streamwish') {
+    rep.provider = 'streamwish';
     rep.stream_url = origin + '/wish/streamurl?url=' + encodeURIComponent(u);
     rep.hls_resolve = rep.stream_url;
-  } else if (prov === 'vidhide' || s.indexOf('vidhide') !== -1) {
+  } else if (prov === 'vidhide') {
+    rep.provider = 'vidhide';
     rep.stream_url = origin + '/vidhide/streamurl?url=' + encodeURIComponent(u);
     rep.hls_resolve = rep.stream_url;
-  } else if (prov === 'voe' || s.indexOf('voe') !== -1) {
-    rep.stream_url = origin + '/voe/streamurl?url=' + encodeURIComponent(u);
-    rep.hls_resolve = rep.stream_url;
-  } else if (prov === 'goodstream' || s.indexOf('goodstream') !== -1) {
+  } else if (prov === 'goodstream') {
+    rep.provider = 'goodstream';
     rep.stream_url = origin + '/goodstream/streamurl?url=' + encodeURIComponent(u);
     rep.hls_resolve = rep.stream_url;
-  } else if (prov === 'vimeos' || s.indexOf('vimeos') !== -1) {
+  } else if (prov === 'voe') {
+    rep.provider = 'voe';
+    rep.stream_url = origin + '/voe/streamurl?url=' + encodeURIComponent(u);
+    rep.hls_resolve = rep.stream_url;
+  } else if (prov === 'vimeos') {
+    rep.provider = 'vimeos';
     rep.stream_url = origin + '/resolve/vimeos?url=' + encodeURIComponent(u) + '&proxy=1';
     rep.hls_resolve = rep.stream_url;
-  } else {
-    // Genérico: intentar /resolve automático → m3u8
-    rep.stream_url = origin + '/resolve?url=' + encodeURIComponent(u) + '&proxy=1';
-    rep.hls_resolve = rep.stream_url;
   }
+  // Otros (streamtape, ok.ru, etc.): sin stream_url — se usan como embed
   return rep;
 }
 
 function attachStreamUrlList(origin, list) {
   if (!Array.isArray(list)) return list;
-  for (var i = 0; i < list.length; i++) attachStreamUrl(origin, list[i]);
+  // Orden: vimeos > streamwish > vidhide > goodstream > otros > voe último
+  list.sort(function (a, b) {
+    return rankingReproductorHls(a) - rankingReproductorHls(b);
+  });
+  // Solo el primero resoluble recibe stream_url/hls; se muestran todos
+  var already = false;
+  for (var i = 0; i < list.length; i++) {
+    var rep = list[i];
+    if (!rep || !rep.url) continue;
+    if (already) {
+      // Quitar stream_url/hls si se habían puesto antes
+      delete rep.stream_url;
+      delete rep.hls_resolve;
+      delete rep.hls;
+      continue;
+    }
+    if (esReproductorHlsResoluble(rep)) {
+      attachStreamUrl(origin, rep);
+      already = true;
+    }
+  }
   return list;
 }
 
@@ -5204,17 +5231,57 @@ function formatearCapituloRespuesta(item, origin, ctx) {
     var uk = String(rp.url);
     if (seenU[uk]) continue;
     seenU[uk] = true;
-    // NO filtrar aquí con ads de más: esReproductorValido ya aplicó al scrapear
     repsClean.push(rp);
   }
   reproductores = repsClean;
-  // Solo 1 HLS resoluble (orden: vimeos > streamwish > vidhide > goodstream > m3u8 > voe)
-  if (typeof elegirReproductoresRapidos === 'function') {
-    reproductores = elegirReproductoresRapidos(reproductores);
-  }
-  // stream_url / hls_resolve solo para los que quedan
-  if (origin && typeof attachStreamUrlList === 'function') {
-    reproductores = attachStreamUrlList(origin, reproductores);
+
+  // Orden: vimeos > streamwish > vidhide > goodstream > otros > voe último
+  reproductores.sort(function (a, b) {
+    return rankingReproductorHls(a) - rankingReproductorHls(b);
+  });
+
+  // Solo el primero resoluble recibe stream_url/hls; se muestran todos
+  var already = false;
+  for (var ri2 = 0; ri2 < reproductores.length; ri2++) {
+    var rp2 = reproductores[ri2];
+    if (!rp2 || !rp2.url) continue;
+    var u2 = String(rp2.url);
+    if (/\.m3u8(\?|$)/i.test(u2) || /master\.txt(\?|$)/i.test(u2)) {
+      if (!already) {
+        rp2.hls = u2;
+        rp2.stream_url = origin + '/proxy?url=' + encodeURIComponent(u2);
+        rp2.hls_resolve = rp2.stream_url;
+        rp2.tipo = 'hls';
+        already = true;
+      }
+      continue;
+    }
+    var prov2 = null;
+    try { prov2 = detectarProviderEmbedFull(u2); } catch (e3) {}
+    if (!prov2) {
+      try { prov2 = detectarProviderPorServidor(rp2.servidor); } catch (e4) {}
+    }
+    if (prov2) {
+      rp2.provider = prov2;
+      if (!already) {
+        if (prov2 === 'streamwish') {
+          rp2.stream_url = origin + '/wish/streamurl?url=' + encodeURIComponent(u2);
+        } else if (prov2 === 'vidhide') {
+          rp2.stream_url = origin + '/vidhide/streamurl?url=' + encodeURIComponent(u2);
+        } else if (prov2 === 'voe') {
+          rp2.stream_url = origin + '/voe/streamurl?url=' + encodeURIComponent(u2);
+        } else if (prov2 === 'goodstream') {
+          rp2.stream_url = origin + '/goodstream/streamurl?url=' + encodeURIComponent(u2);
+        } else if (prov2 === 'vimeos') {
+          rp2.stream_url = origin + '/resolve/vimeos?url=' + encodeURIComponent(u2) + '&proxy=1';
+        } else {
+          rp2.stream_url = origin + '/resolve?url=' + encodeURIComponent(u2) + '&proxy=1';
+        }
+        rp2.hls_resolve = rp2.stream_url;
+        already = true;
+      }
+      rp2.tipo = rp2.tipo || 'reproductor';
+    }
   }
   var descargas = item.descargas || item.downloads || [];
 
