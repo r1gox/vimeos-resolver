@@ -336,7 +336,7 @@ async function handleRequest(request, env) {
           resultados.total = resultados.resultados.length;
         } catch (eEnrich) { /* silencioso */ }
       }
-      // Formato compacto de búsqueda (results) + resultados (compat MovieZone)
+      // Búsqueda sencilla: solo listado (detalle al entrar)
       var pageN = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10) || 1);
       var lista = (resultados && resultados.resultados) || [];
       var resultsCompact = [];
@@ -345,27 +345,24 @@ async function handleRequest(request, env) {
         if (!it) continue;
         var tipoR = it.tipo || 'Pelicula';
         var tipoPathR = (tipoR === 'Anime') ? 'anime' : ((tipoR === 'Serie') ? 'serie' : 'pelicula');
-        var sidR = it.source_id || sourceIdFromName(it.fuente) || '';
-        resultsCompact.push({
+        var sidR = String(it.source_id || sourceIdFromName(it.fuente) || '');
+        var row = {
           title: it.titulo || it.title || '',
           slug: it.slug || '',
           url: it.url_extract || (origin + '/' + sidR + '/' + tipoPathR + '/' + (it.slug || '')),
           portada: it.portada || null,
-          year: it.year || null,
           source: it.fuente || it.source || null,
           type: tipoR,
-          source_id: String(sidR)
-        });
+          source_id: sidR
+        };
+        if (it.year) row.year = String(it.year);
+        resultsCompact.push(row);
       }
       return json({
-        success: true,
         query: query,
         page: pageN,
         count: resultsCompact.length,
-        results: resultsCompact,
-        fuente: (resultados && resultados.fuente) || null,
-        total: resultsCompact.length,
-        resultados: lista
+        results: resultsCompact
       });
     } catch (err) {
       return json({ success: false, error: err.message }, 500);
@@ -477,40 +474,17 @@ async function handleRequest(request, env) {
           }
         }
         if (resultadoPath) normalizarCamposResultado(resultadoPath);
+      }
+      if (esCapPath && resultadoPath) {
+        resultadoPath = formatCapituloRespuesta(resultadoPath, origin, {
+          season: commonOpts.season,
+          episode: commonOpts.episode,
+          slug: slug,
+          tipoPath: tipoRuta,
+          fuente: resultadoPath.fuente || forcedSource
+        });
       } else if (resultadoPath) {
-        // Capítulo: players + link/url_extract (sin meta de serie)
-        var embedsCap = resultadoPath.embeds || resultadoPath.reproductores || [];
-        // Dedupe por URL de embed
-        var seenEmb = Object.create(null);
-        var embedsUniq = [];
-        for (var eu = 0; eu < embedsCap.length; eu++) {
-          var emb = embedsCap[eu];
-          var uk = emb && (emb.url || emb);
-          if (!uk) continue;
-          uk = String(uk);
-          if (seenEmb[uk]) continue;
-          seenEmb[uk] = true;
-          embedsUniq.push(emb);
-        }
-        embedsCap = embedsUniq;
-        var sidCap = resultadoPath.fuente || resultadoPath.source_id || forcedSource || pathSource || '';
-        var sidNum = (typeof sourceIdFromName === 'function' && sourceIdFromName(sidCap)) || sidCap || pathSource || '';
-        resultadoPath = {
-          success: true,
-          tipo: 'Capitulo',
-          fuente: resultadoPath.fuente || forcedSource || null,
-          source_id: resultadoPath.fuente || resultadoPath.source_id || forcedSource || null,
-          slug: resultadoPath.slug || slug,
-          titulo: resultadoPath.titulo_serie || resultadoPath.titulo || slug,
-          temporada: commonOpts.season,
-          episodio: commonOpts.episode,
-          total: embedsCap.length || 0,
-          embeds: embedsCap,
-          descargas: resultadoPath.descargas || [],
-          url_extract: origin + '/' + sidNum + '/' + tipoRuta + '/' + (resultadoPath.slug || slug) +
-            '/' + commonOpts.season + '/' + commonOpts.episode,
-          link: resultadoPath.link || null
-        };
+        resultadoPath = formatDetalleRespuesta(resultadoPath, origin);
       }
       return json(resultadoPath);
     } catch (err) {
@@ -1298,6 +1272,142 @@ function countEpsInResult(r) {
   return n;
 }
 
+
+
+/** Respuesta detalle unificada (serie/anime/película) */
+function formatDetalleRespuesta(r, origin) {
+  if (!r) return r;
+  var fuente = r.fuente || 'unknown';
+  var sid = r.source_id != null ? String(r.source_id) : sourceIdFromName(fuente);
+  var tipo = r.tipo || 'Serie';
+  var tipoPath = (tipo === 'Anime') ? 'anime' : ((tipo === 'Pelicula' || tipo === 'Película') ? 'pelicula' : 'serie');
+  var slug = r.slug || '';
+  var urlExtract = origin ? (origin + '/' + sid + '/' + tipoPath + '/' + slug) : (r.url_extract || null);
+
+  // Normalizar temporadas → { temporada, episodios, lista:[{temporada,episodio,link}] }
+  var tempsIn = Array.isArray(r.temporadas) ? r.temporadas : [];
+  var tempsOut = [];
+  var totalEps = 0;
+  for (var ti = 0; ti < tempsIn.length; ti++) {
+    var T = tempsIn[ti] || {};
+    var sn = parseInt(T.temporada != null ? T.temporada : (ti + 1), 10) || (ti + 1);
+    var epsArr = T.episodios || T.capitulos || T.lista || [];
+    var lista = [];
+    if (Array.isArray(epsArr) && epsArr.length && typeof epsArr[0] === 'object') {
+      for (var ei = 0; ei < epsArr.length; ei++) {
+        var ep = epsArr[ei] || {};
+        var en = parseInt(ep.episodio != null ? ep.episodio : (ei + 1), 10) || (ei + 1);
+        var ln = ep.link || ep.url_video || (origin && slug ? (origin + '/' + sid + '/' + tipoPath + '/' + slug + '/' + sn + '/' + en) : null);
+        lista.push({ temporada: sn, episodio: en, link: ln });
+      }
+    } else {
+      var nEps = parseInt(T.episodios, 10) || parseInt(T.total_episodios, 10) || (Array.isArray(epsArr) ? epsArr.length : 0) || 0;
+      for (var e2 = 1; e2 <= nEps; e2++) {
+        lista.push({
+          temporada: sn,
+          episodio: e2,
+          link: origin && slug ? (origin + '/' + sid + '/' + tipoPath + '/' + slug + '/' + sn + '/' + e2) : null
+        });
+      }
+    }
+    totalEps += lista.length;
+    tempsOut.push({ temporada: sn, episodios: lista.length, lista: lista });
+  }
+
+  var out = {
+    success: true,
+    fuente: fuente,
+    source_id: sid,
+    tipo: tipo,
+    link: r.link || null,
+    slug: slug,
+    titulo: r.titulo || r.title || slug,
+    titulo_original: r.titulo_original || r.original_title || null,
+    portada: r.portada || null,
+    descripcion: r.descripcion || r.overview || null,
+    year: r.year != null ? String(r.year) : null,
+    fecha_estreno: r.fecha_estreno || r.startDate || null,
+    rating: r.rating != null ? r.rating : (r.calificacion != null ? r.calificacion : null),
+    rating_source: r.rating_source || r.poster_source || (r.imdb_id ? 'imdb' : (r.calificacion != null ? fuente : null)),
+    votos: r.votos != null ? String(r.votos) : null,
+    generos: Array.isArray(r.generos) ? r.generos : (r.genero ? String(r.genero).split(/,\s*/) : null),
+    certificacion: r.certificacion || r.certification || null,
+    estado: r.estado || null,
+    imdb_id: r.imdb_id || null,
+    url_extract: urlExtract,
+    formato: r.formato || r.categoria || null
+  };
+  if (tipoPath !== 'pelicula') {
+    out.temporadas = tempsOut;
+    out.total_temporadas = tempsOut.length || parseInt(r.total_temporadas, 10) || 0;
+    out.total_episodios = totalEps || parseInt(r.total_episodios, 10) || 0;
+  } else {
+    if (r.duracion != null) out.duracion = r.duracion;
+    if (r.duracion_texto) out.duracion_texto = r.duracion_texto;
+  }
+  if (r.backdrop) out.backdrop = r.backdrop;
+  if (r.en_emision != null) out.en_emision = r.en_emision;
+  if (r.finalizado != null) out.finalizado = r.finalizado;
+  return out;
+}
+
+/** Respuesta capítulo unificada */
+function formatCapituloRespuesta(r, origin, opts) {
+  opts = opts || {};
+  var fuente = r.fuente || opts.fuente || 'unknown';
+  var sidName = fuente;
+  var sidNum = sourceIdFromName(fuente) || String(r.source_id || '');
+  var slug = r.slug || opts.slug || '';
+  var tipoPath = opts.tipoPath || 'serie';
+  if (String(r.tipo || '').toLowerCase().indexOf('anime') !== -1 || opts.tipoPath === 'anime') tipoPath = 'anime';
+  var season = opts.season || r.temporada || 1;
+  var episode = opts.episode || r.episodio || 1;
+  var reps = r.reproductores || r.embeds || [];
+  // dedupe url
+  var seen = Object.create(null);
+  var repsOut = [];
+  for (var i = 0; i < reps.length; i++) {
+    var rp = reps[i];
+    if (!rp) continue;
+    var u = typeof rp === 'string' ? rp : rp.url;
+    if (!u || seen[u]) continue;
+    seen[u] = true;
+    if (typeof rp === 'string') {
+      repsOut.push({ url: u, tipo: 'reproductor' });
+    } else {
+      var row = {
+        url: u,
+        idioma: rp.idioma || null,
+        lang: rp.lang || null,
+        servidor: rp.servidor || rp.server || null,
+        tipo: rp.tipo || 'reproductor'
+      };
+      if (rp.stream_url) row.stream_url = rp.stream_url;
+      if (rp.hls_resolve) row.hls_resolve = rp.hls_resolve;
+      else if (origin && u) {
+        row.stream_url = origin + '/resolve?url=' + encodeURIComponent(u) + '&proxy=1';
+        row.hls_resolve = row.stream_url;
+      }
+      repsOut.push(row);
+    }
+  }
+  var desc = r.descargas || [];
+  return {
+    success: true,
+    tipo: 'Capitulo',
+    fuente: fuente,
+    source_id: sidName,
+    slug: slug,
+    titulo: r.titulo_serie || r.titulo || slug,
+    temporada: season,
+    episodio: episode,
+    total: repsOut.length,
+    reproductores: repsOut,
+    descargas: desc,
+    url_extract: origin + '/' + sidNum + '/' + tipoPath + '/' + slug + '/' + season + '/' + episode,
+    link: r.link || null
+  };
+}
 
 /** Links de episodios con ID de fuente: /{id}/serie/slug/T/E */
 function reescribirLinksCortos(resultado, origin, slugHint, tipoHint, fuenteHint) {
