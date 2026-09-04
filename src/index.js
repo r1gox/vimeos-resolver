@@ -31,6 +31,7 @@ var DORAMASFLIX_GQL = 'https://user-api.fluxcedene.net/graphql';
 // Metadatos TMDB vía worker público (no cambia el flujo de embeds/fuentes)
 var TMDB_META_API = ''; // desactivado: meta solo de la página fuente (+ TMDB key si hay)
 
+/*
 var REPRODUCTORES_PERMITIDOS = [
   'vimeos.net', 'player.vimeos',
   'goodstream', 'streamwish', 'filemoon', 'voe.',
@@ -41,7 +42,24 @@ var REPRODUCTORES_PERMITIDOS = [
   'yourupload', 'supervideo', 'krakenfiles', 'ok.ru',
   'videoapp.zip', 'videoapp', 'waaw.', 'hqq.', 'netu.'
 ];
+*/
+var REPRODUCTORES_PERMITIDOS = [
+  // Prioridad doramas / resolve HLS
+  'streamtape',
+  'streamwish', 'flaswish', 'strwish', 'ahvsh', 'streamhg',
+  'voe.',
+  'vidhide', 'streamhide', 'filelions', 'earnvids', 'smoothpre',
 
+  // Resolve extra que ya tienes
+  'vimeos.net', 'player.vimeos',
+  'goodstream',
+  'yourupload',
+  'mp4upload',
+  'ryderjet',
+
+  // Opcional estable (embed / a veces útil)
+  'filemoon'
+];
 var REPRODUCTORES_BLOQUEADOS = [
   'lamovie.org', 'lamovie', 'youtube.com', 'youtu.be',
   'youtube-nocookie', 'example.com',
@@ -8036,35 +8054,156 @@ async function doramasflixListarEpisodios(serieId, seasonNumber) {
 }
 
 /** Links de un episodio concreto */
-async function doramasflixEpisodeLinks(episodeId) {
-  if (!episodeId) return [];
-  try {
-    var data = await doramasflixGql(
-      'query($episode_id:ID!){getEpisodeLinks(id:$episode_id,app:"android"){links_online{server lang link _id is_recommended}}}',
-      { episode_id: episodeId }
-    );
-    var links = (data && data.getEpisodeLinks && data.getEpisodeLinks.links_online) || [];
-    var out = [];
-    for (var i = 0; i < links.length; i++) {
-      var L = links[i];
-      if (!L || !L.link) continue;
-      var real = decodificarEmbedShortener(L.link) || L.link;
-      var lang = String(L.lang || '');
-      var idioma = (lang === '38' || /lat|es/i.test(lang)) ? 'Latino'
-        : (lang === '13109' || /sub/i.test(lang)) ? 'Subtitulado' : 'Otro';
-      out.push({
-        url: real,
-        servidor: extraerServidor(real) || ('server-' + (L.server || '')),
-        idioma: idioma,
-        lang: lang,
-        tipo: 'reproductor',
-        fuente: 'doramasflix'
-      });
-    }
-    return out;
-  } catch (e) {
-    return [];
+// ======================================================
+// Prioridad: VOE → VidHide → Streamtape (Doramasflix)
+// ======================================================
+
+function detectarServidorImportante(url) {
+  var u = String(url || "").toLowerCase();
+  if (!u) return null;
+
+  if (
+    u.indexOf("streamtape.com") !== -1 ||
+    u.indexOf("streamtape.to") !== -1 ||
+    u.indexOf("strtape") !== -1
+  ) return "streamtape";
+
+  if (
+    u.indexOf("streamwish") !== -1 ||
+    u.indexOf("flaswish") !== -1 ||
+    u.indexOf("strwish") !== -1 ||
+    u.indexOf("ahvsh.com") !== -1 ||
+    u.indexOf("streamhg.com") !== -1 ||
+    u.indexOf("streamwish.") !== -1
+  ) return "streamwish";
+
+  if (
+    u.indexOf("voe.sx") !== -1 ||
+    u.indexOf("voe-network") !== -1 ||
+    u.indexOf("jilliandescribecompany") !== -1 ||
+    u.indexOf("voe.") !== -1
+  ) return "voe";
+
+  if (
+    u.indexOf("vidhide") !== -1 ||
+    u.indexOf("streamhide") !== -1 ||
+    u.indexOf("vidhidepro") !== -1 ||
+    u.indexOf("filelions") !== -1
+  ) return "vidhide";
+
+  return null;
+}
+
+function scoreServidorImportante(url) {
+  var s = detectarServidorImportante(url);
+  if (s === "streamtape") return 100; // 1º
+  if (s === "streamwish") return 90;  // 2º
+  if (s === "voe") return 80;         // 3º
+  if (s === "vidhide") return 70;     // 4º
+  return 0;
+}
+
+/**
+ * importantes primero; si soloImportantes=true y hay alguno, descarta el resto
+ */
+function filtrarReproductoresImportantes(reproductores, soloImportantes) {
+  var list = Array.isArray(reproductores) ? reproductores.slice() : [];
+  var top = [];
+  var rest = [];
+  for (var i = 0; i < list.length; i++) {
+    var r = list[i];
+    if (!r || !r.url) continue;
+    if (scoreServidorImportante(r.url) > 0) top.push(r);
+    else rest.push(r);
   }
+  top.sort(function (a, b) {
+    return scoreServidorImportante(b.url) - scoreServidorImportante(a.url);
+  });
+  if (soloImportantes && top.length) return top;
+  return top.concat(rest);
+}
+
+function normalizarLinkDoramasflix(L) {
+  if (!L || !L.link) return null;
+  var real = null;
+  try {
+    real = typeof decodificarEmbedShortener === "function"
+      ? decodificarEmbedShortener(L.link) || L.link
+      : L.link;
+  } catch (e) {
+    real = L.link;
+  }
+  if (!real || String(real).indexOf("http") !== 0) return null;
+
+  var lang = String(L.lang || "");
+  var idioma =
+    lang === "38" || /lat|es.?lat|latino/i.test(lang)
+      ? "Latino"
+      : lang === "13109" || /sub/i.test(lang)
+        ? "Subtitulado"
+        : "Otro";
+
+  var srv =
+    detectarServidorImportante(real) ||
+    (typeof extraerServidor === "function" ? extraerServidor(real) : null) ||
+    ("server-" + (L.server || ""));
+
+  return {
+    url: real,
+    servidor: srv,
+    idioma: idioma,
+    lang: lang,
+    tipo: "reproductor",
+    fuente: "doramasflix",
+    is_recommended: !!L.is_recommended,
+  };
+}
+
+/**
+ * Sustituye tu doramasflixEpisodeLinks por esta.
+ * - Pide android + web y fusiona
+ * - Prioriza VOE → VidHide → Streamtape
+ * - soloImportantes: true = solo esos 3 si existen; false = esos primero + resto
+ */
+async function doramasflixEpisodeLinks(episodeId, soloImportantes) {
+  if (!episodeId) return [];
+  if (soloImportantes == null) soloImportantes = false;
+
+  async function fetchApp(app) {
+    try {
+      var data = await doramasflixGql(
+        'query($episode_id:ID!){getEpisodeLinks(id:$episode_id,app:"' +
+          app +
+          '"){links_online{server lang link _id is_recommended}}}',
+        { episode_id: episodeId }
+      );
+      return (data && data.getEpisodeLinks && data.getEpisodeLinks.links_online) || [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  var raw = [].concat(await fetchApp("android"), await fetchApp("web"));
+  var seen = Object.create(null);
+  var out = [];
+
+  for (var i = 0; i < raw.length; i++) {
+    var item = normalizarLinkDoramasflix(raw[i]);
+    if (!item || !item.url) continue;
+    var key = String(item.url).split("?")[0].toLowerCase();
+    if (seen[key]) continue;
+    seen[key] = 1;
+    out.push(item);
+  }
+
+  // recomendados un poco arriba dentro del mismo tier
+  out.sort(function (a, b) {
+    var ds = scoreServidorImportante(b.url) - scoreServidorImportante(a.url);
+    if (ds !== 0) return ds;
+    return (b.is_recommended ? 1 : 0) - (a.is_recommended ? 1 : 0);
+  });
+
+  return filtrarReproductoresImportantes(out, soloImportantes);
 }
 
 async function scrapearDoramasflix(pageUrl, opts) {
