@@ -1992,19 +1992,47 @@ function detectarProviderEmbed(u) {
   if (u.indexOf('vimeos') !== -1) return 'vimeos';
   if (u.indexOf('streamwish') !== -1 || u.indexOf('flaswish') !== -1 ||
       u.indexOf('strwish') !== -1 || u.indexOf('ahvsh') !== -1 ||
-      u.indexOf('streamhg') !== -1) return 'streamwish';
+      u.indexOf('streamhg') !== -1 || u.indexOf('swhoi') !== -1 ||
+      u.indexOf('streamwish.') !== -1) return 'streamwish';
   return '';
 }
 
+/** Providers con resolve HLS nativo (player sin iframe/ads): vimeos, streamwish, vidhide, voe, goodstream */
 function detectarProviderEmbedFull(u) {
   u = String(u || '').toLowerCase();
-  if (u.indexOf('vimeos') !== -1) return 'vimeos';
+  if (u.indexOf('vimeos') !== -1 || u.indexOf('player.vimeos') !== -1) return 'vimeos';
+  // Streamwish mirrors
   if (u.indexOf('streamwish') !== -1 || u.indexOf('flaswish') !== -1 ||
-      u.indexOf('strwish') !== -1 || u.indexOf('ahvsh') !== -1 || u.indexOf('streamhg') !== -1) return 'streamwish';
+      u.indexOf('strwish') !== -1 || u.indexOf('ahvsh') !== -1 || u.indexOf('streamhg') !== -1 ||
+      u.indexOf('swhoi') !== -1 || u.indexOf('obeywish') !== -1 || u.indexOf('streamwish.') !== -1) {
+    return 'streamwish';
+  }
+  // Vidhide / Filelions mirrors
   if (u.indexOf('vidhide') !== -1 || u.indexOf('earnvids') !== -1 ||
-      u.indexOf('callistanise') !== -1 || u.indexOf('smoothpre') !== -1 || u.indexOf('filelions') !== -1) return 'vidhide';
-  if (u.indexOf('voe') !== -1 || u.indexOf('jilliandescribe') !== -1) return 'voe';
+      u.indexOf('callistanise') !== -1 || u.indexOf('smoothpre') !== -1 ||
+      u.indexOf('filelions') !== -1 || u.indexOf('vidhidepre') !== -1 ||
+      u.indexOf('vidhidepro') !== -1 || u.indexOf('vidhideplus') !== -1 ||
+      u.indexOf('lulustream') !== -1 || u.indexOf('luluvdo') !== -1) {
+    return 'vidhide';
+  }
+  // VOE mirrors
+  if (u.indexOf('voe') !== -1 || u.indexOf('jilliandescribe') !== -1 ||
+      u.indexOf('voe.sx') !== -1 || u.indexOf('voe-unblock') !== -1) {
+    return 'voe';
+  }
   if (u.indexOf('goodstream') !== -1) return 'goodstream';
+  return '';
+}
+
+function detectarProviderPorServidor(servidor) {
+  var s = String(servidor || '').toLowerCase();
+  if (!s) return '';
+  if (s.indexOf('vimeos') !== -1) return 'vimeos';
+  if (s.indexOf('streamwish') !== -1 || s.indexOf('wish') !== -1) return 'streamwish';
+  if (s.indexOf('vidhide') !== -1 || s.indexOf('filelions') !== -1 ||
+      s.indexOf('callistanise') !== -1 || s.indexOf('lulu') !== -1) return 'vidhide';
+  if (s.indexOf('voe') !== -1) return 'voe';
+  if (s.indexOf('goodstream') !== -1) return 'goodstream';
   return '';
 }
 
@@ -5074,6 +5102,57 @@ function slimTemporada(t) {
  * - sin campos null innecesarios
  */
 
+
+/**
+ * Solo 1 reproductor HLS "sin ads" para no ralentizar.
+ * Orden: vimeos → streamwish → vidhide → goodstream → m3u8 directo → voe (último)
+ * El resto de embeds (streamtape, ok.ru, etc.) se dejan como fallback iframe.
+ */
+function rankingReproductorHls(rep) {
+  if (!rep || !rep.url) return 999;
+  var u = String(rep.url).toLowerCase();
+  var s = String(rep.servidor || rep.provider || '').toLowerCase();
+  var prov = '';
+  try {
+    if (typeof detectarProviderEmbedFull === 'function') prov = detectarProviderEmbedFull(u) || '';
+  } catch (e) {}
+  if (!prov && typeof detectarProviderPorServidor === 'function') {
+    prov = detectarProviderPorServidor(s) || '';
+  }
+  if (!prov) {
+    if (s.indexOf('vimeos') !== -1 || u.indexOf('vimeos') !== -1) prov = 'vimeos';
+    else if (s.indexOf('streamwish') !== -1 || u.indexOf('streamwish') !== -1) prov = 'streamwish';
+    else if (s.indexOf('vidhide') !== -1 || u.indexOf('vidhide') !== -1 || u.indexOf('callistanise') !== -1) prov = 'vidhide';
+    else if (s.indexOf('goodstream') !== -1 || u.indexOf('goodstream') !== -1) prov = 'goodstream';
+    else if (s.indexOf('voe') !== -1 || u.indexOf('voe') !== -1) prov = 'voe';
+  }
+  if (/\.m3u8(\?|$)/i.test(u) || /master\.txt(\?|$)/i.test(u)) return 5; // m3u8 directo
+  if (prov === 'vimeos') return 1;
+  if (prov === 'streamwish') return 2;
+  if (prov === 'vidhide') return 3;
+  if (prov === 'goodstream') return 4;
+  if (prov === 'voe') return 6; // último entre HLS
+  return 999; // no es HLS resoluble
+}
+
+function esReproductorHlsResoluble(rep) {
+  return rankingReproductorHls(rep) < 900;
+}
+
+/** Deja 1 HLS (mejor rank) + el resto no-HLS (iframe). Si no hay HLS, lista igual. */
+function elegirReproductoresRapidos(list) {
+  if (!Array.isArray(list) || !list.length) return list || [];
+  var hls = [];
+  var otros = [];
+  for (var i = 0; i < list.length; i++) {
+    if (esReproductorHlsResoluble(list[i])) hls.push(list[i]);
+    else otros.push(list[i]);
+  }
+  if (!hls.length) return list;
+  hls.sort(function (a, b) { return rankingReproductorHls(a) - rankingReproductorHls(b); });
+  return [hls[0]].concat(otros);
+}
+
 /** Capítulo: solo lo necesario para reproducir (meta en detalle de la serie) */
 function formatearCapituloRespuesta(item, origin, ctx) {
   ctx = ctx || {};
@@ -5110,11 +5189,14 @@ function formatearCapituloRespuesta(item, origin, ctx) {
     repsClean.push(rp);
   }
   reproductores = repsClean;
-  // stream_url / hls_resolve (vimeos→resolve+proxy = sin ads en player nativo)
+  // Solo 1 HLS resoluble (orden: vimeos > streamwish > vidhide > goodstream > m3u8 > voe)
+  if (typeof elegirReproductoresRapidos === 'function') {
+    reproductores = elegirReproductoresRapidos(reproductores);
+  }
+  // stream_url / hls_resolve solo para los que quedan
   if (origin && typeof attachStreamUrlList === 'function') {
     reproductores = attachStreamUrlList(origin, reproductores);
   }
-  embeds = reproductores; // misma lista (sin duplicar campos distintos)
   var descargas = item.descargas || item.downloads || [];
 
   var urlExtract = null;
@@ -5315,9 +5397,16 @@ function formatearDetalleRespuesta(item, origin) {
   }
 
   if (incluirPlayers) {
-    out.total = reps.length || embeds.length || (item.total != null ? item.total : 0);
-    out.reproductores = reps;
-    out.embeds = embeds;
+    // Película/capítulo: solo 1 HLS resoluble (mismo orden que capítulos)
+    var repsAll = reps.length ? reps : embeds;
+    if (typeof elegirReproductoresRapidos === 'function') {
+      repsAll = elegirReproductoresRapidos(repsAll);
+    }
+    if (origin && typeof attachStreamUrlList === 'function') {
+      repsAll = attachStreamUrlList(origin, repsAll);
+    }
+    out.total = repsAll.length || (item.total != null ? item.total : 0);
+    out.reproductores = repsAll;
     out.descargas = descargas;
   }
 
