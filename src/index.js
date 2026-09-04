@@ -8098,8 +8098,8 @@ function scoreServidorImportante(url) {
   var s = detectarServidorImportante(url);
   if (s === "streamtape") return 100; // 1º
   if (s === "streamwish") return 90;  // 2º
-  if (s === "voe") return 80;         // 3º
-  if (s === "vidhide") return 70;     // 4º
+  if (s === "vidhide") return 80;     // 4º
+  if (s === "voe") return 70;         // 3º
   return 0;
 }
 
