@@ -530,7 +530,8 @@ async function handleRequest(request, env) {
     try {
       resultado = await enriquecerDetalleConTmdb(resultado, resultado.tipo || '');
     } catch (eUrl) { /* ok */ }
-    if (resultado && (!resultado.portada || esPortadaSospechosa(resultado.portada))) {
+    // Siempre usar la mejor portada (IMDb > TMDB)
+    if (resultado) {
       if (resultado.portada_imdb && esPortadaUrlValida(resultado.portada_imdb)) {
         resultado.portada = resultado.portada_imdb;
         resultado.poster_source = 'imdb';
@@ -539,6 +540,16 @@ async function handleRequest(request, env) {
         resultado.poster_source = 'tmdb';
       }
     }
+    /*
+    if (resultado && (!resultado.portada || esPortadaSospechosa(resultado.portada))) {
+      if (resultado.portada_imdb && esPortadaUrlValida(resultado.portada_imdb)) {
+        resultado.portada = resultado.portada_imdb;
+        resultado.poster_source = 'imdb';
+      } else if (resultado.portada_tmdb && esPortadaUrlValida(resultado.portada_tmdb)) {
+        resultado.portada = resultado.portada_tmdb;
+        resultado.poster_source = 'tmdb';
+      }
+    }*/
     if (resultado) {
       normalizarCamposResultado(resultado);
       resultado = formatearDetalleRespuesta(resultado, origin);
