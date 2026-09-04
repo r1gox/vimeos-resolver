@@ -2080,25 +2080,44 @@ async function buildProviderRichResponse(embedUrl, origin, forceProvider) {
   if (base.master && hlsList.indexOf(base.master) === -1) hlsList.unshift(base.master);
   if (base.url && hlsList.indexOf(base.url) === -1) hlsList.unshift(base.url);
 
+  // Preferir master.txt; premilkyway suele 403
   hlsList.sort(function (a, b) {
     var sa = /\.txt(\?|$)/.test(String(a)) || String(a).indexOf('master.txt') !== -1 ? 0 : 1;
     var sb = /\.txt(\?|$)/.test(String(b)) || String(b).indexOf('master.txt') !== -1 ? 0 : 1;
-    return sa - sb;
+    if (sa !== sb) return sa - sb;
+    var pa = /premilkyway/i.test(String(a)) ? 1 : 0;
+    var pb = /premilkyway/i.test(String(b)) ? 1 : 0;
+    return pa - pb;
   });
 
-  // Rápido: usar master/url del resolve; check solo si falta
+  // Comprobar status en paralelo (máx 4): solo URL "activo" con #EXT
   var hlsStatus = [];
   var activePlaylist = null;
-  var activeMaster = base.master || base.url || (hlsList.length ? hlsList[0] : null);
-  if (!activeMaster && hlsList.length) {
-    for (var j = 0; j < Math.min(hlsList.length, 2); j++) {
-      var st = await checkHlsStatus(hlsList[j], referer);
+  var activeMaster = null;
+  var toCheck = hlsList.slice(0, 4);
+  if (toCheck.length) {
+    var checks = await Promise.all(toCheck.map(function (u) {
+      return checkHlsStatus(u, referer).catch(function () {
+        return { url: u, status: 'error', body: null };
+      });
+    }));
+    for (var j = 0; j < checks.length; j++) {
+      var st = checks[j];
       hlsStatus.push({ url: st.url, status: st.status });
-      if (!activePlaylist && st.status === 'activo' && st.body && st.body.indexOf('#EXT') !== -1) {
+      if (!activePlaylist && st.status === 'activo' && st.body && String(st.body).indexOf('#EXT') !== -1) {
         activePlaylist = st.body;
         activeMaster = st.url;
       }
     }
+  }
+  if (!activeMaster) {
+    for (var fi = 0; fi < hlsList.length; fi++) {
+      if (/\.txt(\?|$)/.test(String(hlsList[fi])) || String(hlsList[fi]).indexOf('master.txt') !== -1) {
+        activeMaster = hlsList[fi];
+        break;
+      }
+    }
+    if (!activeMaster) activeMaster = base.master || base.url || (hlsList[0] || null);
   }
 
   var qualities = [];
