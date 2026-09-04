@@ -5646,6 +5646,9 @@ function formatearDetalleRespuesta(item, origin) {
     titulo: titulo,
     titulo_original: tituloOrig,
     portada: portada,
+    portada_fuente_raw: item.portada_fuente_raw || null,
+    portada_imdb: item.portada_imdb || null,
+    portada_tmdb: item.portada_tmdb || null,
     backdrop: item.backdrop || null,
     descripcion: desc,
     year: item.year || null,
@@ -5896,14 +5899,41 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   var descFuente = detalle.descripcion || '';
   var descFuenteOk = descFuente.length > 60 && !/\.\.\.\s*$/.test(descFuente)
     && !(typeof esDescripcionBasura === 'function' && esDescripcionBasura(descFuente));
-  var portadaFuenteOk = detalle.portada && !esFuentePelisplus(detalle) && !esPortadaSospechosa(detalle.portada);
+
+  // Respaldo de la página (Pelisplus a veces 404)
+  if (detalle.portada && esPortadaUrlValida(detalle.portada) && !detalle.portada_fuente_raw) {
+    detalle.portada_fuente_raw = detalle.portada;
+  }
+
+  // Portadas pelisplus suelen caerse: no bloquear IMDb/TMDB si el match es bueno
+  var portadaFuenteOk = detalle.portada && esPortadaUrlValida(detalle.portada) &&
+    !(typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(detalle.portada)) &&
+    !esFuentePelisplus(detalle);
 
   if (descFuenteOk) meta.descripcion = null; // conservar scrape
   if (portadaFuenteOk) { meta.portada_tmdb = null; meta.portada_imdb = null; }
   if (detalle.genero) meta.generos = null;
   // No bloquear rating: si la fuente no trae calificación, usar IMDb/TMDB/OMDb
+  
 
   aplicarMetaAResultadoBusqueda(detalle, meta);
+    // Pelisplus: si hay póster IMDb/TMDB del match, usarlo (CDN estable)
+  if (esFuentePelisplus(detalle) || /pelisplushd|pelisplus/i.test(String(detalle.portada || ''))) {
+    if (detalle.portada_imdb && esPortadaImdb(detalle.portada_imdb)) {
+      detalle.portada = detalle.portada_imdb;
+      detalle.poster_source = 'imdb';
+    } else if (detalle.portada_tmdb && esPortadaUrlValida(detalle.portada_tmdb)) {
+      detalle.portada = detalle.portada_tmdb;
+      detalle.poster_source = 'tmdb';
+    } else if (meta.portada_imdb && esPortadaImdb(meta.portada_imdb) && detalle.imdb_id) {
+      detalle.portada = meta.portada_imdb;
+      detalle.portada_imdb = meta.portada_imdb;
+      detalle.poster_source = 'imdb';
+    } else if (detalle.portada_fuente_raw && esPortadaUrlValida(detalle.portada_fuente_raw)) {
+      detalle.portada = detalle.portada_fuente_raw;
+      detalle.poster_source = 'fuente';
+    }
+  }
 
   // Garantizar calificacion siempre que meta la tenga
   if ((detalle.calificacion == null || detalle.calificacion === '') && metaFull.calificacion != null) {
