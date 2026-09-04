@@ -3746,6 +3746,7 @@ function metaCoincideConItem(item, meta) {
 function aplicarMetaAResultadoBusqueda(item, meta) {
   if (!item || !meta) return item;
 
+  /*
   var coincide = metaCoincideConItem(item, meta);
   // Mismo año + imdb → aceptar (La captura / Facing El Chapo, Vértigo 2 / Fall 2)
   var yIt0 = extraerYearItem(item);
@@ -3754,7 +3755,63 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
     coincide = true;
   }
   var sinPortada = !item.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(item.portada));
+*/
+  // Mismo año + imdb: traducciones OK; otra obra con palabras distintas → NO
+  var yIt0 = extraerYearItem(item);
+  var yMt0 = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
+  if (!coincide && meta.imdb_id && yIt0 && yMt0 && String(yIt0) === String(yMt0)) {
+    var STOPX = {
+      the:1, and:1, film:1, movie:1, del:1, de:1, la:1, el:1, los:1, las:1,
+      un:1, una:1, y:1, o:1, en:1, a:1, for:1, of:1, to:1, part:1, parte:1
+    };
+    function extrasX(t) {
+      return normalizarTituloKey(t || '').split(/\s+/).filter(function (w) {
+        return w.length >= 4 && !STOPX[w];
+      });
+    }
+    var tLoc = item.titulo || '';
+    var tMeta = meta.titulo_original || meta.titulo_tmdb || '';
+    var tSlug = String(item.slug || '').replace(/-/g, ' ');
+    var eLoc = extrasX(tLoc + ' ' + tSlug);
+    var eMeta = extrasX(tMeta);
+    var sharedX = 0, missingX = 0;
+    for (var xi = 0; xi < eLoc.length; xi++) {
+      if (normalizarTituloKey(tMeta).indexOf(eLoc[xi]) !== -1) sharedX++;
+      else missingX++;
+    }
+    var extraX = 0;
+    var tLocN = normalizarTituloKey(tLoc + ' ' + tSlug);
+    for (var xj = 0; xj < eMeta.length; xj++) {
+      if (tLocN.indexOf(eMeta[xj]) === -1) extraX++;
+    }
+    // Ej: falta "tiburon" y meta tiene familia/barrio/partido
+    var conflictoTitulo = missingX >= 1 && extraX >= 2 && sharedX < eLoc.length;
 
+    if (!conflictoTitulo) {
+      coincide = true;
+    } else {
+      var actHits = 0;
+      if (Array.isArray(item.actores) && meta.descripcion) {
+        var dL = String(meta.descripcion).toLowerCase();
+        for (var ai = 0; ai < Math.min(item.actores.length, 6); ai++) {
+          var ap = String(item.actores[ai] || '').split(/\s+/);
+          var last = ap[ap.length - 1] || '';
+          if (last.length >= 5 && dL.indexOf(last.toLowerCase()) !== -1) actHits++;
+        }
+      }
+      if (actHits >= 1) {
+        coincide = true;
+      } else if (item.descripcion && meta.descripcion &&
+        String(item.descripcion).length > 40 && String(meta.descripcion).length > 40 &&
+        similitudDescripcion(item.descripcion, meta.descripcion) >= 0.12) {
+        coincide = true;
+      }
+    }
+  }
+  var sinPortada = !item.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(item.portada));
+
+
+  
   // Soft poster: solo si NO hay conflicto de año (evita portada 2012 en película 2026)
   if (!coincide) {
     var yItemSoft = extraerYearItem(item);
@@ -3817,6 +3874,7 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   if (coincide && meta.titulo_original) {
     item.titulo_original = meta.titulo_original;
   }
+
   // Portada: preferir IMDb cuando el match es válido (año OK)
   var yItemP = extraerYearItem(item);
   var yMetaP = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
