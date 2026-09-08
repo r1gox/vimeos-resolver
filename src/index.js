@@ -5109,47 +5109,41 @@ async function aplicarPortadaPreferirFuente(item) {
 async function portadaRespondeOk(url, timeoutMs) {
   if (!esPortadaUrlValida(url)) return false;
   var ms = timeoutMs != null ? timeoutMs : 2500;
+  var MIN_BYTES = 2000; // JPEGs vacíos de PelisPlus ~16 bytes
   var headers = {
     'User-Agent': (typeof HEADERS !== 'undefined' && HEADERS['User-Agent'])
       ? HEADERS['User-Agent']
       : 'Mozilla/5.0',
     Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
   };
+
   try {
-    // 1) HEAD
+    // GET: hace falta tamaño real (HEAD a veces no trae content-length fiable)
     var res = await fetchWithTimeout(
       url,
-      { method: 'HEAD', headers: headers, redirect: 'follow' },
+      { method: 'GET', headers: headers, redirect: 'follow' },
       ms
     );
-    if (res && (res.status === 200 || res.status === 206)) {
-      var ct = (res.headers.get('content-type') || '').toLowerCase();
-      if (!ct || ct.indexOf('image') !== -1 || ct.indexOf('octet-stream') !== -1) {
-        return true;
-      }
+    if (!res || !(res.status === 200 || res.status === 206)) return false;
+
+    var ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (ct && ct.indexOf('image') === -1 && ct.indexOf('octet-stream') === -1) {
+      return false;
     }
-    // Algunos CDN no permiten HEAD → GET de 1 byte
-    if (res && (res.status === 403 || res.status === 405 || res.status === 501)) {
-      res = await fetchWithTimeout(
-        url,
-        {
-          method: 'GET',
-          headers: Object.assign({}, headers, { Range: 'bytes=0-0' }),
-          redirect: 'follow',
-        },
-        ms
-      );
-      if (res && (res.status === 200 || res.status === 206)) {
-        var ct2 = (res.headers.get('content-type') || '').toLowerCase();
-        if (!ct2 || ct2.indexOf('image') !== -1 || ct2.indexOf('octet-stream') !== -1) {
-          return true;
-        }
-      }
+
+    var cl = parseInt(res.headers.get('content-length') || '0', 10);
+    if (cl > 0 && cl < MIN_BYTES) return false;
+
+    try {
+      var buf = await res.arrayBuffer();
+      if (!buf || buf.byteLength < MIN_BYTES) return false;
+    } catch (e2) {
+      return false;
     }
+    return true;
   } catch (e) {
-    /* caído o timeout */
+    return false;
   }
-  return false;
 }
 
 
