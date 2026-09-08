@@ -5087,6 +5087,28 @@ async function portadaRespondeOk(url, timeoutMs) {
   return false;
 }
 
+
+/** Título legible desde slug: codigo-venganza → Codigo Venganza */
+function tituloDesdeSlug(slug) {
+  if (!slug) return null;
+  var s = String(slug).replace(/^\/+|\/+$/g, '');
+
+  // Slugs basura tipo 2-1509599 → no inventar título
+  if (/^\d+(-\d+)?$/.test(s)) return null;
+
+  // Quitar año al final: nombre-2024
+  s = s.replace(/-\d{4}$/, '');
+  s = s.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (s.length < 2) return null;
+
+  // Capitalizar
+  s = s.replace(/\b([a-záéíóúñü])/gi, function (c) {
+    return c.toUpperCase();
+  });
+
+  return typeof limpiarTitulo === 'function' ? limpiarTitulo(s) : s;
+}
+
 /** Título ilegible (mojibake / solo números de slug) */
 function tituloPareceRoto(t) {
   if (!t || typeof t !== 'string') return true;
@@ -5102,17 +5124,7 @@ function tituloPareceRoto(t) {
   return false;
 }
 
-function tituloDesdeSlug(slug) {
-  if (!slug) return null;
-  var s = String(slug).replace(/^\/+|\/+$/g, '');
-  // slugs basura tipo 2-1509599
-  if (/^\d+(-\d+)?$/.test(s)) return null;
-  s = s.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
-  if (s.length < 2) return null;
-  return s.replace(/\b\w/g, function (c) {
-    return c.toUpperCase();
-  });
-}
+
 
 function esPortadaImdb(url) {
   if (!esPortadaUrlValida(url)) return false;
@@ -6385,16 +6397,6 @@ function normalizarQueryBusqueda(q) {
   return s;
 }
 
-/** Título legible desde slug: codigo-venganza → Código Venganza (aprox.) */
-function tituloDesdeSlug(slug) {
-  var t = String(slug || '')
-    .replace(/-\d{4}$/, '')
-    .replace(/-+/g, ' ')
-    .trim();
-  // Capitalizar palabras
-  t = t.replace(/\b([a-z])/g, function (c) { return c.toUpperCase(); });
-  return limpiarTitulo(t);
-}
 
 async function buscarHackstore(query, limit) {
   var q = normalizarQueryBusqueda(query);
