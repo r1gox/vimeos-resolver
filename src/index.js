@@ -7256,6 +7256,13 @@ async function scrapearPelisplus(pageUrl, opts) {
     }
   }
 
+  titulo = limpiarTitulo(titulo || '');
+  if (tituloOriginal) tituloOriginal = limpiarTitulo(tituloOriginal);
+  // Si no hay @, usar el mismo título
+  if (!tituloOriginal && titulo) {
+    tituloOriginal = titulo;
+  }
+
   var portada = metas.portada;
   var descripcion = metas.descripcion;
   var yearMeta = metas.year || null;
