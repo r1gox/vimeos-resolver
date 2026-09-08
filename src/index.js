@@ -7240,10 +7240,29 @@ async function scrapearPelisplus(pageUrl, opts) {
   var metas = extraerMetas(html);
   var titulo = metas.titulo;
   // Título original indicado explícitamente por PelisPlus con "@"
-  var tituloOriginalFuente = null;
-  var originalMatch = html.match(/@\s*([^<\r\n]{2,150})/i);
+// Título original mostrado por PelisPlus como "@ Mutiny"
+  var tituloOriginal = null;
+
+// Quitar CSS y JavaScript para evitar capturar @media, @font-face, etc.
+  var htmlSinCss = html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '');
+
+  var originalMatch = htmlSinCss.match(
+    /(?:^|>|\s)@\s*([^<\r\n]{2,150})/i
+  );
+
   if (originalMatch) {
-    tituloOriginalFuente = limpiarTitulo(originalMatch[1]);
+    var candidato = originalMatch[1].trim();
+
+  // Evitar reglas CSS
+    if (
+      !/^media\b/i.test(candidato) &&
+      !/^font-face\b/i.test(candidato) &&
+      !/^keyframes\b/i.test(candidato)
+    ) {
+      tituloOriginal = limpiarTitulo(candidato);
+    }
   }
   var portada = metas.portada;
   var descripcion = metas.descripcion;
@@ -7332,8 +7351,7 @@ async function scrapearPelisplus(pageUrl, opts) {
       tipo: 'Serie',
       link: pageUrl,
       titulo: titulo,
-      titulo_original: tituloOriginalFuente || null,
-      titulo_original_fuente: tituloOriginalFuente || null,
+      titulo_original: tituloOriginal,
       portada: portada,
       descripcion: descripcion,
       year: yearMeta,
@@ -7370,8 +7388,7 @@ async function scrapearPelisplus(pageUrl, opts) {
     link: pageUrl,
     slug: slugFromUrl,
     titulo: titulo,
-    titulo_original: tituloOriginalFuente || null,
-    titulo_original_fuente: tituloOriginalFuente || null,
+    titulo_original: tituloOriginal,
     portada: portada,
     descripcion: descripcion,
     year: yearMeta,
