@@ -5871,12 +5871,11 @@ function formatearDetalleRespuesta(item, origin) {
   var portada = item.portada || item.portada_imdb || item.portada_tmdb || null;
   var titulo = limpiarTitulo(item.titulo || '') || null;
   var tituloOrig = item.titulo_original || null;
+  var tituloOrig = item.titulo_original || null;
   if (!tituloOrig && item.titulo_tmdb && String(item.titulo_tmdb).toLowerCase() !== String(titulo || '').toLowerCase()) {
     tituloOrig = item.titulo_tmdb;
   }
-  if (tituloOrig && titulo && String(tituloOrig).toLowerCase() === String(titulo).toLowerCase()) {
-    tituloOrig = null;
-  }
+  // NO borrar si es igual al título (PelisPlus: @ Amor es amor)
 
   // Estado unificado (series)
   var estado = item.estado || null;
