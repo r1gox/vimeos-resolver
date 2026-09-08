@@ -6294,6 +6294,11 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
     detalle.titulo_original = detalle.titulo;
   }
   // No usar fromSlug aquí.
+  if (detalle.titulo_original) {
+    detalle.titulo_original = limpiarTitulo(String(detalle.titulo_original).trim());
+  } else if (detalle.titulo) {
+    detalle.titulo_original = detalle.titulo;
+  }
   return detalle;
 }
 
@@ -7258,11 +7263,9 @@ async function scrapearPelisplus(pageUrl, opts) {
 
   titulo = limpiarTitulo(titulo || '');
   if (tituloOriginal) tituloOriginal = limpiarTitulo(tituloOriginal);
-  // Si no hay @, usar el mismo título
   if (!tituloOriginal && titulo) {
     tituloOriginal = titulo;
   }
-
   var portada = metas.portada;
   var descripcion = metas.descripcion;
   var yearMeta = metas.year || null;
