@@ -7230,6 +7230,12 @@ async function scrapearPelisplus(pageUrl, opts) {
 
   var metas = extraerMetas(html);
   var titulo = metas.titulo;
+  // Título original indicado explícitamente por PelisPlus con "@"
+  var tituloOriginalFuente = null;
+  var originalMatch = html.match(/@\s*([^<\r\n]{2,150})/i);
+  if (originalMatch) {
+    tituloOriginalFuente = limpiarTitulo(originalMatch[1]);
+  }
   var portada = metas.portada;
   var descripcion = metas.descripcion;
   var yearMeta = metas.year || null;
@@ -7317,6 +7323,8 @@ async function scrapearPelisplus(pageUrl, opts) {
       tipo: 'Serie',
       link: pageUrl,
       titulo: titulo,
+      titulo_original: tituloOriginalFuente || null,
+      titulo_original_fuente: tituloOriginalFuente || null,
       portada: portada,
       descripcion: descripcion,
       year: yearMeta,
