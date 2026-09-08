@@ -7244,14 +7244,22 @@ async function scrapearPelisplus(pageUrl, opts) {
   var htmlSinCss = html
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<script[\s\S]*?<\/script>/gi, '');
-  var originalMatch = htmlSinCss.match(/(?:^|>|\s)@\s*([^<\r\n]{2,150})/i);
+
+  // Debajo del h1: "@ Mutiny" / "@ Amor es amor" (puede haber saltos de línea)
+  var originalMatch =
+    htmlSinCss.match(/<h1[^>]*>[\s\S]*?<\/h1>\s*@\s*([\s\S]*?)(?=\s*Ver\s+Pel[ií]cula|\s*Ver\s+Serie|\s*Ver\s+Anime|<)/i) ||
+    htmlSinCss.match(/(?:^|>|\s)@\s*([A-Za-zÁÉÍÓÚáéíóúÜüñÑ0-9][^<\r\n]{0,120})/i);
+
   if (originalMatch) {
-    var candidato = originalMatch[1].trim();
+    var candidato = originalMatch[1]
+      .replace(/\s+/g, ' ')
+      .replace(/\s*Ver\s+.*$/i, '')
+      .trim();
     if (
+      candidato.length >= 2 &&
       !/^media\b/i.test(candidato) &&
       !/^font-face\b/i.test(candidato) &&
-      !/^keyframes\b/i.test(candidato) &&
-      !/^import\b/i.test(candidato)
+      !/^keyframes\b/i.test(candidato)
     ) {
       tituloOriginal = limpiarTitulo(candidato);
     }
