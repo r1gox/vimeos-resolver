@@ -3870,7 +3870,20 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   }
   if (meta.titulo_tmdb) item.titulo_tmdb = meta.titulo_tmdb;
   if (coincide && meta.titulo_original) {
-    item.titulo_original = meta.titulo_original;
+    // Solo aceptar titulo_original de meta si coincide con slug o título local
+    if (meta.titulo_original) {
+      var okOrig = tituloOriginalEsCoherente(
+        meta.titulo_original,
+        item.slug,
+        item.titulo || item.nombre
+      );
+      if (okOrig) {
+        // No pisar uno bueno de la fuente
+        if (!item.titulo_original || !tituloOriginalEsCoherente(item.titulo_original, item.slug, item.titulo)) {
+          item.titulo_original = meta.titulo_original;
+        }
+      }
+    }
   }
 
   // Portada: preferir IMDb cuando el match es válido (año OK)
@@ -3988,6 +4001,30 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   return item;
 }
 
+
+
+/** ¿El original de meta/fuente encaja con el slug? (evita "The Dog Stars" en the-brink-of-war) */
+function tituloOriginalEsCoherente(tituloOrig, slug, tituloLocal) {
+  if (!tituloOrig) return false;
+  var o = normalizarTituloKey(tituloOrig);
+  var s = normalizarTituloKey(String(slug || '').replace(/-/g, ' '));
+  var t = normalizarTituloKey(tituloLocal || '');
+  if (!o) return false;
+  // Coincide con slug
+  if (s && (o === s || o.indexOf(s) !== -1 || s.indexOf(o) !== -1)) return true;
+  // Tokens del slug en el original
+  if (s) {
+    var toks = s.split(/\s+/).filter(function (w) { return w.length >= 3; });
+    var hit = 0;
+    for (var i = 0; i < toks.length; i++) {
+      if (o.indexOf(toks[i]) !== -1) hit++;
+    }
+    if (toks.length && hit >= Math.ceil(toks.length * 0.6)) return true;
+  }
+  // Muy parecido al título local (misma obra en otro idioma)
+  if (t && (o === t || t.indexOf(o) !== -1 || o.indexOf(t) !== -1)) return true;
+  return false;
+}
 /**
  * Variantes de query para maximizar hits en IMDb/OMDb.
  * Títulos JP largos: "One Piece 3D2Y: Ace no Shi wo Koete!..."
@@ -6242,6 +6279,24 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   delete detalle.original_title;
   delete detalle.image;
 
+    // Original: fuente/slug mandan sobre meta incorrecta
+  if (detalle.slug) {
+    var fromSlug = tituloDesdeSlug(detalle.slug);
+    if (detalle.titulo_original && !tituloOriginalEsCoherente(detalle.titulo_original, detalle.slug, detalle.titulo)) {
+      // Meta se equivocó (ej. The Dog Stars)
+      if (detalle.titulo_original_fuente && tituloOriginalEsCoherente(detalle.titulo_original_fuente, detalle.slug, detalle.titulo)) {
+        detalle.titulo_original = detalle.titulo_original_fuente;
+      } else if (fromSlug) {
+        detalle.titulo_original = fromSlug; // "The Brink Of War"
+      } else {
+        detalle.titulo_original = null;
+      }
+    }
+    // Si no hay original, usar slug legible en inglés
+    if (!detalle.titulo_original && fromSlug && fromSlug !== detalle.titulo) {
+      detalle.titulo_original = fromSlug;
+    }
+  }
   return detalle;
 }
 
