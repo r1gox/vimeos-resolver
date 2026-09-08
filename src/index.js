@@ -7240,29 +7240,11 @@ async function scrapearPelisplus(pageUrl, opts) {
   var metas = extraerMetas(html);
   var titulo = metas.titulo;
   // Título original indicado explícitamente por PelisPlus con "@"
-// Título original mostrado por PelisPlus como "@ Mutiny"
-  var tituloOriginal = null;
-
-// Quitar CSS y JavaScript para evitar capturar @media, @font-face, etc.
-  var htmlSinCss = html
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '');
-
-  var originalMatch = htmlSinCss.match(
-    /(?:^|>|\s)@\s*([^<\r\n]{2,150})/i
-  );
-
+  // Título original indicado explícitamente por PelisPlus con "@"
+  var tituloOriginalFuente = null;
+  var originalMatch = html.match(/@\s*([^<\r\n]{2,150})/i);
   if (originalMatch) {
-    var candidato = originalMatch[1].trim();
-
-  // Evitar reglas CSS
-    if (
-      !/^media\b/i.test(candidato) &&
-      !/^font-face\b/i.test(candidato) &&
-      !/^keyframes\b/i.test(candidato)
-    ) {
-      tituloOriginal = limpiarTitulo(candidato);
-    }
+    tituloOriginalFuente = limpiarTitulo(originalMatch[1]);
   }
   var portada = metas.portada;
   var descripcion = metas.descripcion;
