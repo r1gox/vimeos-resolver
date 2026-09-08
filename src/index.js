@@ -3878,11 +3878,11 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
         item.titulo || item.nombre
       );
       if (okOrig) {
-        // No pisar uno bueno de la fuente
         if (!item.titulo_original || !tituloOriginalEsCoherente(item.titulo_original, item.slug, item.titulo)) {
           item.titulo_original = meta.titulo_original;
-        }
+        } 
       }
+  // si !okOrig → no tocar item.titulo_original
     }
   }
 
@@ -6273,21 +6273,24 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   delete detalle.original_title;
   delete detalle.image;
 
-    // Original: fuente/slug mandan sobre meta incorrecta
   if (detalle.slug) {
     var fromSlug = tituloDesdeSlug(detalle.slug);
-    if (detalle.titulo_original && !tituloOriginalEsCoherente(detalle.titulo_original, detalle.slug, detalle.titulo)) {
-      // Meta se equivocó (ej. The Dog Stars)
-      if (detalle.titulo_original_fuente && tituloOriginalEsCoherente(detalle.titulo_original_fuente, detalle.slug, detalle.titulo)) {
-        detalle.titulo_original = detalle.titulo_original_fuente;
-      } else if (fromSlug) {
-        detalle.titulo_original = fromSlug; // "The Brink Of War"
+    var orig = detalle.titulo_original || '';
+
+    // Si la fuente ya trajo original coherente, no dejar que meta lo pise
+    if (detalle.titulo_original_fuente) {
+      detalle.titulo_original = detalle.titulo_original_fuente;
+    } else if (orig && !tituloOriginalEsCoherente(orig, detalle.slug, detalle.titulo)) {
+      // Meta inventó otra obra (ej. "El amor es peligroso")
+      if (fromSlug && tituloOriginalEsCoherente(fromSlug, detalle.slug, detalle.titulo)) {
+        detalle.titulo_original = fromSlug;
+      } else if (detalle.titulo) {
+        // Mismo nombre en original (como en la ficha @)
+        detalle.titulo_original = detalle.titulo;
       } else {
         detalle.titulo_original = null;
       }
-    }
-    // Si no hay original, usar slug legible en inglés
-    if (!detalle.titulo_original && fromSlug && fromSlug !== detalle.titulo) {
+    } else if (!orig && fromSlug && fromSlug !== detalle.titulo) {
       detalle.titulo_original = fromSlug;
     }
   }
