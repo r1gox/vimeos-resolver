@@ -299,6 +299,11 @@ async function handleRequest(request, env) {
             : 'pelicula';
           var sid = sourceIdFromName(r.fuente);
           r.titulo = limpiarTitulo(r.titulo || '');
+          // Título basura de la fuente (encoding / slug numérico)
+          if (tituloPareceRoto(r.titulo)) {
+            var fromSlug = tituloDesdeSlug(r.slug);
+            if (fromSlug) r.titulo = fromSlug;
+          }
           if (r.slug) {
             r.url_extract = origin + '/' + sid + '/' + tipoPath + '/' + r.slug;
             r.source_id = sid;
@@ -458,13 +463,21 @@ async function handleRequest(request, env) {
       try {
         resultadoPath = await enriquecerDetalleConTmdb(resultadoPath, tipoRuta);
       } catch (eDet) { /* silencioso */ }
-      if (resultadoPath && (!resultadoPath.portada || esPortadaSospechosa(resultadoPath.portada))) {
-        if (resultadoPath.portada_imdb && esPortadaUrlValida(resultadoPath.portada_imdb)) {
-          resultadoPath.portada = resultadoPath.portada_imdb;
-          resultadoPath.poster_source = 'imdb';
-        } else if (resultadoPath.portada_tmdb && esPortadaUrlValida(resultadoPath.portada_tmdb)) {
-          resultadoPath.portada = resultadoPath.portada_tmdb;
-          resultadoPath.poster_source = 'tmdb';
+      if (resultadoPath) {
+        var portadaOkPath = false;
+        if (resultadoPath.portada && esPortadaUrlValida(resultadoPath.portada) && !esPortadaSospechosa(resultadoPath.portada)) {
+          portadaOkPath = await portadaRespondeOk(resultadoPath.portada, 2500);
+        }
+        if (portadaOkPath) {
+          resultadoPath.poster_source = resultadoPath.poster_source || 'fuente';
+        } else if (!resultadoPath.portada || esPortadaSospechosa(resultadoPath.portada) || !portadaOkPath) {
+          if (resultadoPath.portada_imdb && esPortadaUrlValida(resultadoPath.portada_imdb)) {
+            resultadoPath.portada = resultadoPath.portada_imdb;
+            resultadoPath.poster_source = 'imdb';
+          } else if (resultadoPath.portada_tmdb && esPortadaUrlValida(resultadoPath.portada_tmdb)) {
+            resultadoPath.portada = resultadoPath.portada_tmdb;
+            resultadoPath.poster_source = 'tmdb';
+          }
         }
       }
       if (resultadoPath) {
@@ -519,28 +532,23 @@ async function handleRequest(request, env) {
     try {
       resultado = await enriquecerDetalleConTmdb(resultado, resultado.tipo || '');
     } catch (eUrl) { /* ok */ }
-    if (resultado && (!resultado.portada || esPortadaSospechosa(resultado.portada))) {
-      if (resultado.portada_imdb && esPortadaUrlValida(resultado.portada_imdb)) {
-        resultado.portada = resultado.portada_imdb;
-        resultado.poster_source = 'imdb';
-      } else if (resultado.portada_tmdb && esPortadaUrlValida(resultado.portada_tmdb)) {
-        resultado.portada = resultado.portada_tmdb;
-        resultado.poster_source = 'tmdb';
+      if (resultadoPath) {
+        var portadaOkPath = false;
+        if (resultadoPath.portada && esPortadaUrlValida(resultadoPath.portada) && !esPortadaSospechosa(resultadoPath.portada)) {
+          portadaOkPath = await portadaRespondeOk(resultadoPath.portada, 2500);
+        }
+        if (portadaOkPath) {
+          resultadoPath.poster_source = resultadoPath.poster_source || 'fuente';
+        } else if (!resultadoPath.portada || esPortadaSospechosa(resultadoPath.portada) || !portadaOkPath) {
+          if (resultadoPath.portada_imdb && esPortadaUrlValida(resultadoPath.portada_imdb)) {
+            resultadoPath.portada = resultadoPath.portada_imdb;
+            resultadoPath.poster_source = 'imdb';
+          } else if (resultadoPath.portada_tmdb && esPortadaUrlValida(resultadoPath.portada_tmdb)) {
+            resultadoPath.portada = resultadoPath.portada_tmdb;
+            resultadoPath.poster_source = 'tmdb';
+          }
+        }
       }
-    }
-    if (resultado) {
-      normalizarCamposResultado(resultado);
-      resultado = formatearDetalleRespuesta(resultado, origin);
-    }
-    return json(resultado);
-  } catch (err) {
-    return json({
-      success: false,
-      error: err.message || 'Error al scrapear',
-      fuente: source
-    }, 500);
-  }
-}
 
 /** 1=lamovie, 2=hackstore, 3=pelisplushd, 4=animeav1, 6=doramasflix */
 function normalizarSourceId(s) {
@@ -2535,6 +2543,17 @@ function limpiarTexto(txt) {
       .replace(/Ã“/g, 'Ó').replace(/Ãš/g, 'Ú').replace(/Ã‘/g, 'Ñ')
       .replace(/Ã¼/g, 'ü').replace(/Ãœ/g, 'Ü')
       .replace(/Â¿/g, '¿').replace(/Â¡/g, '¡').replace(/Â/g, '');
+  }
+    // Segunda pasada: mojibake “à®…” (tamil/otros) o restos UTF-8
+  if (tituloPareceRoto(s) || /à®|à¯/.test(s)) {
+    try {
+      var bytes2 = [];
+      for (var j = 0; j < s.length; j++) bytes2.push(s.charCodeAt(j) & 0xff);
+      var fixed2 = new TextDecoder('utf-8').decode(new Uint8Array(bytes2));
+      if (fixed2 && !tituloPareceRoto(fixed2) && fixed2.indexOf('\uFFFD') === -1) {
+        s = fixed2;
+      }
+    } catch (e2) { /* keep s */ }
   }
   return s.replace(/\s+/g, ' ').trim();
 }
@@ -5010,6 +5029,84 @@ function esPortadaUrlValida(url) {
   return true;
 }
 
+
+/**
+ * Comprueba si la imagen de portada responde (200/3xx + content-type imagen).
+ * Timeout corto para no alargar el Worker.
+ */
+async function portadaRespondeOk(url, timeoutMs) {
+  if (!esPortadaUrlValida(url)) return false;
+  var ms = timeoutMs != null ? timeoutMs : 2500;
+  var headers = {
+    'User-Agent': (typeof HEADERS !== 'undefined' && HEADERS['User-Agent'])
+      ? HEADERS['User-Agent']
+      : 'Mozilla/5.0',
+    Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+  };
+  try {
+    // 1) HEAD
+    var res = await fetchWithTimeout(
+      url,
+      { method: 'HEAD', headers: headers, redirect: 'follow' },
+      ms
+    );
+    if (res && (res.status === 200 || res.status === 206)) {
+      var ct = (res.headers.get('content-type') || '').toLowerCase();
+      if (!ct || ct.indexOf('image') !== -1 || ct.indexOf('octet-stream') !== -1) {
+        return true;
+      }
+    }
+    // Algunos CDN no permiten HEAD → GET de 1 byte
+    if (res && (res.status === 403 || res.status === 405 || res.status === 501)) {
+      res = await fetchWithTimeout(
+        url,
+        {
+          method: 'GET',
+          headers: Object.assign({}, headers, { Range: 'bytes=0-0' }),
+          redirect: 'follow',
+        },
+        ms
+      );
+      if (res && (res.status === 200 || res.status === 206)) {
+        var ct2 = (res.headers.get('content-type') || '').toLowerCase();
+        if (!ct2 || ct2.indexOf('image') !== -1 || ct2.indexOf('octet-stream') !== -1) {
+          return true;
+        }
+      }
+    }
+  } catch (e) {
+    /* caído o timeout */
+  }
+  return false;
+}
+
+/** Título ilegible (mojibake / solo números de slug) */
+function tituloPareceRoto(t) {
+  if (!t || typeof t !== 'string') return true;
+  var s = t.trim();
+  if (s.length < 2) return true;
+  if (/^[\d\s\-_.]+$/.test(s)) return true;
+  // Tamil/otros UTF-8 leídos como Latin-1: à® à¯ …
+  var bad = (s.match(/à®|à¯|Ã.|Â.|â€|\uFFFD/g) || []).length;
+  if (bad >= 2) return true;
+  // Muchos caracteres de control / rareza
+  var weird = (s.match(/[^\w\sÀ-ÿ\-:'!?.()]/gi) || []).length;
+  if (s.length > 4 && weird / s.length > 0.45) return true;
+  return false;
+}
+
+function tituloDesdeSlug(slug) {
+  if (!slug) return null;
+  var s = String(slug).replace(/^\/+|\/+$/g, '');
+  // slugs basura tipo 2-1509599
+  if (/^\d+(-\d+)?$/.test(s)) return null;
+  s = s.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (s.length < 2) return null;
+  return s.replace(/\b\w/g, function (c) {
+    return c.toUpperCase();
+  });
+}
+
 function esPortadaImdb(url) {
   if (!esPortadaUrlValida(url)) return false;
   // m.media-amazon.com, images-na.ssl-images-amazon.com, ia.media-imdb.com, etc.
@@ -5343,7 +5440,14 @@ function slimResultadoLista(item, origin) {
     year = ym ? ym[0] : String(year);
   }
   var out = {
-    title: limpiarTitulo(item.titulo || item.nombre || item.title || '') || null,
+    title: (function () {
+      var t = limpiarTitulo(item.titulo || item.nombre || item.title || '') || '';
+      if (tituloPareceRoto(t)) {
+        var fs = tituloDesdeSlug(item.slug);
+        if (fs) t = fs;
+      }
+      return t || null;
+    })(),
     slug: slug,
     url: url,
     portada: image,
