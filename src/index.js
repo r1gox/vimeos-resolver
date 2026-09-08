@@ -4019,7 +4019,16 @@ function tituloOriginalEsCoherente(tituloOrig, slug, tituloLocal) {
     for (var i = 0; i < toks.length; i++) {
       if (o.indexOf(toks[i]) !== -1) hit++;
     }
-    if (toks.length && hit >= Math.ceil(toks.length * 0.6)) return true;
+    //if (toks.length && hit >= Math.ceil(toks.length * 0.6)) return true;
+    if (toks.length) {
+  // Títulos cortos: todos los tokens importantes deben coincidir.
+      if (toks.length <= 3) {
+        if (hit === toks.length) return true;
+      } else {
+    // Títulos largos: permitir pequeñas diferencias.
+        if (hit >= Math.ceil(toks.length * 0.8)) return true;
+      }
+    }
   }
   // Muy parecido al título local (misma obra en otro idioma)
   if (t && (o === t || t.indexOf(o) !== -1 || o.indexOf(t) !== -1)) return true;
@@ -7361,6 +7370,8 @@ async function scrapearPelisplus(pageUrl, opts) {
     link: pageUrl,
     slug: slugFromUrl,
     titulo: titulo,
+    titulo_original: tituloOriginalFuente || null,
+    titulo_original_fuente: tituloOriginalFuente || null,
     portada: portada,
     descripcion: descripcion,
     year: yearMeta,
