@@ -7239,13 +7239,24 @@ async function scrapearPelisplus(pageUrl, opts) {
 
   var metas = extraerMetas(html);
   var titulo = metas.titulo;
-  // Título original indicado explícitamente por PelisPlus con "@"
-  // Título original indicado explícitamente por PelisPlus con "@"
-  var tituloOriginalFuente = null;
-  var originalMatch = html.match(/@\s*([^<\r\n]{2,150})/i);
+  // Título original: "@ The Brink of War" / "@ Amor es amor"
+  var tituloOriginal = null;
+  var htmlSinCss = html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '');
+  var originalMatch = htmlSinCss.match(/(?:^|>|\s)@\s*([^<\r\n]{2,150})/i);
   if (originalMatch) {
-    tituloOriginalFuente = limpiarTitulo(originalMatch[1]);
+    var candidato = originalMatch[1].trim();
+    if (
+      !/^media\b/i.test(candidato) &&
+      !/^font-face\b/i.test(candidato) &&
+      !/^keyframes\b/i.test(candidato) &&
+      !/^import\b/i.test(candidato)
+    ) {
+      tituloOriginal = limpiarTitulo(candidato);
+    }
   }
+
   var portada = metas.portada;
   var descripcion = metas.descripcion;
   var yearMeta = metas.year || null;
