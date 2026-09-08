@@ -464,21 +464,7 @@ async function handleRequest(request, env) {
         resultadoPath = await enriquecerDetalleConTmdb(resultadoPath, tipoRuta);
       } catch (eDet) { /* silencioso */ }
       if (resultadoPath) {
-        var portadaOkPath = false;
-        if (resultadoPath.portada && esPortadaUrlValida(resultadoPath.portada) && !esPortadaSospechosa(resultadoPath.portada)) {
-          portadaOkPath = await portadaRespondeOk(resultadoPath.portada, 2500);
-        }
-        if (portadaOkPath) {
-          resultadoPath.poster_source = resultadoPath.poster_source || 'fuente';
-        } else if (!resultadoPath.portada || esPortadaSospechosa(resultadoPath.portada) || !portadaOkPath) {
-          if (resultadoPath.portada_imdb && esPortadaUrlValida(resultadoPath.portada_imdb)) {
-            resultadoPath.portada = resultadoPath.portada_imdb;
-            resultadoPath.poster_source = 'imdb';
-          } else if (resultadoPath.portada_tmdb && esPortadaUrlValida(resultadoPath.portada_tmdb)) {
-            resultadoPath.portada = resultadoPath.portada_tmdb;
-            resultadoPath.poster_source = 'tmdb';
-          }
-        }
+        await aplicarPortadaPreferirFuente(resultadoPath);
       }
       if (resultadoPath) {
         normalizarCamposResultado(resultadoPath);
@@ -534,21 +520,7 @@ async function handleRequest(request, env) {
     } catch (eUrl) { /* ok */ }
 
     if (resultado) {
-      var portadaOk = false;
-      if (resultado.portada && esPortadaUrlValida(resultado.portada) && !esPortadaSospechosa(resultado.portada)) {
-        portadaOk = await portadaRespondeOk(resultado.portada, 2500);
-      }
-      if (portadaOk) {
-        resultado.poster_source = resultado.poster_source || 'fuente';
-      } else if (!resultado.portada || esPortadaSospechosa(resultado.portada) || !portadaOk) {
-        if (resultado.portada_imdb && esPortadaUrlValida(resultado.portada_imdb)) {
-          resultado.portada = resultado.portada_imdb;
-          resultado.poster_source = 'imdb';
-        } else if (resultado.portada_tmdb && esPortadaUrlValida(resultado.portada_tmdb)) {
-          resultado.portada = resultado.portada_tmdb;
-          resultado.poster_source = 'tmdb';
-        }
-      }
+      await aplicarPortadaPreferirFuente(resultado);
       normalizarCamposResultado(resultado);
       resultado = formatearDetalleRespuesta(resultado, origin);
     }
@@ -5036,6 +5008,56 @@ function esPortadaUrlValida(url) {
   return true;
 }
 
+
+/**
+ * Si la portada de la fuente responde → usarla.
+ * Si no → IMDb → TMDB.
+ */
+async function aplicarPortadaPreferirFuente(item) {
+  if (!item || typeof item !== 'object') return item;
+
+  var candidatas = [];
+  var raw = item.portada_fuente_raw || null;
+
+  function add(u) {
+    if (!u || typeof u !== 'string') return;
+    u = u.trim();
+    if (!esPortadaUrlValida(u)) return;
+    if (candidatas.indexOf(u) !== -1) return;
+    candidatas.push(u);
+  }
+
+  // Preferir full sobre -thumb
+  if (raw) {
+    add(raw.replace(/-thumb\.(jpg|jpeg|png|webp)(\?.*)?$/i, '.$1$2'));
+    add(raw);
+  }
+  // portada actual si aún es de la fuente (no IMDb/TMDB)
+  if (item.portada && !esPortadaImdb(item.portada) && !/image\.tmdb\.org/i.test(String(item.portada))) {
+    add(String(item.portada).replace(/-thumb\.(jpg|jpeg|png|webp)(\?.*)?$/i, '.$1$2'));
+    add(item.portada);
+  }
+
+  for (var i = 0; i < candidatas.length; i++) {
+    try {
+      if (await portadaRespondeOk(candidatas[i], 2500)) {
+        item.portada = candidatas[i];
+        item.poster_source = 'fuente';
+        return item;
+      }
+    } catch (e) { /* siguiente */ }
+  }
+
+  // Fallback meta
+  if (item.portada_imdb && esPortadaUrlValida(item.portada_imdb)) {
+    item.portada = item.portada_imdb;
+    item.poster_source = 'imdb';
+  } else if (item.portada_tmdb && esPortadaUrlValida(item.portada_tmdb)) {
+    item.portada = item.portada_tmdb;
+    item.poster_source = 'tmdb';
+  }
+  return item;
+}
 
 /**
  * Comprueba si la imagen de portada responde (200/3xx + content-type imagen).
