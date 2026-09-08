@@ -532,24 +532,31 @@ async function handleRequest(request, env) {
     try {
       resultado = await enriquecerDetalleConTmdb(resultado, resultado.tipo || '');
     } catch (eUrl) { /* ok */ }
-      if (resultadoPath) {
-        var portadaOkPath = false;
-        if (resultadoPath.portada && esPortadaUrlValida(resultadoPath.portada) && !esPortadaSospechosa(resultadoPath.portada)) {
-          portadaOkPath = await portadaRespondeOk(resultadoPath.portada, 2500);
-        }
-        if (portadaOkPath) {
-          resultadoPath.poster_source = resultadoPath.poster_source || 'fuente';
-        } else if (!resultadoPath.portada || esPortadaSospechosa(resultadoPath.portada) || !portadaOkPath) {
-          if (resultadoPath.portada_imdb && esPortadaUrlValida(resultadoPath.portada_imdb)) {
-            resultadoPath.portada = resultadoPath.portada_imdb;
-            resultadoPath.poster_source = 'imdb';
-          } else if (resultadoPath.portada_tmdb && esPortadaUrlValida(resultadoPath.portada_tmdb)) {
-            resultadoPath.portada = resultadoPath.portada_tmdb;
-            resultadoPath.poster_source = 'tmdb';
-          }
+
+    if (resultado) {
+      var portadaOk = false;
+      if (resultado.portada && esPortadaUrlValida(resultado.portada) && !esPortadaSospechosa(resultado.portada)) {
+        portadaOk = await portadaRespondeOk(resultado.portada, 2500);
+      }
+      if (portadaOk) {
+        resultado.poster_source = resultado.poster_source || 'fuente';
+      } else if (!resultado.portada || esPortadaSospechosa(resultado.portada) || !portadaOk) {
+        if (resultado.portada_imdb && esPortadaUrlValida(resultado.portada_imdb)) {
+          resultado.portada = resultado.portada_imdb;
+          resultado.poster_source = 'imdb';
+        } else if (resultado.portada_tmdb && esPortadaUrlValida(resultado.portada_tmdb)) {
+          resultado.portada = resultado.portada_tmdb;
+          resultado.poster_source = 'tmdb';
         }
       }
-
+      normalizarCamposResultado(resultado);
+      resultado = formatearDetalleRespuesta(resultado, origin);
+    }
+    return json(resultado);
+  } catch (err) {
+    return json({ success: false, error: err.message || 'Error' }, 500);
+  }
+}
 /** 1=lamovie, 2=hackstore, 3=pelisplushd, 4=animeav1, 6=doramasflix */
 function normalizarSourceId(s) {
   s = String(s || '').toLowerCase().trim();
