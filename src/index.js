@@ -5017,25 +5017,32 @@ async function aplicarPortadaPreferirFuente(item) {
   if (!item || typeof item !== 'object') return item;
 
   var candidatas = [];
-  var raw = item.portada_fuente_raw || null;
 
   function add(u) {
     if (!u || typeof u !== 'string') return;
-    u = u.trim();
+    u = String(u).trim();
     if (!esPortadaUrlValida(u)) return;
     if (candidatas.indexOf(u) !== -1) return;
     candidatas.push(u);
   }
 
-  // Preferir full sobre -thumb
+  var raw = item.portada_fuente_raw || null;
+
+  // 1) RAW / thumb primero (en PelisPlus a veces la full es un JPEG de 16 bytes)
+  if (raw) add(raw);
+
+  // 2) Versión “full” (sin -thumb)
   if (raw) {
     add(raw.replace(/-thumb\.(jpg|jpeg|png|webp)(\?.*)?$/i, '.$1$2'));
-    add(raw);
   }
-  // portada actual si aún es de la fuente (no IMDb/TMDB)
+
+  // 3) portada actual si es de la fuente (no IMDb/TMDB)
   if (item.portada && !esPortadaImdb(item.portada) && !/image\.tmdb\.org/i.test(String(item.portada))) {
-    add(String(item.portada).replace(/-thumb\.(jpg|jpeg|png|webp)(\?.*)?$/i, '.$1$2'));
     add(item.portada);
+    // si la actual es full, probar también thumb
+    if (!/-thumb\./i.test(String(item.portada))) {
+      add(String(item.portada).replace(/\.(jpg|jpeg|png|webp)(\?.*)?$/i, '-thumb.$1$2'));
+    }
   }
 
   for (var i = 0; i < candidatas.length; i++) {
@@ -5048,7 +5055,6 @@ async function aplicarPortadaPreferirFuente(item) {
     } catch (e) { /* siguiente */ }
   }
 
-  // Fallback meta
   if (item.portada_imdb && esPortadaUrlValida(item.portada_imdb)) {
     item.portada = item.portada_imdb;
     item.poster_source = 'imdb';
