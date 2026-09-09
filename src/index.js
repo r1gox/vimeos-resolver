@@ -31,7 +31,46 @@ var DORAMASFLIX_GQL = 'https://user-api.fluxcedene.net/graphql';
 var FUTBOLLIBRE_BASE = 'https://futbollibretvhd.org';
 // Metadatos TMDB vía worker público (no cambia el flujo de embeds/fuentes)
 var TMDB_META_API = ''; // desactivado: meta solo de la página fuente (+ TMDB key si hay)
+var FUTBOLLIBRE_IMG_BASE = 'https://img.futbollibrehd.com.pe';
+var FUTBOLLIBRE_IMG_DEFAULT = FUTBOLLIBRE_IMG_BASE + '/uploads/sin_imagen_d36205f0e8.png';
 
+function fechaAgendaEnEspanol(isoDate) {
+  // isoDate: "2026-09-08"
+  var m = String(isoDate || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  var meses = [
+    'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+    'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'
+  ];
+  var dia = parseInt(m[3], 10);
+  var mes = meses[parseInt(m[2], 10) - 1] || m[2];
+  var anio = m[1];
+  return dia + ' de ' + mes + ' de ' + anio;
+}
+
+function portadaDesdeAgendaItem(attr) {
+  try {
+    var img =
+      attr &&
+      attr.country &&
+      attr.country.data &&
+      attr.country.data.attributes &&
+      attr.country.data.attributes.image &&
+      attr.country.data.attributes.image.data &&
+      attr.country.data.attributes.image.data.attributes;
+    if (!img) return FUTBOLLIBRE_IMG_DEFAULT;
+    var path =
+      (img.formats && img.formats.thumbnail && img.formats.thumbnail.url) ||
+      (img.formats && img.formats.small && img.formats.small.url) ||
+      img.url ||
+      null;
+    if (!path) return FUTBOLLIBRE_IMG_DEFAULT;
+    if (path.indexOf('http') === 0) return path;
+    return FUTBOLLIBRE_IMG_BASE + (path.charAt(0) === '/' ? path : '/' + path);
+  } catch (e) {
+    return FUTBOLLIBRE_IMG_DEFAULT;
+  }
+}
 /*
 var REPRODUCTORES_PERMITIDOS = [
   'vimeos.net', 'player.vimeos',
@@ -447,16 +486,7 @@ async function handleRequest(request, env) {
         });
       }
       if (parts[1] === 'agenda') {
-        var agendaFl = await listarFutbollibreAgenda();
-        return json({
-          success: true,
-          fuente: 'futbollibre',
-          source_id: '7',
-          tipo: 'Agenda',
-          link: FUTBOLLIBRE_BASE + '/agenda',
-          items: agendaFl,
-          total: agendaFl.length
-        });
+        return json(await listarFutbollibreAgenda());
       }
       if (parts[1] === 'canal' && parts[2]) {
         return json(await scrapearFutbollibreCanal(parts[2]));
@@ -9223,6 +9253,7 @@ async function listarFutbollibreAgenda() {
   var payload = await res.json();
   var rows = (payload && payload.data) || [];
   var out = [];
+  var fechaIso = null;
 
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i] || {};
@@ -9231,6 +9262,16 @@ async function listarFutbollibreAgenda() {
     var fecha = attr.date_diary || null;
     var hora = attr.diary_hour || null;
     if (hora && /^\d{2}:\d{2}:\d{2}$/.test(hora)) hora = hora.slice(0, 5);
+    if (fecha && !fechaIso) fechaIso = fecha;
+
+    var pais =
+      (attr.country &&
+        attr.country.data &&
+        attr.country.data.attributes &&
+        attr.country.data.attributes.name) ||
+      null;
+
+    var portada = portadaDesdeAgendaItem(attr);
 
     var embedsRaw = (attr.embeds && attr.embeds.data) || [];
     var reproductores = [];
@@ -9243,7 +9284,6 @@ async function listarFutbollibreAgenda() {
       var playUrl = aLinkDirectoTvf90(decodeFutbollibreEmbedIframe(iframePath));
       if (!playUrl || seenUrl[playUrl]) continue;
       seenUrl[playUrl] = 1;
-
       reproductores.push({
         servidor: nombre,
         url: playUrl,
@@ -9257,7 +9297,9 @@ async function listarFutbollibreAgenda() {
       titulo: desc || ('Evento ' + (row.id || '')),
       fecha: fecha,
       hora: hora,
-      fecha_hora: fecha && hora ? fecha + 'T' + (attr.diary_hour || hora) : null,
+      fecha_hora: fecha && attr.diary_hour ? fecha + 'T' + attr.diary_hour : null,
+      pais: pais,
+      portada: portada,
       tipo: 'Evento',
       fuente: 'futbollibre',
       source_id: '7',
@@ -9273,7 +9315,23 @@ async function listarFutbollibreAgenda() {
     return ka < kb ? -1 : ka > kb ? 1 : 0;
   });
 
-  return out;
+  var fechaTexto = fechaAgendaEnEspanol(fechaIso) || fechaIso || '';
+  var tituloAgenda = fechaTexto ? ('Agenda - ' + fechaTexto) : 'Agenda';
+
+  // Devuelve objeto completo (no solo el array)
+  return {
+    success: true,
+    fuente: 'futbollibre',
+    source_id: '7',
+    tipo: 'Agenda',
+    titulo: tituloAgenda,
+    fecha: fechaIso,
+    fecha_texto: fechaTexto,
+    link: FUTBOLLIBRE_BASE + '/agenda',
+    actualizado: true,
+    items: out,
+    total: out.length
+  };
 }
 
 function aLinkDirectoTvf90(url) {
