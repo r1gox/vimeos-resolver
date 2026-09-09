@@ -1649,11 +1649,21 @@ async function handleProxy(request, targetUrl) {
     if (refParam) {
       headers['Referer'] = refParam;
       try { headers['Origin'] = new URL(refParam).origin; } catch (eR) {}
+    } else if (/ftlly\.com/i.test(host)) {
+      // Protección ftlly: exige contexto de tvf90
+      headers['Referer'] = 'https://tvf90.com/';
+      headers['Origin'] = 'https://tvf90.com';
     } else if (host.indexOf('vimeos') !== -1) {
       headers['Referer'] = 'https://vimeos.net/';
     } else if (host) {
       headers['Referer'] = 'https://' + host + '/';
       headers['Origin'] = 'https://' + host;
+    }
+
+    // ftlly: aunque venga ref raro, priorizar tvf90
+    if (/ftlly\.com/i.test(host)) {
+      headers['Referer'] = 'https://tvf90.com/';
+      headers['Origin'] = 'https://tvf90.com';
     }
   } catch (e) {}
 
