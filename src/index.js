@@ -511,10 +511,11 @@ async function handleRequest(request, env) {
           success: true,
           fuente: 'futbollibre',
           player: aLinkDirectoTvf90(player),
+          player_url: aLinkDirectoTvf90(player),
+          stream_name: streamQ || null,
+          // stream_url solo informativo; el dispositivo debe resolver 5.php
           stream_url: m3u8,
-          stream_proxy: proxyFutbollibreStream(originFl, m3u8),
-          tipo: 'hls',
-          nota: 'Token temporal: vuelve a llamar /7/resolve al reproducir'
+          nota: 'Para Roku/móvil: GET player_url en el dispositivo y extraer playbackURL. No usar stream_url del Worker si da 403.'
         });
       }
 
@@ -9401,19 +9402,25 @@ async function listarFutbollibreAgenda() {
       var playUrl = aLinkDirectoTvf90(decodeFutbollibreEmbedIframe(iframePath));
       if (!playUrl || seenUrl[playUrl]) continue;
       seenUrl[playUrl] = 1;
+      var streamName = null;
+      var mSt = String(playUrl || '').match(/[?&]stream=([a-z0-9_\-]+)/i);
+      if (mSt) streamName = mSt[1];
+
+      playUrl = aLinkDirectoTvf90(playUrl) || playUrl;
+
       reproductores.push({
         servidor: nombre,
-        url: playUrl,          // https://tvf90.com/5.php?stream=espn
-        tipo: 'embed',
-        fuente: 'futbollibre',
-        stream_url: null,
-        stream_proxy: null
+        url: playUrl,
+        player_url: playUrl,
+        stream_name: streamName,
+        tipo: 'hls',
+        fuente: 'futbollibre'
       });
     }
         // Resolver m3u8 (token fresco). Máx 4 servers por evento para no saturar.
     var origin = '';
     try { origin = __LAST_ORIGIN__ || ''; } catch (eO) {}
-    for (var ri = 0; ri < Math.min(reproductores.length, 6); ri++) {
+    /*for (var ri = 0; ri < Math.min(reproductores.length, 6); ri++) {
       var play = aLinkDirectoTvf90(reproductores[ri].url) || reproductores[ri].url;
       reproductores[ri].url = play; // dejar 5.php en url
       var m3u8 = await resolverFutbollibreM3u8(play);
@@ -9422,7 +9429,7 @@ async function listarFutbollibreAgenda() {
         reproductores[ri].stream_proxy = proxyFutbollibreStream(origin, m3u8);
         reproductores[ri].tipo = 'hls';
       }
-    }
+    }*/
 
     out.push({
       id: row.id || null,
