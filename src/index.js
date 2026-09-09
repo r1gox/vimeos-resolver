@@ -28,9 +28,49 @@ var PELISPLUS_BASE = 'https://www.pelisplushd.la';
 var ANIMEAV1_BASE = 'https://animeav1.com';
 var DORAMASFLIX_BASE = 'https://doramasflix.io';
 var DORAMASFLIX_GQL = 'https://user-api.fluxcedene.net/graphql';
+var FUTBOLLIBRE_BASE = 'https://futbollibretvhd.org';
 // Metadatos TMDB vía worker público (no cambia el flujo de embeds/fuentes)
 var TMDB_META_API = ''; // desactivado: meta solo de la página fuente (+ TMDB key si hay)
+var FUTBOLLIBRE_IMG_BASE = 'https://img.futbollibrehd.com.pe';
+var FUTBOLLIBRE_IMG_DEFAULT = FUTBOLLIBRE_IMG_BASE + '/uploads/sin_imagen_d36205f0e8.png';
 
+function fechaAgendaEnEspanol(isoDate) {
+  // isoDate: "2026-09-08"
+  var m = String(isoDate || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  var meses = [
+    'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+    'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'
+  ];
+  var dia = parseInt(m[3], 10);
+  var mes = meses[parseInt(m[2], 10) - 1] || m[2];
+  var anio = m[1];
+  return dia + ' de ' + mes + ' de ' + anio;
+}
+
+function portadaDesdeAgendaItem(attr) {
+  try {
+    var img =
+      attr &&
+      attr.country &&
+      attr.country.data &&
+      attr.country.data.attributes &&
+      attr.country.data.attributes.image &&
+      attr.country.data.attributes.image.data &&
+      attr.country.data.attributes.image.data.attributes;
+    if (!img) return FUTBOLLIBRE_IMG_DEFAULT;
+    var path =
+      (img.formats && img.formats.thumbnail && img.formats.thumbnail.url) ||
+      (img.formats && img.formats.small && img.formats.small.url) ||
+      img.url ||
+      null;
+    if (!path) return FUTBOLLIBRE_IMG_DEFAULT;
+    if (path.indexOf('http') === 0) return path;
+    return FUTBOLLIBRE_IMG_BASE + (path.charAt(0) === '/' ? path : '/' + path);
+  } catch (e) {
+    return FUTBOLLIBRE_IMG_DEFAULT;
+  }
+}
 /*
 var REPRODUCTORES_PERMITIDOS = [
   'vimeos.net', 'player.vimeos',
@@ -238,7 +278,8 @@ async function handleRequest(request, env) {
         '2': 'hackstore',
         '3': 'pelisplushd',
         '4': 'animeav1',
-        '6': 'doramasflix'
+        '6': 'doramasflix',
+        '7': 'futbollibre'
       },
       endpoints: {
         search: origin + '/search?q={texto}',
@@ -264,7 +305,10 @@ async function handleRequest(request, env) {
         streamwish_streamurl: origin + '/wish/streamurl?url={embed_streamwish}',
         vidhide_streamurl: origin + '/vidhide/streamurl?url={embed}',
         voe_streamurl: origin + '/voe/streamurl?url={embed}',
-        goodstream_streamurl: origin + '/goodstream/streamurl?url={embed}'
+        goodstream_streamurl: origin + '/goodstream/streamurl?url={embed}',
+        futbollibre_canales: origin + '/7/canales',
+        futbollibre_agenda: origin + '/7/agenda',
+        futbollibre_canal: origin + '/7/canal/{slug}'
       },
       ejemplos: {
         buscar: origin + '/search?q=acaramelados',
@@ -299,6 +343,11 @@ async function handleRequest(request, env) {
             : 'pelicula';
           var sid = sourceIdFromName(r.fuente);
           r.titulo = limpiarTitulo(r.titulo || '');
+          // Título basura de la fuente (encoding / slug numérico)
+          if (tituloPareceRoto(r.titulo)) {
+            var fromSlug = tituloDesdeSlug(r.slug);
+            if (fromSlug) r.titulo = fromSlug;
+          }
           if (r.slug) {
             r.url_extract = origin + '/' + sid + '/' + tipoPath + '/' + r.slug;
             r.source_id = sid;
@@ -327,6 +376,8 @@ async function handleRequest(request, env) {
     }
   }
 
+
+  
   // ---------- episodePostId (compat) ----------
   var episodePostId = url.searchParams.get('episodePostId');
   if (episodePostId) {
@@ -419,6 +470,74 @@ async function handleRequest(request, env) {
     }
   }
 
+
+  // ---------- LIVE: futbollibretvhd (7) — canales + agenda ----------
+  // ---------- LIVE: futbollibretvhd (7) — canales + agenda ----------
+  if (parts[0] === '7' || parts[0] === 'futbollibre' || parts[0] === 'futbol' || parts[0] === 'fltv') {
+    try {
+      if (!parts[1] || parts[1] === 'canales') {
+        var itemsFl = await listarFutbollibreCanales();
+        return json({
+          success: true,
+          fuente: 'futbollibre',
+          source_id: '7',
+          tipo: 'Canales',
+          items: itemsFl,
+          total: itemsFl.length
+        });
+      }
+      if (parts[1] === 'agenda') {
+        return json(await listarFutbollibreAgenda());
+      }
+      if (parts[1] === 'canal' && parts[2]) {
+        return json(await scrapearFutbollibreCanal(parts[2]));
+      }
+
+      // ← AQUÍ el resolve (después de canal, antes del error de uso)
+      // /7/resolve?stream=espn  o  /7/resolve?url=https://tvf90.com/5.php?stream=espn
+      if (parts[1] === 'resolve') {
+        var streamQ = url.searchParams.get('stream');
+        var urlQ = url.searchParams.get('url');
+        var player = urlQ || (streamQ ? ('https://tvf90.com/5.php?stream=' + encodeURIComponent(streamQ)) : null);
+        if (!player) {
+          return json({ success: false, error: 'Uso: /7/resolve?stream=espn' }, 400);
+        }
+        var m3u8 = await resolverFutbollibreM3u8(player);
+        if (!m3u8) {
+          return json({ success: false, error: 'No se pudo obtener m3u8', player: player }, 502);
+        }
+        var originFl = new URL(request.url).origin;
+        return json({
+          success: true,
+          fuente: 'futbollibre',
+          player: aLinkDirectoTvf90(player),
+          stream_url: m3u8,
+          stream_proxy: proxyFutbollibreStream(originFl, m3u8),
+          tipo: 'hls',
+          nota: 'Token temporal: vuelve a llamar /7/resolve al reproducir'
+        });
+      }
+
+      return json({
+        success: false,
+        error: 'Uso: /7/canales | /7/agenda | /7/canal/{slug} | /7/resolve?stream=espn',
+        ejemplos: [
+          origin + '/7/canales',
+          origin + '/7/agenda',
+          origin + '/7/canal/espn-1',
+          origin + '/7/resolve?stream=espn'
+        ]
+      }, 400);
+    } catch (errFl) {
+      return json({
+        success: false,
+        fuente: 'futbollibre',
+        source_id: '7',
+        error: errFl.message || String(errFl)
+      }, 502);
+    }
+  }
+  
   // ---------- Rutas con ID: /{id}/serie|pelicula|anime/{slug}[/{s}/{e}] ----------
   // parts[0] puede ser 1|2|3|lamovie|hackstore|pelisplushd
   var pathSource = normalizarSourceId(parts[0] || '');
@@ -458,14 +577,8 @@ async function handleRequest(request, env) {
       try {
         resultadoPath = await enriquecerDetalleConTmdb(resultadoPath, tipoRuta);
       } catch (eDet) { /* silencioso */ }
-      if (resultadoPath && (!resultadoPath.portada || esPortadaSospechosa(resultadoPath.portada))) {
-        if (resultadoPath.portada_imdb && esPortadaUrlValida(resultadoPath.portada_imdb)) {
-          resultadoPath.portada = resultadoPath.portada_imdb;
-          resultadoPath.poster_source = 'imdb';
-        } else if (resultadoPath.portada_tmdb && esPortadaUrlValida(resultadoPath.portada_tmdb)) {
-          resultadoPath.portada = resultadoPath.portada_tmdb;
-          resultadoPath.poster_source = 'tmdb';
-        }
+      if (resultadoPath) {
+        await aplicarPortadaPreferirFuente(resultadoPath);
       }
       if (resultadoPath) {
         normalizarCamposResultado(resultadoPath);
@@ -519,29 +632,17 @@ async function handleRequest(request, env) {
     try {
       resultado = await enriquecerDetalleConTmdb(resultado, resultado.tipo || '');
     } catch (eUrl) { /* ok */ }
-    if (resultado && (!resultado.portada || esPortadaSospechosa(resultado.portada))) {
-      if (resultado.portada_imdb && esPortadaUrlValida(resultado.portada_imdb)) {
-        resultado.portada = resultado.portada_imdb;
-        resultado.poster_source = 'imdb';
-      } else if (resultado.portada_tmdb && esPortadaUrlValida(resultado.portada_tmdb)) {
-        resultado.portada = resultado.portada_tmdb;
-        resultado.poster_source = 'tmdb';
-      }
-    }
+
     if (resultado) {
+      await aplicarPortadaPreferirFuente(resultado);
       normalizarCamposResultado(resultado);
       resultado = formatearDetalleRespuesta(resultado, origin);
     }
     return json(resultado);
   } catch (err) {
-    return json({
-      success: false,
-      error: err.message || 'Error al scrapear',
-      fuente: source
-    }, 500);
+    return json({ success: false, error: err.message || 'Error' }, 500);
   }
 }
-
 /** 1=lamovie, 2=hackstore, 3=pelisplushd, 4=animeav1, 6=doramasflix */
 function normalizarSourceId(s) {
   s = String(s || '').toLowerCase().trim();
@@ -713,6 +814,14 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
   // si lamovie falla, se prueba pelisplus/hackstore del MISMO tipo.
   // animeav1 ya no está en candidatos de pelicula.
 
+  if (sourceParam) {
+    var soloForced = [];
+    for (var fi = 0; fi < candidatos.length; fi++) {
+      if (candidatos[fi].fuente === sourceParam) soloForced.push(candidatos[fi]);
+    }
+    if (soloForced.length) candidatos = soloForced;
+  }
+  
   // Cascada: primera fuente que responda bien gana. Sin fusión entre fuentes.
   var lastErr = null;
 
@@ -848,7 +957,12 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     }
   }
 
-  throw lastErr || new Error('No se encontro "' + slug + '" en ninguna fuente');
+  throw new Error(
+  (sourceParam
+    ? ('No se encontro "' + slug + '" en ' + sourceParam)
+    : ('No se encontro "' + slug + '" en ninguna fuente')) +
+  (lastErr && lastErr.message ? (': ' + lastErr.message) : '')
+  );
 }
 
 /** Normaliza URL de embed para deduplicar entre fuentes (misma URL = mismo player) */
@@ -1526,8 +1640,7 @@ function rewriteM3u8(body, baseUrl, proxyBase) {
 async function handleProxy(request, targetUrl) {
   var headers = {
     'User-Agent': HEADERS['User-Agent'],
-    'Accept': '*/*',
-    'Accept-Language': HEADERS['Accept-Language'] || 'es-ES,es;q=0.9,en;q=0.8'
+    'Accept': '*/*'
   };
   try {
     var reqUrl = new URL(request.url);
@@ -1536,35 +1649,27 @@ async function handleProxy(request, targetUrl) {
     if (refParam) {
       headers['Referer'] = refParam;
       try { headers['Origin'] = new URL(refParam).origin; } catch (eR) {}
+    } else if (/ftlly\.com/i.test(host)) {
+      // Protección ftlly: exige contexto de tvf90
+      headers['Referer'] = 'https://tvf90.com/';
+      headers['Origin'] = 'https://tvf90.com';
     } else if (host.indexOf('vimeos') !== -1) {
       headers['Referer'] = 'https://vimeos.net/';
     } else if (host) {
       headers['Referer'] = 'https://' + host + '/';
       headers['Origin'] = 'https://' + host;
     }
+
+    // ftlly: aunque venga ref raro, priorizar tvf90
+    if (/ftlly\.com/i.test(host)) {
+      headers['Referer'] = 'https://tvf90.com/';
+      headers['Origin'] = 'https://tvf90.com';
+    }
   } catch (e) {}
 
   var upstream = await fetchWithTimeout(targetUrl, { headers: headers, redirect: 'follow' }, 15000);
   var ct = (upstream.headers.get('content-type') || '').toLowerCase();
   var buf = await upstream.arrayBuffer();
-
-  // IMPORTANTE: si el origen rechazó el pedido (403/404/5xx, ej. paginas de
-  // "streamer protection"), NO hay que devolver ese cuerpo como si fuera
-  // video/m3u8 valido -> el navegador/hls.js espera un stream real y recibe
-  // texto/HTML con Content-Type de video, lo cual rompe con
-  // ERR_INVALID_RESPONSE en vez de mostrar un error claro y entendible.
-  if (!upstream.ok) {
-    var errText = '';
-    try { errText = new TextDecoder().decode(buf).slice(0, 300); } catch (eTx) {}
-    return json({
-      success: false,
-      error: 'El origen rechazo el pedido (status ' + upstream.status + ')',
-      upstream_status: upstream.status,
-      upstream_message: errText || null,
-      url: targetUrl
-    }, 502);
-  }
-
   var isM3u8 = ct.indexOf('mpegurl') !== -1 || ct.indexOf('m3u8') !== -1 ||
     /\.m3u8(\?|$)/i.test(targetUrl) || /\.txt(\?|$)/i.test(targetUrl);
 
@@ -1587,14 +1692,6 @@ async function handleProxy(request, targetUrl) {
         })
       });
     }
-    // Content-Type decia m3u8 pero el cuerpo no tiene tags #EXT -> no es
-    // una playlist real (probablemente otra pagina de bloqueo/error).
-    return json({
-      success: false,
-      error: 'El origen respondio 200 pero el contenido no es una playlist HLS valida',
-      url: targetUrl,
-      preview: text.slice(0, 300)
-    }, 502);
   }
 
   var h = Object.assign({}, corsHeaders(), {
@@ -2549,6 +2646,17 @@ function limpiarTexto(txt) {
       .replace(/Ã“/g, 'Ó').replace(/Ãš/g, 'Ú').replace(/Ã‘/g, 'Ñ')
       .replace(/Ã¼/g, 'ü').replace(/Ãœ/g, 'Ü')
       .replace(/Â¿/g, '¿').replace(/Â¡/g, '¡').replace(/Â/g, '');
+  }
+    // Segunda pasada: mojibake “à®…” (tamil/otros) o restos UTF-8
+  if (tituloPareceRoto(s) || /à®|à¯/.test(s)) {
+    try {
+      var bytes2 = [];
+      for (var j = 0; j < s.length; j++) bytes2.push(s.charCodeAt(j) & 0xff);
+      var fixed2 = new TextDecoder('utf-8').decode(new Uint8Array(bytes2));
+      if (fixed2 && !tituloPareceRoto(fixed2) && fixed2.indexOf('\uFFFD') === -1) {
+        s = fixed2;
+      }
+    } catch (e2) { /* keep s */ }
   }
   return s.replace(/\s+/g, ' ').trim();
 }
@@ -3729,16 +3837,30 @@ function metaCoincideConItem(item, meta) {
   var eItem = extras(tItem);
   var eMeta = extras(tMeta);
 
-  if (eItem.length) {
-    var shared = 0;
-    for (var i = 0; i < eItem.length; i++) {
-      if (tMeta.indexOf(eItem[i]) !== -1) shared++;
-    }
-    if (shared === 0) return false;
-    if (shared < Math.ceil(eItem.length / 2)) return false;
-  } else {
-    if (eMeta.length > 0) return false;
+  if (!eItem.length) return false;
+
+  var shared = 0;
+  for (var i = 0; i < eItem.length; i++) {
+    if (tMeta.indexOf(eItem[i]) !== -1) shared++;
   }
+  if (shared === 0) return false;
+
+  // 1–2 palabras clave: deben coincidir TODAS (no solo "maldicion")
+  if (eItem.length <= 2) {
+    if (shared < eItem.length) return false;
+  } else {
+    if (shared < Math.ceil(eItem.length * 0.7)) return false;
+  }
+
+  // Si el meta trae muchas palabras de otra obra → rechazar
+  var extraMeta = 0;
+  for (var j = 0; j < eMeta.length; j++) {
+    if ((tItem || '').indexOf(eMeta[j]) === -1 &&
+        (typeof tSlug !== 'undefined' ? (tSlug || '') : '').indexOf(eMeta[j]) === -1) {
+      extraMeta++;
+    }
+  }
+  if (extraMeta >= 2 && shared < eItem.length) return false;
 
   return true;
 }
@@ -3746,16 +3868,72 @@ function metaCoincideConItem(item, meta) {
 function aplicarMetaAResultadoBusqueda(item, meta) {
   if (!item || !meta) return item;
 
+  
   var coincide = metaCoincideConItem(item, meta);
-  // Si IMDb ya filtró por año (year fuente = year meta) y trajo imdb_id,
-  // confiar en el match aunque el título IMDb sea distinto ("La captura" vs "Facing El Chapo")
+  // Mismo año + imdb → aceptar (La captura / Facing El Chapo, Vértigo 2 / Fall 2)
+ // var yIt0 = extraerYearItem(item);
+  //var yMt0 = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
+//  if (!coincide && meta.imdb_id && yIt0 && yMt0 && String(yIt0) === String(yMt0)) {
+ //   coincide = true;
+ // }
+//  var sinPortada = !item.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(item.portada));
+
+  // Mismo año + imdb: traducciones OK; otra obra con palabras distintas → NO
   var yIt0 = extraerYearItem(item);
   var yMt0 = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
   if (!coincide && meta.imdb_id && yIt0 && yMt0 && String(yIt0) === String(yMt0)) {
-    coincide = true;
+    var STOPX = {
+      the:1, and:1, film:1, movie:1, del:1, de:1, la:1, el:1, los:1, las:1,
+      un:1, una:1, y:1, o:1, en:1, a:1, for:1, of:1, to:1, part:1, parte:1
+    };
+    function extrasX(t) {
+      return normalizarTituloKey(t || '').split(/\s+/).filter(function (w) {
+        return w.length >= 4 && !STOPX[w];
+      });
+    }
+    var tLoc = item.titulo || '';
+    var tMeta = meta.titulo_original || meta.titulo_tmdb || '';
+    var tSlug = String(item.slug || '').replace(/-/g, ' ');
+    var eLoc = extrasX(tLoc + ' ' + tSlug);
+    var eMeta = extrasX(tMeta);
+    var sharedX = 0, missingX = 0;
+    for (var xi = 0; xi < eLoc.length; xi++) {
+      if (normalizarTituloKey(tMeta).indexOf(eLoc[xi]) !== -1) sharedX++;
+      else missingX++;
+    }
+    var extraX = 0;
+    var tLocN = normalizarTituloKey(tLoc + ' ' + tSlug);
+    for (var xj = 0; xj < eMeta.length; xj++) {
+      if (tLocN.indexOf(eMeta[xj]) === -1) extraX++;
+    }
+    // Ej: falta "tiburon" y meta tiene familia/barrio/partido
+    var conflictoTitulo = sharedX >= 1 && missingX >= 1 && extraX >= 2 && sharedX < eLoc.length;
+
+    if (!conflictoTitulo) {
+      coincide = true;
+    } else {
+      var actHits = 0;
+      if (Array.isArray(item.actores) && meta.descripcion) {
+        var dL = String(meta.descripcion).toLowerCase();
+        for (var ai = 0; ai < Math.min(item.actores.length, 6); ai++) {
+          var ap = String(item.actores[ai] || '').split(/\s+/);
+          var last = ap[ap.length - 1] || '';
+          if (last.length >= 5 && dL.indexOf(last.toLowerCase()) !== -1) actHits++;
+        }
+      }
+      if (actHits >= 1) {
+        coincide = true;
+      } else if (item.descripcion && meta.descripcion &&
+        String(item.descripcion).length > 40 && String(meta.descripcion).length > 40 &&
+        similitudDescripcion(item.descripcion, meta.descripcion) >= 0.12) {
+        coincide = true;
+      }
+    }
   }
   var sinPortada = !item.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(item.portada));
 
+
+  
   // Soft poster: solo si NO hay conflicto de año (evita portada 2012 en película 2026)
   if (!coincide) {
     var yItemSoft = extraerYearItem(item);
@@ -3815,7 +3993,22 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
     }
   }
   if (meta.titulo_tmdb) item.titulo_tmdb = meta.titulo_tmdb;
-  if (meta.titulo_original) item.titulo_original = meta.titulo_original;
+  if (coincide && meta.titulo_original) {
+    // Solo aceptar titulo_original de meta si coincide con slug o título local
+    if (meta.titulo_original) {
+      var okOrig = tituloOriginalEsCoherente(
+        meta.titulo_original,
+        item.slug,
+        item.titulo || item.nombre
+      );
+      if (okOrig) {
+        if (!item.titulo_original || !tituloOriginalEsCoherente(item.titulo_original, item.slug, item.titulo)) {
+          item.titulo_original = meta.titulo_original;
+        } 
+      }
+  // si !okOrig → no tocar item.titulo_original
+    }
+  }
 
   // Portada: preferir IMDb cuando el match es válido (año OK)
   var yItemP = extraerYearItem(item);
@@ -3932,6 +4125,39 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   return item;
 }
 
+
+
+/** ¿El original de meta/fuente encaja con el slug? (evita "The Dog Stars" en the-brink-of-war) */
+function tituloOriginalEsCoherente(tituloOrig, slug, tituloLocal) {
+  if (!tituloOrig) return false;
+  var o = normalizarTituloKey(tituloOrig);
+  var s = normalizarTituloKey(String(slug || '').replace(/-/g, ' '));
+  var t = normalizarTituloKey(tituloLocal || '');
+  if (!o) return false;
+  // Coincide con slug
+  if (s && (o === s || o.indexOf(s) !== -1 || s.indexOf(o) !== -1)) return true;
+  // Tokens del slug en el original
+  if (s) {
+    var toks = s.split(/\s+/).filter(function (w) { return w.length >= 3; });
+    var hit = 0;
+    for (var i = 0; i < toks.length; i++) {
+      if (o.indexOf(toks[i]) !== -1) hit++;
+    }
+    //if (toks.length && hit >= Math.ceil(toks.length * 0.6)) return true;
+    if (toks.length) {
+  // Títulos cortos: todos los tokens importantes deben coincidir.
+      if (toks.length <= 3) {
+        if (hit === toks.length) return true;
+      } else {
+    // Títulos largos: permitir pequeñas diferencias.
+        if (hit >= Math.ceil(toks.length * 0.8)) return true;
+      }
+    }
+  }
+  // Muy parecido al título local (misma obra en otro idioma)
+  if (t && (o === t || t.indexOf(o) !== -1 || o.indexOf(t) !== -1)) return true;
+  return false;
+}
 /**
  * Variantes de query para maximizar hits en IMDb/OMDb.
  * Títulos JP largos: "One Piece 3D2Y: Ace no Shi wo Koete!..."
@@ -4952,6 +5178,146 @@ function esPortadaUrlValida(url) {
   return true;
 }
 
+
+/**
+ * Si la portada de la fuente responde → usarla.
+ * Si no → IMDb → TMDB.
+ */
+async function aplicarPortadaPreferirFuente(item) {
+  if (!item || typeof item !== 'object') return item;
+
+  var candidatas = [];
+
+  function add(u) {
+    if (!u || typeof u !== 'string') return;
+    u = String(u).trim();
+    if (!esPortadaUrlValida(u)) return;
+    if (candidatas.indexOf(u) !== -1) return;
+    candidatas.push(u);
+  }
+
+  var raw = item.portada_fuente_raw || null;
+
+  // 1) RAW / thumb primero (en PelisPlus a veces la full es un JPEG de 16 bytes)
+  if (raw) add(raw);
+
+  // 2) Versión “full” (sin -thumb)
+  if (raw) {
+    add(raw.replace(/-thumb\.(jpg|jpeg|png|webp)(\?.*)?$/i, '.$1$2'));
+  }
+
+  // 3) portada actual si es de la fuente (no IMDb/TMDB)
+  if (item.portada && !esPortadaImdb(item.portada) && !/image\.tmdb\.org/i.test(String(item.portada))) {
+    add(item.portada);
+    // si la actual es full, probar también thumb
+    if (!/-thumb\./i.test(String(item.portada))) {
+      add(String(item.portada).replace(/\.(jpg|jpeg|png|webp)(\?.*)?$/i, '-thumb.$1$2'));
+    }
+  }
+
+  for (var i = 0; i < candidatas.length; i++) {
+    try {
+      if (await portadaRespondeOk(candidatas[i], 2500)) {
+        item.portada = candidatas[i];
+        item.poster_source = 'fuente';
+        return item;
+      }
+    } catch (e) { /* siguiente */ }
+  }
+
+  if (item.portada_imdb && esPortadaUrlValida(item.portada_imdb)) {
+    item.portada = item.portada_imdb;
+    item.poster_source = 'imdb';
+  } else if (item.portada_tmdb && esPortadaUrlValida(item.portada_tmdb)) {
+    item.portada = item.portada_tmdb;
+    item.poster_source = 'tmdb';
+  }
+  return item;
+}
+
+/**
+ * Comprueba si la imagen de portada responde (200/3xx + content-type imagen).
+ * Timeout corto para no alargar el Worker.
+ */
+async function portadaRespondeOk(url, timeoutMs) {
+  if (!esPortadaUrlValida(url)) return false;
+  var ms = timeoutMs != null ? timeoutMs : 2500;
+  var MIN_BYTES = 2000; // JPEGs vacíos de PelisPlus ~16 bytes
+  var headers = {
+    'User-Agent': (typeof HEADERS !== 'undefined' && HEADERS['User-Agent'])
+      ? HEADERS['User-Agent']
+      : 'Mozilla/5.0',
+    Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+  };
+
+  try {
+    // GET: hace falta tamaño real (HEAD a veces no trae content-length fiable)
+    var res = await fetchWithTimeout(
+      url,
+      { method: 'GET', headers: headers, redirect: 'follow' },
+      ms
+    );
+    if (!res || !(res.status === 200 || res.status === 206)) return false;
+
+    var ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (ct && ct.indexOf('image') === -1 && ct.indexOf('octet-stream') === -1) {
+      return false;
+    }
+
+    var cl = parseInt(res.headers.get('content-length') || '0', 10);
+    if (cl > 0 && cl < MIN_BYTES) return false;
+
+    try {
+      var buf = await res.arrayBuffer();
+      if (!buf || buf.byteLength < MIN_BYTES) return false;
+    } catch (e2) {
+      return false;
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+
+/** Título legible desde slug: codigo-venganza → Codigo Venganza */
+function tituloDesdeSlug(slug) {
+  if (!slug) return null;
+  var s = String(slug).replace(/^\/+|\/+$/g, '');
+
+  // Slugs basura tipo 2-1509599 → no inventar título
+  if (/^\d+(-\d+)?$/.test(s)) return null;
+
+  // Quitar año al final: nombre-2024
+  s = s.replace(/-\d{4}$/, '');
+  s = s.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (s.length < 2) return null;
+
+  // Capitalizar
+  s = s.replace(/\b([a-záéíóúñü])/gi, function (c) {
+    return c.toUpperCase();
+  });
+
+  return typeof limpiarTitulo === 'function' ? limpiarTitulo(s) : s;
+}
+
+/** Título ilegible (mojibake / solo números de slug) */
+function tituloPareceRoto(t) {
+  if (!t || typeof t !== 'string') return true;
+  var s = t.trim();
+  if (s.length < 2) return true;
+  if (/^[\d\s\-_.]+$/.test(s)) return true;
+  // Tamil/otros UTF-8 leídos como Latin-1: à® à¯ …
+  var bad = (s.match(/à®|à¯|Ã.|Â.|â€|\uFFFD/g) || []).length;
+  if (bad >= 2) return true;
+  // Muchos caracteres de control / rareza
+  var weird = (s.match(/[^\w\sÀ-ÿ\-:'!?.()]/gi) || []).length;
+  if (s.length > 4 && weird / s.length > 0.45) return true;
+  return false;
+}
+
+
+
 function esPortadaImdb(url) {
   if (!esPortadaUrlValida(url)) return false;
   // m.media-amazon.com, images-na.ssl-images-amazon.com, ia.media-imdb.com, etc.
@@ -5285,7 +5651,14 @@ function slimResultadoLista(item, origin) {
     year = ym ? ym[0] : String(year);
   }
   var out = {
-    title: limpiarTitulo(item.titulo || item.nombre || item.title || '') || null,
+    title: (function () {
+      var t = limpiarTitulo(item.titulo || item.nombre || item.title || '') || '';
+      if (tituloPareceRoto(t)) {
+        var fs = tituloDesdeSlug(item.slug);
+        if (fs) t = fs;
+      }
+      return t || null;
+    })(),
     slug: slug,
     url: url,
     portada: image,
@@ -5622,12 +5995,11 @@ function formatearDetalleRespuesta(item, origin) {
   var portada = item.portada || item.portada_imdb || item.portada_tmdb || null;
   var titulo = limpiarTitulo(item.titulo || '') || null;
   var tituloOrig = item.titulo_original || null;
+  var tituloOrig = item.titulo_original || null;
   if (!tituloOrig && item.titulo_tmdb && String(item.titulo_tmdb).toLowerCase() !== String(titulo || '').toLowerCase()) {
     tituloOrig = item.titulo_tmdb;
   }
-  if (tituloOrig && titulo && String(tituloOrig).toLowerCase() === String(titulo).toLowerCase()) {
-    tituloOrig = null;
-  }
+  // NO borrar si es igual al título (PelisPlus: @ Amor es amor)
 
   // Estado unificado (series)
   var estado = item.estado || null;
@@ -5660,6 +6032,9 @@ function formatearDetalleRespuesta(item, origin) {
     titulo: titulo,
     titulo_original: tituloOrig,
     portada: portada,
+    portada_fuente_raw: item.portada_fuente_raw || null,
+    portada_imdb: item.portada_imdb || null,
+    portada_tmdb: item.portada_tmdb || null,
     backdrop: item.backdrop || null,
     descripcion: desc,
     year: item.year || null,
@@ -5910,14 +6285,41 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   var descFuente = detalle.descripcion || '';
   var descFuenteOk = descFuente.length > 60 && !/\.\.\.\s*$/.test(descFuente)
     && !(typeof esDescripcionBasura === 'function' && esDescripcionBasura(descFuente));
-  var portadaFuenteOk = detalle.portada && !esFuentePelisplus(detalle) && !esPortadaSospechosa(detalle.portada);
+
+  // Respaldo de la página (Pelisplus a veces 404)
+  if (detalle.portada && esPortadaUrlValida(detalle.portada) && !detalle.portada_fuente_raw) {
+    detalle.portada_fuente_raw = detalle.portada;
+  }
+
+  // Portadas pelisplus suelen caerse: no bloquear IMDb/TMDB si el match es bueno
+  var portadaFuenteOk = detalle.portada && esPortadaUrlValida(detalle.portada) &&
+    !(typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(detalle.portada)) &&
+    !esFuentePelisplus(detalle);
 
   if (descFuenteOk) meta.descripcion = null; // conservar scrape
   if (portadaFuenteOk) { meta.portada_tmdb = null; meta.portada_imdb = null; }
   if (detalle.genero) meta.generos = null;
   // No bloquear rating: si la fuente no trae calificación, usar IMDb/TMDB/OMDb
+  
 
   aplicarMetaAResultadoBusqueda(detalle, meta);
+    // Pelisplus: si hay póster IMDb/TMDB del match, usarlo (CDN estable)
+  if (esFuentePelisplus(detalle) || /pelisplushd|pelisplus/i.test(String(detalle.portada || ''))) {
+    if (detalle.portada_imdb && esPortadaImdb(detalle.portada_imdb)) {
+      detalle.portada = detalle.portada_imdb;
+      detalle.poster_source = 'imdb';
+    } else if (detalle.portada_tmdb && esPortadaUrlValida(detalle.portada_tmdb)) {
+      detalle.portada = detalle.portada_tmdb;
+      detalle.poster_source = 'tmdb';
+    } else if (meta.portada_imdb && esPortadaImdb(meta.portada_imdb) && detalle.imdb_id) {
+      detalle.portada = meta.portada_imdb;
+      detalle.portada_imdb = meta.portada_imdb;
+      detalle.poster_source = 'imdb';
+    } else if (detalle.portada_fuente_raw && esPortadaUrlValida(detalle.portada_fuente_raw)) {
+      detalle.portada = detalle.portada_fuente_raw;
+      detalle.poster_source = 'fuente';
+    }
+  }
 
   // Garantizar calificacion siempre que meta la tenga
   if ((detalle.calificacion == null || detalle.calificacion === '') && metaFull.calificacion != null) {
@@ -5954,7 +6356,11 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
           detalle.calificacion = normalizarCalificacion(extraTmdb.calificacion);
         }
         if (!detalle.backdrop && extraTmdb.backdrop) detalle.backdrop = extraTmdb.backdrop;
-        if (!detalle.titulo_original && extraTmdb.titulo_original) detalle.titulo_original = extraTmdb.titulo_original;
+       // if (!detalle.titulo_original && extraTmdb.titulo_original) detalle.titulo_original = extraTmdb.titulo_original
+        if (!detalle.titulo_original && extraTmdb.titulo_original &&
+            tituloOriginalEsCoherente(extraTmdb.titulo_original, detalle.slug, detalle.titulo)) {
+          detalle.titulo_original = extraTmdb.titulo_original;
+        }
         if (!detalle.fecha_estreno && extraTmdb.fecha_estreno) detalle.fecha_estreno = extraTmdb.fecha_estreno;
         if (extraTmdb.status) {
           detalle.status = extraTmdb.status;
@@ -6003,6 +6409,19 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   delete detalle.original_title;
   delete detalle.image;
 
+  // titulo_original de la página (@ Mutiny) manda. NUNCA sustituir por slug.
+  if (detalle.titulo_original) {
+    detalle.titulo_original = String(detalle.titulo_original).trim();
+  } else if (detalle.titulo) {
+    // Sin @: mismo nombre (ej. Amor es amor)
+    detalle.titulo_original = detalle.titulo;
+  }
+  // No usar fromSlug aquí.
+  if (detalle.titulo_original) {
+    detalle.titulo_original = limpiarTitulo(String(detalle.titulo_original).trim());
+  } else if (detalle.titulo) {
+    detalle.titulo_original = detalle.titulo;
+  }
   return detalle;
 }
 
@@ -6186,16 +6605,6 @@ function normalizarQueryBusqueda(q) {
   return s;
 }
 
-/** Título legible desde slug: codigo-venganza → Código Venganza (aprox.) */
-function tituloDesdeSlug(slug) {
-  var t = String(slug || '')
-    .replace(/-\d{4}$/, '')
-    .replace(/-+/g, ' ')
-    .trim();
-  // Capitalizar palabras
-  t = t.replace(/\b([a-z])/g, function (c) { return c.toUpperCase(); });
-  return limpiarTitulo(t);
-}
 
 async function buscarHackstore(query, limit) {
   var q = normalizarQueryBusqueda(query);
@@ -6949,6 +7358,37 @@ async function scrapearPelisplus(pageUrl, opts) {
 
   var metas = extraerMetas(html);
   var titulo = metas.titulo;
+  // Título original: "@ The Brink of War" / "@ Amor es amor"
+  var tituloOriginal = null;
+  var htmlSinCss = html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '');
+
+  // Debajo del h1: "@ Mutiny" / "@ Amor es amor" (puede haber saltos de línea)
+  var originalMatch =
+    htmlSinCss.match(/<h1[^>]*>[\s\S]*?<\/h1>\s*@\s*([\s\S]*?)(?=\s*Ver\s+Pel[ií]cula|\s*Ver\s+Serie|\s*Ver\s+Anime|<)/i) ||
+    htmlSinCss.match(/(?:^|>|\s)@\s*([A-Za-zÁÉÍÓÚáéíóúÜüñÑ0-9][^<\r\n]{0,120})/i);
+
+  if (originalMatch) {
+    var candidato = originalMatch[1]
+      .replace(/\s+/g, ' ')
+      .replace(/\s*Ver\s+.*$/i, '')
+      .trim();
+    if (
+      candidato.length >= 2 &&
+      !/^media\b/i.test(candidato) &&
+      !/^font-face\b/i.test(candidato) &&
+      !/^keyframes\b/i.test(candidato)
+    ) {
+      tituloOriginal = limpiarTitulo(candidato);
+    }
+  }
+
+  titulo = limpiarTitulo(titulo || '');
+  if (tituloOriginal) tituloOriginal = limpiarTitulo(tituloOriginal);
+  if (!tituloOriginal && titulo) {
+    tituloOriginal = titulo;
+  }
   var portada = metas.portada;
   var descripcion = metas.descripcion;
   var yearMeta = metas.year || null;
@@ -7036,6 +7476,7 @@ async function scrapearPelisplus(pageUrl, opts) {
       tipo: 'Serie',
       link: pageUrl,
       titulo: titulo,
+      titulo_original: tituloOriginal,
       portada: portada,
       descripcion: descripcion,
       year: yearMeta,
@@ -7060,12 +7501,19 @@ async function scrapearPelisplus(pageUrl, opts) {
   var reproductores = extraerPlayurlsPelisplus(html);
   var descargas = extraerDescargas(html);
   var capMatch = pageUrl.match(/\/temporada\/(\d+)\/capitulo\/(\d+)/i);
+  
+  var slugFromUrl = null;
+  var sm = pageUrl.match(/\/(?:pelicula|serie|anime)\/([^\/\?#]+)/i);
+  if (sm) slugFromUrl = decodeURIComponent(sm[1]).replace(/\/$/, '');
+  
   return {
     success: true,
     fuente: 'pelisplushd',
     tipo: esCapitulo ? 'Capitulo' : 'Pelicula',
     link: pageUrl,
+    slug: slugFromUrl,
     titulo: titulo,
+    titulo_original: tituloOriginal,
     portada: portada,
     descripcion: descripcion,
     year: yearMeta,
@@ -8709,5 +9157,402 @@ async function scrapearDoramasflix(pageUrl, opts) {
     embeds: [],
     reproductores: [],
     descargas: []
+  };
+}
+
+
+// ======================================================
+// FUTBOL LIBRE TV HD (7)
+// Canales en vivo + agenda
+// https://futbollibretvhd.org/
+// ======================================================
+function futbolLibreHeaders() {
+  return {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+    'Referer': FUTBOLLIBRE_BASE + '/'
+  };
+}
+
+function b64DecodeUtf8(str) {
+  try {
+    var s = String(str || '').replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    if (typeof atob === 'function') {
+      var bin = atob(s);
+      try {
+        return decodeURIComponent(escape(bin));
+      } catch (e1) {
+        return bin;
+      }
+    }
+    if (typeof Buffer !== 'undefined') {
+      return Buffer.from(s, 'base64').toString('utf8');
+    }
+  } catch (e) {}
+  return null;
+}
+
+function decodeFutbollibreEmbedIframe(iframePath) {
+  if (!iframePath) return null;
+  var m = String(iframePath).match(/[?&]r=([^&]+)/);
+  if (!m) {
+    if (String(iframePath).indexOf('http') === 0) return iframePath;
+    return FUTBOLLIBRE_BASE + (iframePath.charAt(0) === '/' ? iframePath : '/' + iframePath);
+  }
+  return b64DecodeUtf8(decodeURIComponent(m[1]));
+}
+
+/** GET /7/canales — todos los canales deportivos en vivo */
+async function listarFutbollibreCanales() {
+  var res = await fetch(FUTBOLLIBRE_BASE + '/', { headers: futbolLibreHeaders() });
+  if (!res.ok) throw new Error('FutbolLibre canales HTTP ' + res.status);
+  var html = await res.text();
+  var bySlug = Object.create(null);
+
+  // portada: <img src="..."> cerca de /en-vivo/{slug}
+  var portadaBySlug = Object.create(null);
+  var rePortada =
+    /<img[^>]+src=["']([^"']+)["'][^>]*>[\s\S]{0,500}?href=["']\/en-vivo\/([a-z0-9\-]+)["']/gi;
+  var pm;
+  while ((pm = rePortada.exec(html))) {
+    var imgUrl = pm[1].trim();
+    var slugP = pm[2];
+    if (!imgUrl || !slugP) continue;
+    if (imgUrl.indexOf('http') !== 0) {
+      imgUrl =
+        imgUrl.charAt(0) === '/'
+          ? FUTBOLLIBRE_BASE + imgUrl
+          : FUTBOLLIBRE_BASE + '/' + imgUrl;
+    }
+    if (!portadaBySlug[slugP]) portadaBySlug[slugP] = imgUrl;
+  }
+  
+  var reNamed = /href=["']\/en-vivo\/([a-z0-9\-]+)["'][^>]*>\s*([^<]{1,80})</gi;
+  var m;
+  while ((m = reNamed.exec(html))) {
+    var slug = m[1];
+    var titulo = String(m[2] || '').replace(/\s+/g, ' ').trim();
+    if (!slug) continue;
+    if (/^ver canal$/i.test(titulo) || !titulo) {
+      if (!bySlug[slug]) bySlug[slug] = slug.replace(/-/g, ' ');
+      continue;
+    }
+    if (!bySlug[slug] || bySlug[slug] === slug.replace(/-/g, ' ')) {
+      bySlug[slug] = titulo;
+    }
+  }
+  var re = /\/en-vivo\/([a-z0-9\-]+)/gi;
+  while ((m = re.exec(html))) {
+    if (!bySlug[m[1]]) bySlug[m[1]] = m[1].replace(/-/g, ' ');
+  }
+
+  var slugs = Object.keys(bySlug).sort();
+
+  // Por cada canal: entrar a la página y sacar 5.php?stream=...
+  async function streamDeCanal(slug) {
+    try {
+      var r = await fetch(FUTBOLLIBRE_BASE + '/en-vivo/' + encodeURIComponent(slug), {
+        headers: futbolLibreHeaders()
+      });
+      if (!r.ok) return null;
+      var h = await r.text();
+      var ifr = h.match(/<iframe[^>]+src=["']([^"']+)["']/i);
+      var raw = ifr ? ifr[1].trim() : null;
+      if (!raw) {
+        var sm = h.match(/[?&]stream=([a-z0-9_\-]+)/i);
+        if (sm) return 'https://tvf90.com/5.php?stream=' + sm[1];
+        return null;
+      }
+      if (raw.charAt(0) === '/') raw = 'https://tvf90.com' + raw;
+      if (typeof aLinkDirectoTvf90 === 'function') return aLinkDirectoTvf90(raw);
+      var m2 = raw.match(/canal\.php\?([^#]+)/i);
+      if (m2) return 'https://tvf90.com/5.php?' + m2[1];
+      return raw;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // en paralelo (más rápido)
+  var streams = await Promise.all(slugs.map(function (s) { return streamDeCanal(s); }));
+
+  var out = [];
+  for (var i = 0; i < slugs.length; i++) {
+    var s = slugs[i];
+    var streamUrl = streams[i] || null;
+    out.push({
+      titulo: bySlug[s],
+      slug: s,
+      link: FUTBOLLIBRE_BASE + '/en-vivo/' + s,
+      portada: portadaBySlug[s] || null,
+      stream_url: streamUrl,
+      url: streamUrl,
+      tipo: 'Canal',
+      fuente: 'futbollibre',
+      source_id: '7'
+    });
+  }
+  return out;
+}
+
+async function resolverFutbollibreM3u8(playerUrl) {
+  if (!playerUrl) return null;
+
+  // Siempre intentar 5.php (ahí está playbackURL)
+  var page = aLinkDirectoTvf90(playerUrl) || playerUrl;
+
+  async function fetchHtml(u) {
+    var res = await fetch(u, {
+      headers: Object.assign({}, futbolLibreHeaders(), {
+        'Referer': FUTBOLLIBRE_BASE + '/',
+        'Accept': 'text/html,*/*;q=0.8'
+      }),
+      redirect: 'follow'
+    });
+    if (!res.ok) return null;
+    return await res.text();
+  }
+
+  function extraerM3u8(html) {
+    if (!html) return null;
+    var m =
+      html.match(/playbackURL\s*=\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/i) ||
+      html.match(/source\s*:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/i) ||
+      html.match(/(https?:\/\/[0-9]+\.ftlly\.com[^"'\s<>]*\.m3u8[^"'\s<>]*)/i) ||
+      html.match(/(https?:\/\/[^"'\s<>]*ftlly\.com[^"'\s<>]*\.m3u8[^"'\s<>]*)/i);
+    return m && m[1] ? m[1].replace(/&amp;/g, '&') : null;
+  }
+
+  try {
+    var html = await fetchHtml(page);
+    if (!html) return null;
+
+    var m3u8 = extraerM3u8(html);
+    if (m3u8) return m3u8;
+
+    // 1.php / hd.php / plus1.php → iframe a /5.php?stream=...
+    var iframe =
+      html.match(/<iframe[^>]+src=["']([^"']*5\.php[^"']*)["']/i) ||
+      html.match(/src=["'](\/?5\.php\?[^"']+)["']/i);
+    if (iframe && iframe[1]) {
+      var next = iframe[1].trim();
+      if (next.indexOf('http') !== 0) {
+        next = next.charAt(0) === '/'
+          ? 'https://tvf90.com' + next
+          : 'https://tvf90.com/' + next;
+      }
+      html = await fetchHtml(next);
+      m3u8 = extraerM3u8(html);
+      if (m3u8) return m3u8;
+    }
+  } catch (e) {}
+  return null;
+}
+
+function proxyFutbollibreStream(origin, m3u8) {
+  if (!m3u8 || !origin) return m3u8;
+  return origin + '/proxy?url=' + encodeURIComponent(m3u8) +
+    '&ref=' + encodeURIComponent('https://tvf90.com/');
+}
+
+/** GET /7/agenda — partidos del día + servers (agenda-data.php) */
+async function listarFutbollibreAgenda() {
+  var res = await fetch(FUTBOLLIBRE_BASE + '/agenda-data.php', {
+    headers: Object.assign({}, futbolLibreHeaders(), {
+      'Accept': 'application/json, text/javascript, */*',
+      'Referer': FUTBOLLIBRE_BASE + '/agenda',
+      'X-Requested-With': 'XMLHttpRequest'
+    })
+  });
+  if (!res.ok) throw new Error('FutbolLibre agenda HTTP ' + res.status);
+  var payload = await res.json();
+  var rows = (payload && payload.data) || [];
+  var out = [];
+  var fechaIso = null;
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i] || {};
+    var attr = row.attributes || {};
+    var desc = String(attr.diary_description || '').replace(/\s+/g, ' ').trim();
+    var fecha = attr.date_diary || null;
+    var hora = attr.diary_hour || null;
+    if (hora && /^\d{2}:\d{2}:\d{2}$/.test(hora)) hora = hora.slice(0, 5);
+    if (fecha && !fechaIso) fechaIso = fecha;
+
+    var pais =
+      (attr.country &&
+        attr.country.data &&
+        attr.country.data.attributes &&
+        attr.country.data.attributes.name) ||
+      null;
+
+    var portada = portadaDesdeAgendaItem(attr);
+
+    var embedsRaw = (attr.embeds && attr.embeds.data) || [];
+    var reproductores = [];
+    var seenUrl = Object.create(null);
+
+    for (var e = 0; e < embedsRaw.length; e++) {
+      var ea = (embedsRaw[e] && embedsRaw[e].attributes) || {};
+      var nombre = ea.embed_name || 'Server';
+      var iframePath = ea.embed_iframe || '';
+      var playUrl = aLinkDirectoTvf90(decodeFutbollibreEmbedIframe(iframePath));
+      if (!playUrl || seenUrl[playUrl]) continue;
+      seenUrl[playUrl] = 1;
+      reproductores.push({
+        servidor: nombre,
+        url: playUrl,          // https://tvf90.com/5.php?stream=espn
+        tipo: 'embed',
+        fuente: 'futbollibre',
+        stream_url: null,
+        stream_proxy: null
+      });
+    }
+        // Resolver m3u8 (token fresco). Máx 4 servers por evento para no saturar.
+    var origin = '';
+    try { origin = __LAST_ORIGIN__ || ''; } catch (eO) {}
+    for (var ri = 0; ri < Math.min(reproductores.length, 6); ri++) {
+      var play = aLinkDirectoTvf90(reproductores[ri].url) || reproductores[ri].url;
+      reproductores[ri].url = play; // dejar 5.php en url
+      var m3u8 = await resolverFutbollibreM3u8(play);
+      if (m3u8) {
+        reproductores[ri].stream_url = m3u8;
+        reproductores[ri].stream_proxy = proxyFutbollibreStream(origin, m3u8);
+        reproductores[ri].tipo = 'hls';
+      }
+    }
+
+    out.push({
+      id: row.id || null,
+      titulo: desc || ('Evento ' + (row.id || '')),
+      fecha: fecha,
+      hora: hora,
+      fecha_hora: fecha && attr.diary_hour ? fecha + 'T' + attr.diary_hour : null,
+      pais: pais,
+      portada: portada,
+      tipo: 'Evento',
+      fuente: 'futbollibre',
+      source_id: '7',
+      reproductores: reproductores,
+      embeds: reproductores.map(function (r) { return r.url; }),
+      total_servers: reproductores.length
+    });
+  }
+
+  out.sort(function (a, b) {
+    var ka = (a.fecha || '') + ' ' + (a.hora || '');
+    var kb = (b.fecha || '') + ' ' + (b.hora || '');
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
+
+  var fechaTexto = fechaAgendaEnEspanol(fechaIso) || fechaIso || '';
+  var tituloAgenda = fechaTexto ? ('Agenda - ' + fechaTexto) : 'Agenda';
+
+  // Devuelve objeto completo (no solo el array)
+  return {
+    success: true,
+    fuente: 'futbollibre',
+    source_id: '7',
+    tipo: 'Agenda',
+    titulo: tituloAgenda,
+    fecha: fechaIso,
+    fecha_texto: fechaTexto,
+    link: FUTBOLLIBRE_BASE + '/agenda',
+    actualizado: true,
+    items: out,
+    total: out.length
+  };
+}
+
+function aLinkDirectoTvf90(url) {
+  var u = String(url || '').trim();
+  if (!u) return null;
+  if (u.charAt(0) === '/') u = 'https://tvf90.com' + u;
+
+  // 1.php / 2.php / 3.php / 5.php / hd.php / plus1.php / canal.php → 5.php?stream=...
+  var m = u.match(/tvf90\.com\/(?:online\/)?(?:canal|plus\d*|\d+|hd|5)\.php\?([^#]+)/i);
+  if (m) {
+    // conservar query (stream=espn, stream=even2, etc.)
+    return 'https://tvf90.com/5.php?' + m[1];
+  }
+
+  // solo ?stream=xxx sin path claro
+  var m2 = u.match(/[?&]stream=([a-z0-9_\-]+)/i);
+  if (m2 && /tvf90\.com/i.test(u)) {
+    return 'https://tvf90.com/5.php?stream=' + m2[1];
+  }
+
+  return u;
+}
+
+/** GET /7/canal/{slug} — un canal + iframe */
+async function scrapearFutbollibreCanal(slugOrUrl) {
+  var slug = String(slugOrUrl || '').trim();
+  if (slug.indexOf('http') === 0) {
+    var mm = slug.match(/\/en-vivo\/([^\/\?#]+)/i);
+    slug = mm ? decodeURIComponent(mm[1]) : slug;
+  }
+  if (!slug) throw new Error('FutbolLibre: falta slug del canal');
+
+  var detailUrl = FUTBOLLIBRE_BASE + '/en-vivo/' + encodeURIComponent(slug);
+  var res = await fetch(detailUrl, { headers: futbolLibreHeaders() });
+  if (!res.ok) throw new Error('FutbolLibre canal HTTP ' + res.status);
+  var html = await res.text();
+
+  var titulo =
+    (html.match(/<h1[^>]*class=["'][^"']*title[^"']*["'][^>]*>([^<]+)/i) || [])[1] ||
+    (html.match(/<title>([^<]+)/i) || [])[1] ||
+    slug.replace(/-/g, ' ');
+  titulo = String(titulo)
+    .replace(/\s*\|\s*Futbol Online.*$/i, '')
+    .replace(/\s*en vivo por [Ii]nternet.*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+var reproductores = [];
+  var seen = Object.create(null);
+
+  function addRep(url) {
+    var direct = aLinkDirectoTvf90(url);
+    if (!direct || seen[direct]) return;
+    if (/futbollibretvhd\.org/i.test(direct)) return;
+    seen[direct] = 1;
+    reproductores.push({
+      servidor: 'tvf90',
+      url: direct,
+      tipo: 'embed',
+      fuente: 'futbollibre'
+    });
+  }
+
+  var reIframe = /<iframe[^>]+src=["']([^"']+)["']/gi;
+  var im;
+  while ((im = reIframe.exec(html))) {
+    var u = im[1].trim();
+    if (u.indexOf('http') !== 0) {
+      u = u.charAt(0) === '/' ? 'https://tvf90.com' + u : 'https://tvf90.com/' + u;
+    }
+    addRep(u);
+  }
+
+  var reStream = /[?&]stream=([a-z0-9_\-]+)/gi;
+  var sm;
+  while ((sm = reStream.exec(html))) {
+    addRep('https://tvf90.com/5.php?stream=' + sm[1]);
+  }
+
+  return {
+    success: true,
+    fuente: 'futbollibre',
+    source_id: '7',
+    tipo: 'Canal',
+    link: detailUrl,
+    slug: slug,
+    titulo: titulo,
+    reproductores: reproductores,
+    embeds: reproductores.map(function (r) { return r.url; }),
+    total: reproductores.length
   };
 }
