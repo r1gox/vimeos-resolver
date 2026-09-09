@@ -9209,22 +9209,13 @@ async function listarFutbollibreAgenda() {
       var ea = (embedsRaw[e] && embedsRaw[e].attributes) || {};
       var nombre = ea.embed_name || 'Server';
       var iframePath = ea.embed_iframe || '';
-      var playUrl = decodeFutbollibreEmbedIframe(iframePath);
+      var playUrl = aLinkDirectoTvf90(decodeFutbollibreEmbedIframe(iframePath));
       if (!playUrl || seenUrl[playUrl]) continue;
       seenUrl[playUrl] = 1;
-
-      var wrapper = null;
-      if (iframePath) {
-        wrapper =
-          iframePath.indexOf('http') === 0
-            ? iframePath
-            : FUTBOLLIBRE_BASE + (iframePath.charAt(0) === '/' ? iframePath : '/' + iframePath);
-      }
 
       reproductores.push({
         servidor: nombre,
         url: playUrl,
-        embed_wrapper: wrapper,
         tipo: 'embed',
         fuente: 'futbollibre'
       });
@@ -9254,6 +9245,18 @@ async function listarFutbollibreAgenda() {
   return out;
 }
 
+function aLinkDirectoTvf90(url) {
+  var u = String(url || '').trim();
+  if (!u) return null;
+  if (u.charAt(0) === '/') u = 'https://tvf90.com' + u;
+
+  // canal.php?stream=XXX  →  5.php?stream=XXX
+  var m = u.match(/tvf90\.com\/online\/canal\.php\?([^#]+)/i);
+  if (m) return 'https://tvf90.com/5.php?' + m[1];
+
+  return u;
+}
+
 /** GET /7/canal/{slug} — un canal + iframe */
 async function scrapearFutbollibreCanal(slugOrUrl) {
   var slug = String(slugOrUrl || '').trim();
@@ -9278,14 +9281,17 @@ async function scrapearFutbollibreCanal(slugOrUrl) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  var reproductores = [];
+var reproductores = [];
   var seen = Object.create(null);
-  function addRep(url, servidor) {
-    if (!url || seen[url]) return;
-    seen[url] = 1;
+
+  function addRep(url) {
+    var direct = aLinkDirectoTvf90(url);
+    if (!direct || seen[direct]) return;
+    if (/futbollibretvhd\.org/i.test(direct)) return;
+    seen[direct] = 1;
     reproductores.push({
-      servidor: servidor || 'tvf90',
-      url: url,
+      servidor: 'tvf90',
+      url: direct,
       tipo: 'embed',
       fuente: 'futbollibre'
     });
@@ -9296,18 +9302,16 @@ async function scrapearFutbollibreCanal(slugOrUrl) {
   while ((im = reIframe.exec(html))) {
     var u = im[1].trim();
     if (u.indexOf('http') !== 0) {
-      u = u.charAt(0) === '/' ? 'https://tvf90.com' + u : FUTBOLLIBRE_BASE + '/' + u;
+      u = u.charAt(0) === '/' ? 'https://tvf90.com' + u : 'https://tvf90.com/' + u;
     }
-    var host = 'embed';
-    try {
-      host = new URL(u).hostname.replace(/^www\./, '');
-    } catch (e) {}
-    addRep(u, host);
+    addRep(u);
   }
 
-  var reStream = /https?:\/\/tvf90\.com\/[^"'\s]+/gi;
+  var reStream = /[?&]stream=([a-z0-9_\-]+)/gi;
   var sm;
-  while ((sm = reStream.exec(html))) addRep(sm[0], 'tvf90.com');
+  while ((sm = reStream.exec(html))) {
+    addRep('https://tvf90.com/5.php?stream=' + sm[1]);
+  }
 
   return {
     success: true,
