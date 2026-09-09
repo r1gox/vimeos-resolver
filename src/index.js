@@ -9157,20 +9157,51 @@ async function listarFutbollibreCanales() {
       bySlug[slug] = titulo;
     }
   }
-
   var re = /\/en-vivo\/([a-z0-9\-]+)/gi;
   while ((m = re.exec(html))) {
     if (!bySlug[m[1]]) bySlug[m[1]] = m[1].replace(/-/g, ' ');
   }
 
-  var out = [];
   var slugs = Object.keys(bySlug).sort();
+
+  // Por cada canal: entrar a la página y sacar 5.php?stream=...
+  async function streamDeCanal(slug) {
+    try {
+      var r = await fetch(FUTBOLLIBRE_BASE + '/en-vivo/' + encodeURIComponent(slug), {
+        headers: futbolLibreHeaders()
+      });
+      if (!r.ok) return null;
+      var h = await r.text();
+      var ifr = h.match(/<iframe[^>]+src=["']([^"']+)["']/i);
+      var raw = ifr ? ifr[1].trim() : null;
+      if (!raw) {
+        var sm = h.match(/[?&]stream=([a-z0-9_\-]+)/i);
+        if (sm) return 'https://tvf90.com/5.php?stream=' + sm[1];
+        return null;
+      }
+      if (raw.charAt(0) === '/') raw = 'https://tvf90.com' + raw;
+      if (typeof aLinkDirectoTvf90 === 'function') return aLinkDirectoTvf90(raw);
+      var m2 = raw.match(/canal\.php\?([^#]+)/i);
+      if (m2) return 'https://tvf90.com/5.php?' + m2[1];
+      return raw;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // en paralelo (más rápido)
+  var streams = await Promise.all(slugs.map(function (s) { return streamDeCanal(s); }));
+
+  var out = [];
   for (var i = 0; i < slugs.length; i++) {
     var s = slugs[i];
+    var streamUrl = streams[i] || null;
     out.push({
       titulo: bySlug[s],
       slug: s,
       link: FUTBOLLIBRE_BASE + '/en-vivo/' + s,
+      stream_url: streamUrl,
+      url: streamUrl,
       tipo: 'Canal',
       fuente: 'futbollibre',
       source_id: '7'
