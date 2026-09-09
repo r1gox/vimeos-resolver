@@ -9219,6 +9219,25 @@ async function listarFutbollibreCanales() {
   return out;
 }
 
+  // Horas del HTML = Europe/Madrid (UTC+1 / UTC+2 con DST).
+  // Ajuste igual que horario.js: restar (60 - husoMinutos).
+  function ajustarHoraDesdeEspana(horaStr, husoMinutos) {
+    if (!horaStr) return null;
+    var p = String(horaStr).match(/^(\d{1,2}):(\d{2})$/);
+    if (!p) return horaStr;
+    var total = parseInt(p[1], 10) * 60 + parseInt(p[2], 10);
+    // misma fórmula que el sitio: setMinutes(m - (60 - huso))
+    total = total - (60 - husoMinutos);
+    total = ((total % 1440) + 1440) % 1440;
+    var hh = Math.floor(total / 60);
+    var mm = total % 60;
+    return (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm;
+  }
+
+  // México (UTC-6 invierno) → huso = -360
+  // Argentina (UTC-3) → huso = -180
+  // España → huso = 60
+  var HUSO_DESTINO = -360; // cambia a -180 si prefieres Argentina
 /** GET /7/agenda — parsea /agenda.php (HTML, ya no JSON) */
 /** GET /7/agenda — parsea /agenda.php (eventos + servers en base64) */
 async function listarFutbollibreAgenda() {
@@ -9320,22 +9339,33 @@ async function listarFutbollibreAgenda() {
         servidor: nombre,
         calidad: calidad,
         url: playUrl,
-        link_evento: linkEvento,
+//        link_evento: linkEvento,
         tipo: 'embed',
         fuente: 'futbollibre'
       });
     }
+
+    var horaFuente = hora; // la que leíste del <span class="t">
+    var horaLocal = ajustarHoraDesdeEspana(horaFuente, HUSO_DESTINO);
+
+    out.push({
+      // ...
+      hora: horaLocal,           // para el usuario (México por defecto)
+      hora_fuente: horaFuente,   // como en el HTML (España)
+      // ...
+    });
 
     out.push({
       id: null,
       titulo: titulo,
       liga: ligaCode || null,
       fecha: null,
-      hora: hora,
+      hora: horaLocal,
+      hora_fuente: horaFuente,
       fecha_hora: null,
       fecha_texto: fechaTexto,
       pais: null,
-      portada: FUTBOLLIBRE_IMG_DEFAULT,
+      portada: null,
       tipo: 'Evento',
       fuente: 'futbollibre',
       source_id: '7',
