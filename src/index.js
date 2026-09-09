@@ -9201,7 +9201,7 @@ function streamxhdEstadoEvento(ev) {
   if (!isFinite(durMin) || durMin <= 0) durMin = 130;
   var extra = parseInt(ev.extraTime, 10) || 0;
   var endMs = startMs + (durMin + extra) * 60 * 1000;
-  var prontoMs = 90 * 60 * 1000;
+  var prontoMs = 6 * 60 * 60 * 1000;
 
   if (now > endMs) return 'finalizado';
   if (now >= startMs && now <= endMs) return 'en_vivo';
@@ -9276,7 +9276,7 @@ async function listarStreamxhdAgenda() {
           fecha: th.fecha,
           hora: th.hora,
           hora_fuente: th.hora,
-          status: estadoEv,
+          status: estadoEv,   // "en_vivo" | "pronto"
           fecha_hora: ev.time || null,
           timezone: ev.timezone || 'America/Lima',
           pais: null,
