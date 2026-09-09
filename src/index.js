@@ -472,7 +472,6 @@ async function handleRequest(request, env) {
 
 
   // ---------- LIVE: futbollibretvhd (7) — canales + agenda ----------
-  // ---------- LIVE: futbollibretvhd (7) — canales + agenda ----------
   if (parts[0] === '7' || parts[0] === 'futbollibre' || parts[0] === 'futbol' || parts[0] === 'fltv') {
     try {
       if (!parts[1] || parts[1] === 'canales') {
@@ -492,41 +491,13 @@ async function handleRequest(request, env) {
       if (parts[1] === 'canal' && parts[2]) {
         return json(await scrapearFutbollibreCanal(parts[2]));
       }
-
-      // ← AQUÍ el resolve (después de canal, antes del error de uso)
-      // /7/resolve?stream=espn  o  /7/resolve?url=https://tvf90.com/5.php?stream=espn
-      if (parts[1] === 'resolve') {
-        var streamQ = url.searchParams.get('stream');
-        var urlQ = url.searchParams.get('url');
-        var player = urlQ || (streamQ ? ('https://tvf90.com/5.php?stream=' + encodeURIComponent(streamQ)) : null);
-        if (!player) {
-          return json({ success: false, error: 'Uso: /7/resolve?stream=espn' }, 400);
-        }
-        var m3u8 = await resolverFutbollibreM3u8(player);
-        if (!m3u8) {
-          return json({ success: false, error: 'No se pudo obtener m3u8', player: player }, 502);
-        }
-        var originFl = new URL(request.url).origin;
-        return json({
-          success: true,
-          fuente: 'futbollibre',
-          player: aLinkDirectoTvf90(player),
-          player_url: aLinkDirectoTvf90(player),
-          stream_name: streamQ || null,
-          // stream_url solo informativo; el dispositivo debe resolver 5.php
-          stream_url: m3u8,
-          nota: 'Para Roku/móvil: GET player_url en el dispositivo y extraer playbackURL. No usar stream_url del Worker si da 403.'
-        });
-      }
-
       return json({
         success: false,
-        error: 'Uso: /7/canales | /7/agenda | /7/canal/{slug} | /7/resolve?stream=espn',
+        error: 'Uso: /7/canales | /7/agenda | /7/canal/{slug}',
         ejemplos: [
           origin + '/7/canales',
           origin + '/7/agenda',
-          origin + '/7/canal/espn-1',
-          origin + '/7/resolve?stream=espn'
+          origin + '/7/canal/espn-1'
         ]
       }, 400);
     } catch (errFl) {
@@ -1650,21 +1621,11 @@ async function handleProxy(request, targetUrl) {
     if (refParam) {
       headers['Referer'] = refParam;
       try { headers['Origin'] = new URL(refParam).origin; } catch (eR) {}
-    } else if (/ftlly\.com/i.test(host)) {
-      // Protección ftlly: exige contexto de tvf90
-      headers['Referer'] = 'https://tvf90.com/';
-      headers['Origin'] = 'https://tvf90.com';
     } else if (host.indexOf('vimeos') !== -1) {
       headers['Referer'] = 'https://vimeos.net/';
     } else if (host) {
       headers['Referer'] = 'https://' + host + '/';
       headers['Origin'] = 'https://' + host;
-    }
-
-    // ftlly: aunque venga ref raro, priorizar tvf90
-    if (/ftlly\.com/i.test(host)) {
-      headers['Referer'] = 'https://tvf90.com/';
-      headers['Origin'] = 'https://tvf90.com';
     }
   } catch (e) {}
 
@@ -9298,66 +9259,6 @@ async function listarFutbollibreCanales() {
   return out;
 }
 
-async function resolverFutbollibreM3u8(playerUrl) {
-  if (!playerUrl) return null;
-
-  // Siempre intentar 5.php (ahí está playbackURL)
-  var page = aLinkDirectoTvf90(playerUrl) || playerUrl;
-
-  async function fetchHtml(u) {
-    var res = await fetch(u, {
-      headers: Object.assign({}, futbolLibreHeaders(), {
-        'Referer': FUTBOLLIBRE_BASE + '/',
-        'Accept': 'text/html,*/*;q=0.8'
-      }),
-      redirect: 'follow'
-    });
-    if (!res.ok) return null;
-    return await res.text();
-  }
-
-  function extraerM3u8(html) {
-    if (!html) return null;
-    var m =
-      html.match(/playbackURL\s*=\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/i) ||
-      html.match(/source\s*:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/i) ||
-      html.match(/(https?:\/\/[0-9]+\.ftlly\.com[^"'\s<>]*\.m3u8[^"'\s<>]*)/i) ||
-      html.match(/(https?:\/\/[^"'\s<>]*ftlly\.com[^"'\s<>]*\.m3u8[^"'\s<>]*)/i);
-    return m && m[1] ? m[1].replace(/&amp;/g, '&') : null;
-  }
-
-  try {
-    var html = await fetchHtml(page);
-    if (!html) return null;
-
-    var m3u8 = extraerM3u8(html);
-    if (m3u8) return m3u8;
-
-    // 1.php / hd.php / plus1.php → iframe a /5.php?stream=...
-    var iframe =
-      html.match(/<iframe[^>]+src=["']([^"']*5\.php[^"']*)["']/i) ||
-      html.match(/src=["'](\/?5\.php\?[^"']+)["']/i);
-    if (iframe && iframe[1]) {
-      var next = iframe[1].trim();
-      if (next.indexOf('http') !== 0) {
-        next = next.charAt(0) === '/'
-          ? 'https://tvf90.com' + next
-          : 'https://tvf90.com/' + next;
-      }
-      html = await fetchHtml(next);
-      m3u8 = extraerM3u8(html);
-      if (m3u8) return m3u8;
-    }
-  } catch (e) {}
-  return null;
-}
-
-function proxyFutbollibreStream(origin, m3u8) {
-  if (!m3u8 || !origin) return m3u8;
-  return origin + '/proxy?url=' + encodeURIComponent(m3u8) +
-    '&ref=' + encodeURIComponent('https://tvf90.com/');
-}
-
 /** GET /7/agenda — partidos del día + servers (agenda-data.php) */
 async function listarFutbollibreAgenda() {
   var res = await fetch(FUTBOLLIBRE_BASE + '/agenda-data.php', {
@@ -9402,34 +9303,13 @@ async function listarFutbollibreAgenda() {
       var playUrl = aLinkDirectoTvf90(decodeFutbollibreEmbedIframe(iframePath));
       if (!playUrl || seenUrl[playUrl]) continue;
       seenUrl[playUrl] = 1;
-      var streamName = null;
-      var mSt = String(playUrl || '').match(/[?&]stream=([a-z0-9_\-]+)/i);
-      if (mSt) streamName = mSt[1];
-
-      playUrl = aLinkDirectoTvf90(playUrl) || playUrl;
-
       reproductores.push({
         servidor: nombre,
         url: playUrl,
-        player_url: playUrl,
-        stream_name: streamName,
-        tipo: 'hls',
+        tipo: 'embed',
         fuente: 'futbollibre'
       });
     }
-        // Resolver m3u8 (token fresco). Máx 4 servers por evento para no saturar.
-    var origin = '';
-    try { origin = __LAST_ORIGIN__ || ''; } catch (eO) {}
-    /*for (var ri = 0; ri < Math.min(reproductores.length, 6); ri++) {
-      var play = aLinkDirectoTvf90(reproductores[ri].url) || reproductores[ri].url;
-      reproductores[ri].url = play; // dejar 5.php en url
-      var m3u8 = await resolverFutbollibreM3u8(play);
-      if (m3u8) {
-        reproductores[ri].stream_url = m3u8;
-        reproductores[ri].stream_proxy = proxyFutbollibreStream(origin, m3u8);
-        reproductores[ri].tipo = 'hls';
-      }
-    }*/
 
     out.push({
       id: row.id || null,
@@ -9478,18 +9358,9 @@ function aLinkDirectoTvf90(url) {
   if (!u) return null;
   if (u.charAt(0) === '/') u = 'https://tvf90.com' + u;
 
-  // 1.php / 2.php / 3.php / 5.php / hd.php / plus1.php / canal.php → 5.php?stream=...
-  var m = u.match(/tvf90\.com\/(?:online\/)?(?:canal|plus\d*|\d+|hd|5)\.php\?([^#]+)/i);
-  if (m) {
-    // conservar query (stream=espn, stream=even2, etc.)
-    return 'https://tvf90.com/5.php?' + m[1];
-  }
-
-  // solo ?stream=xxx sin path claro
-  var m2 = u.match(/[?&]stream=([a-z0-9_\-]+)/i);
-  if (m2 && /tvf90\.com/i.test(u)) {
-    return 'https://tvf90.com/5.php?stream=' + m2[1];
-  }
+  // canal.php?stream=XXX  →  5.php?stream=XXX
+  var m = u.match(/tvf90\.com\/online\/canal\.php\?([^#]+)/i);
+  if (m) return 'https://tvf90.com/5.php?' + m[1];
 
   return u;
 }
