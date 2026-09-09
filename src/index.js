@@ -33,6 +33,7 @@ var FUTBOLLIBRE_BASE = 'https://futbollibres.st';
 var TMDB_META_API = ''; // desactivado: meta solo de la página fuente (+ TMDB key si hay)
 var FUTBOLLIBRE_IMG_BASE = 'https://futbollibres.st';
 var FUTBOLLIBRE_IMG_DEFAULT = FUTBOLLIBRE_IMG_BASE + '/img/librestv.png';
+var STREAMXHD_BASE = 'https://streamxhd.com';
 
 
 function fechaAgendaEnEspanol(isoDate) {
@@ -309,7 +310,9 @@ async function handleRequest(request, env) {
         goodstream_streamurl: origin + '/goodstream/streamurl?url={embed}',
         futbollibre_canales: origin + '/7/canales',
         futbollibre_agenda: origin + '/7/agenda',
-        futbollibre_canal: origin + '/7/canal/{slug}'
+        futbollibre_canal: origin + '/7/canal/{slug}',
+        streamxhd_agenda: origin + '/8/agenda',
+        streamxhd_canales: origin + '/8/canales'
       },
       ejemplos: {
         buscar: origin + '/search?q=acaramelados',
@@ -510,7 +513,37 @@ async function handleRequest(request, env) {
       }, 502);
     }
   }
-  
+
+
+    // ---------- LIVE: streamxhd (8) ----------
+  if (parts[0] === '8' || parts[0] === 'streamxhd' || parts[0] === 'sxhd') {
+    try {
+      if (!parts[1] || parts[1] === 'agenda' || parts[1] === 'eventos') {
+        return json(await listarStreamxhdAgenda());
+      }
+      if (parts[1] === 'canales') {
+        var ch = await listarStreamxhdCanales();
+        return json({
+          success: true,
+          fuente: 'streamxhd',
+          source_id: '8',
+          tipo: 'Canales',
+          items: ch,
+          total: ch.length
+        });
+      }
+      return json({
+        error: 'Usa /8/agenda o /8/canales',
+        fuente: 'streamxhd'
+      }, 400);
+    } catch (errSx) {
+      return json({
+        success: false,
+        error: errSx.message || 'Error streamxhd',
+        fuente: 'streamxhd'
+      }, 500);
+    }
+  }
   // ---------- Rutas con ID: /{id}/serie|pelicula|anime/{slug}[/{s}/{e}] ----------
   // parts[0] puede ser 1|2|3|lamovie|hackstore|pelisplushd
   var pathSource = normalizarSourceId(parts[0] || '');
@@ -8997,6 +9030,7 @@ async function scrapearDoramasflix(pageUrl, opts) {
       if (provFast) rp.provider = provFast;
       // hls_resolve se completa en formatearCapituloRespuesta con origin
       rp.tipo = rp.tipo || 'reproductor';
+      
     }
 
     return {
@@ -9123,6 +9157,177 @@ async function scrapearDoramasflix(pageUrl, opts) {
   };
 }
 
+
+
+
+function streamxhdHeaders() {
+  return {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    Accept: 'application/json, text/plain, */*',
+    'Accept-Language': 'es-ES,es;q=0.9',
+    Referer: STREAMXHD_BASE + '/'
+  };
+}
+
+/** Normaliza hora "2026-09-09 08:00" → "08:00" + fecha */
+function streamxhdParseTime(timeStr) {
+  var s = String(timeStr || '').trim();
+  var m = s.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{1,2}:\d{2})/);
+  if (m) return { fecha: m[1], hora: m[2].length === 4 ? '0' + m[2] : m[2] };
+  var h = s.match(/(\d{1,2}:\d{2})/);
+  return { fecha: null, hora: h ? h[1] : null };
+}
+
+/**
+ * GET /8/agenda — todos los eventos de streamxhd (fútbol y más deportes)
+ * Misma forma que /7/agenda para el front.
+ */
+async function listarStreamxhdAgenda() {
+  var res = await fetch(STREAMXHD_BASE + '/eventos.json', {
+    headers: streamxhdHeaders()
+  });
+  if (!res.ok) throw new Error('StreamXHD eventos HTTP ' + res.status);
+  var data = await res.json();
+  var sports = (data && data.sports) || [];
+  var out = [];
+  var updated = (data && data.updated) || null;
+
+  for (var si = 0; si < sports.length; si++) {
+    var sport = sports[si] || {};
+    var leagues = sport.leagues || [];
+    for (var li = 0; li < leagues.length; li++) {
+      var league = leagues[li] || {};
+      var events = league.events || [];
+      for (var ei = 0; ei < events.length; ei++) {
+        var ev = events[ei] || {};
+        var th = streamxhdParseTime(ev.time);
+        var servers = Array.isArray(ev.servers) ? ev.servers : [];
+        var reproductores = [];
+        var seen = Object.create(null);
+
+        for (var ri = 0; ri < servers.length; ri++) {
+          var srv = servers[ri] || {};
+          if (srv.active === false) continue;
+          var url = String(srv.url || '').trim();
+          if (!url || seen[url]) continue;
+          seen[url] = 1;
+          if (url.indexOf('http') !== 0) {
+            url = STREAMXHD_BASE + (url.charAt(0) === '/' ? url : '/' + url);
+          }
+          reproductores.push({
+            servidor: srv.name || 'Server',
+            calidad: srv.quality || null,
+            url: url,
+            tipo: srv.type || 'iframe',
+            logo: srv.channelLogo || null,
+            fuente: 'streamxhd'
+          });
+        }
+
+        // Portada: imagen del evento > logos equipos > logo liga
+        var portada =
+          ev.image ||
+          league.image ||
+          league.logo ||
+          ev.logo ||
+          null;
+        // Si no hay, el front puede usar homeLogo/awayLogo
+
+        out.push({
+          id: null,
+          titulo: ev.title || (ev.homeTeam && ev.awayTeam ? ev.homeTeam + ' vs ' + ev.awayTeam : 'Evento'),
+          liga: ev.code || league.name || sport.name || null,
+          liga_nombre: ev.league || league.name || null,
+          deporte: sport.name || sport.id || null,
+          deporte_icono: sport.icon || null,
+          fecha: th.fecha,
+          hora: th.hora,
+          hora_fuente: th.hora,
+          fecha_hora: ev.time || null,
+          timezone: ev.timezone || 'America/Lima',
+          pais: null,
+          portada: portada,
+          home_team: ev.homeTeam || null,
+          away_team: ev.awayTeam || null,
+          home_logo: ev.homeLogo || null,
+          away_logo: ev.awayLogo || null,
+          status: ev.status || null,
+          duration: ev.duration != null ? ev.duration : null,
+          tipo: 'Evento',
+          fuente: 'streamxhd',
+          source_id: '8',
+          reproductores: reproductores,
+          embeds: reproductores.map(function (r) { return r.url; }),
+          total: reproductores.length,
+          link: STREAMXHD_BASE + '/',
+          agenda_order: ev.agendaOrder != null ? ev.agendaOrder : null
+        });
+      }
+    }
+  }
+
+  // Orden por fecha+hora
+  out.sort(function (a, b) {
+    var ka = String(a.fecha_hora || a.fecha || '') + ' ' + String(a.hora || '');
+    var kb = String(b.fecha_hora || b.fecha || '') + ' ' + String(b.hora || '');
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
+
+  return {
+    success: true,
+    fuente: 'streamxhd',
+    source_id: '8',
+    tipo: 'Agenda',
+    fecha: null,
+    fecha_texto: updated ? ('Actualizado: ' + updated) : null,
+    updated: updated,
+    link: STREAMXHD_BASE + '/',
+    actualizado: true,
+    items: out,
+    total: out.length
+  };
+}
+
+/** GET /8/canales — canales 24/7 */
+async function listarStreamxhdCanales() {
+  var res = await fetch(STREAMXHD_BASE + '/canales/canales.json', {
+    headers: streamxhdHeaders()
+  });
+  if (!res.ok) throw new Error('StreamXHD canales HTTP ' + res.status);
+  var data = await res.json();
+  var list = Array.isArray(data) ? data : (data.canales || data.channels || data.items || []);
+  var out = [];
+
+  for (var i = 0; i < list.length; i++) {
+    var c = list[i] || {};
+    var nombre = c.name || c.nombre || c.title || c.canal || null;
+    var slug = c.slug || c.id || (nombre ? String(nombre).toLowerCase().replace(/\s+/g, '-') : null);
+    var portada = c.logo || c.image || c.portada || c.icon || null;
+    var url =
+      c.url ||
+      c.stream ||
+      c.embed ||
+      (c.servers && c.servers[0] && (c.servers[0].url || c.servers[0])) ||
+      null;
+    if (url && String(url).indexOf('http') !== 0) {
+      url = STREAMXHD_BASE + (String(url).charAt(0) === '/' ? url : '/' + url);
+    }
+
+    if (!nombre && !url) continue;
+    out.push({
+      titulo: nombre,
+      slug: slug,
+      link: STREAMXHD_BASE + '/canales/',
+      portada: portada,
+      stream_url: url,
+      url: url,
+      tipo: 'Canal',
+      fuente: 'streamxhd',
+      source_id: '8'
+    });
+  }
+  return out;
+}
 
 // ======================================================
 // FUTBOL LIBRE TV HD (7)
