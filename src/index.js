@@ -9178,6 +9178,37 @@ function streamxhdParseTime(timeStr) {
   return { fecha: null, hora: h ? h[1] : null };
 }
 
+
+function streamxhdEventStartMs(timeStr, tz) {
+  var s = String(timeStr || '').trim();
+  var m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  var offsetH = -5; // America/Lima por defecto
+  var t = String(tz || '').toLowerCase();
+  if (/mexico|mexico_city/.test(t)) offsetH = -6;
+  if (/argentina|buenos_aires/.test(t)) offsetH = -3;
+  if (/madrid|europe\/madrid/.test(t)) offsetH = 1;
+  if (/lima|bogota|quito/.test(t)) offsetH = -5;
+  var y = +m[1], mo = +m[2] - 1, d = +m[3], h = +m[4], mi = +m[5];
+  return Date.UTC(y, mo, d, h - offsetH, mi, 0);
+}
+
+function streamxhdEstadoEvento(ev) {
+  var startMs = streamxhdEventStartMs(ev.time, ev.timezone);
+  if (startMs == null) return 'desconocido';
+  var now = Date.now();
+  var durMin = parseInt(ev.duration, 10);
+  if (!isFinite(durMin) || durMin <= 0) durMin = 130;
+  var extra = parseInt(ev.extraTime, 10) || 0;
+  var endMs = startMs + (durMin + extra) * 60 * 1000;
+  var prontoMs = 90 * 60 * 1000;
+
+  if (now > endMs) return 'finalizado';
+  if (now >= startMs && now <= endMs) return 'en_vivo';
+  if (now < startMs && startMs - now <= prontoMs) return 'pronto';
+  if (now < startMs) return 'proximamente';
+  return 'finalizado';
+}
 /**
  * GET /8/agenda — todos los eventos de streamxhd (fútbol y más deportes)
  * Misma forma que /7/agenda para el front.
@@ -9199,7 +9230,9 @@ async function listarStreamxhdAgenda() {
       var league = leagues[li] || {};
       var events = league.events || [];
       for (var ei = 0; ei < events.length; ei++) {
-        var ev = events[ei] || {};
+        var ev = events[ei] || {};      
+        var estadoEv = streamxhdEstadoEvento(ev);
+        if (estadoEv !== 'en_vivo' && estadoEv !== 'pronto') continue;
         var th = streamxhdParseTime(ev.time);
         var servers = Array.isArray(ev.servers) ? ev.servers : [];
         var reproductores = [];
@@ -9243,6 +9276,7 @@ async function listarStreamxhdAgenda() {
           fecha: th.fecha,
           hora: th.hora,
           hora_fuente: th.hora,
+          status: estadoEv,
           fecha_hora: ev.time || null,
           timezone: ev.timezone || 'America/Lima',
           pais: null,
