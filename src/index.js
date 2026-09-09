@@ -9220,6 +9220,7 @@ async function listarFutbollibreCanales() {
 }
 
 /** GET /7/agenda — parsea /agenda.php (HTML, ya no JSON) */
+/** GET /7/agenda — parsea /agenda.php (eventos + servers en base64) */
 async function listarFutbollibreAgenda() {
   var res = await fetch(FUTBOLLIBRE_BASE + '/agenda.php', {
     headers: Object.assign({}, futbolLibreHeaders(), {
@@ -9229,65 +9230,123 @@ async function listarFutbollibreAgenda() {
   });
   if (!res.ok) throw new Error('FutbolLibre agenda HTTP ' + res.status);
   var html = await res.text();
-  var out = [];
-  var seen = Object.create(null);
 
-  // Enlaces tipo: texto del partido + hora
-  var re = /<a[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-  var m;
-  while ((m = re.exec(html)) !== null) {
-    var href = String(m[1] || '').trim();
-    var txt = String(m[2] || '')
+  function decodeB64Url(b64) {
+    try {
+      var s = String(b64 || '').replace(/-/g, '+').replace(/_/g, '/');
+      while (s.length % 4) s += '=';
+      var bin = atob(s);
+      try {
+        return decodeURIComponent(escape(bin));
+      } catch (e1) {
+        return bin;
+      }
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function absUrl(u) {
+    u = String(u || '').trim();
+    if (!u || u === '#') return null;
+    if (u.indexOf('http') === 0) return u;
+    if (u.charAt(0) === '/') return FUTBOLLIBRE_BASE + u;
+    return FUTBOLLIBRE_BASE + '/' + u;
+  }
+
+  // Fecha del encabezado: "Agenda - Miercoles 9 de Septiembre de 2026"
+  var fechaTexto = null;
+  var fm = html.match(/Agenda\s*[-–]\s*([^<]+)/i);
+  if (fm) fechaTexto = fm[1].replace(/\s+/g, ' ').trim();
+
+  var out = [];
+
+  // Cada evento: <li class="XXX"> ... </li> con <ul> de servers dentro
+  var reEvento = /<li\s+class=["']([A-Z]{2,4})["']\s*>\s*<a[^>]*>([\s\S]*?)<\/a>\s*<ul>([\s\S]*?)<\/ul>\s*<\/li>/gi;
+  var em;
+  while ((em = reEvento.exec(html)) !== null) {
+    var ligaCode = em[1]; // CHA, LIB, ENG...
+    var headHtml = em[2];
+    var serversHtml = em[3];
+
+    var titulo = headHtml
+      .replace(/<span[^>]*>[\s\S]*?<\/span>/gi, ' ')
       .replace(/<[^>]+>/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
-    if (!txt || txt.length < 4) continue;
-    if (/^#/.test(href) && !/\d{1,2}:\d{2}/.test(txt)) continue;
-    if (/^(inicio|home|canales?)$/i.test(txt)) continue;
-
-    var key = txt.toLowerCase();
-    if (seen[key]) continue;
-    seen[key] = 1;
 
     var hora = null;
-    var hm = txt.match(/(\d{1,2}:\d{2})\s*$/);
+    var hm = headHtml.match(/<span[^>]*class=["'][^"']*\bt\b[^"']*["'][^>]*>\s*(\d{1,2}:\d{2})\s*<\/span>/i);
     if (hm) hora = hm[1];
+    else {
+      var hm2 = titulo.match(/(\d{1,2}:\d{2})\s*$/);
+      if (hm2) {
+        hora = hm2[1];
+        titulo = titulo.replace(/\s*\d{1,2}:\d{2}\s*$/, '').trim();
+      }
+    }
+    if (!titulo) continue;
 
-    var titulo = txt.replace(/\s*\d{1,2}:\d{2}\s*$/, '').trim() || txt;
-    var link = href;
-    if (link && link.charAt(0) === '/') link = FUTBOLLIBRE_BASE + link;
-    if (!link || link === '#' || link === FUTBOLLIBRE_BASE + '#') {
-      link = FUTBOLLIBRE_BASE + '/agenda.php';
+    var reproductores = [];
+    var seen = Object.create(null);
+    var reSrv = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+    var sm;
+    while ((sm = reSrv.exec(serversHtml)) !== null) {
+      var href = sm[1];
+      var labelHtml = sm[2];
+      var nombre = labelHtml
+        .replace(/<span[^>]*>[\s\S]*?<\/span>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim() || 'Server';
+
+      var calidad = null;
+      var cq = labelHtml.match(/<span[^>]*>\s*([^<]+)\s*<\/span>/i);
+      if (cq) calidad = cq[1].replace(/\s+/g, ' ').trim();
+
+      var playUrl = null;
+      var rm = href.match(/[?&]r=([^&]+)/i);
+      if (rm) {
+        playUrl = decodeB64Url(decodeURIComponent(rm[1]));
+      }
+      if (!playUrl) playUrl = absUrl(href);
+      if (!playUrl || seen[playUrl]) continue;
+      seen[playUrl] = 1;
+
+      // Link intermedio del sitio (por si el cliente quiere abrir eventos.html)
+      var linkEvento = absUrl(href);
+
+      reproductores.push({
+        servidor: nombre,
+        calidad: calidad,
+        url: playUrl,
+        link_evento: linkEvento,
+        tipo: 'embed',
+        fuente: 'futbollibre'
+      });
     }
 
     out.push({
       id: null,
       titulo: titulo,
+      liga: ligaCode || null,
       fecha: null,
       hora: hora,
       fecha_hora: null,
+      fecha_texto: fechaTexto,
       pais: null,
       portada: FUTBOLLIBRE_IMG_DEFAULT,
       tipo: 'Evento',
       fuente: 'futbollibre',
       source_id: '7',
-      reproductores: [],
-      embeds: [],
-      link: link
+      reproductores: reproductores,
+      embeds: reproductores.map(function (r) {
+        return r.url;
+      }),
+      total: reproductores.length,
+      link: FUTBOLLIBRE_BASE + '/agenda.php'
     });
   }
-
-  var fechaTexto = null;
-  try {
-    var now = new Date();
-    fechaTexto = fechaAgendaEnEspanol(
-      now.getFullYear() +
-        '-' +
-        String(now.getMonth() + 1).padStart(2, '0') +
-        '-' +
-        String(now.getDate()).padStart(2, '0')
-    );
-  } catch (e) { /* ok */ }
 
   return {
     success: true,
