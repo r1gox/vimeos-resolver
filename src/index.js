@@ -9173,6 +9173,24 @@ async function listarFutbollibreCanales() {
   var html = await res.text();
   var bySlug = Object.create(null);
 
+  // portada: <img src="..."> cerca de /en-vivo/{slug}
+  var portadaBySlug = Object.create(null);
+  var rePortada =
+    /<img[^>]+src=["']([^"']+)["'][^>]*>[\s\S]{0,500}?href=["']\/en-vivo\/([a-z0-9\-]+)["']/gi;
+  var pm;
+  while ((pm = rePortada.exec(html))) {
+    var imgUrl = pm[1].trim();
+    var slugP = pm[2];
+    if (!imgUrl || !slugP) continue;
+    if (imgUrl.indexOf('http') !== 0) {
+      imgUrl =
+        imgUrl.charAt(0) === '/'
+          ? FUTBOLLIBRE_BASE + imgUrl
+          : FUTBOLLIBRE_BASE + '/' + imgUrl;
+    }
+    if (!portadaBySlug[slugP]) portadaBySlug[slugP] = imgUrl;
+  }
+  
   var reNamed = /href=["']\/en-vivo\/([a-z0-9\-]+)["'][^>]*>\s*([^<]{1,80})</gi;
   var m;
   while ((m = reNamed.exec(html))) {
@@ -9230,6 +9248,7 @@ async function listarFutbollibreCanales() {
       titulo: bySlug[s],
       slug: s,
       link: FUTBOLLIBRE_BASE + '/en-vivo/' + s,
+      portada: portadaBySlug[s] || null,
       stream_url: streamUrl,
       url: streamUrl,
       tipo: 'Canal',
