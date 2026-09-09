@@ -9285,7 +9285,6 @@ async function listarStreamxhdAgenda() {
           away_team: ev.awayTeam || null,
           home_logo: ev.homeLogo || null,
           away_logo: ev.awayLogo || null,
-          status: ev.status || null,
           duration: ev.duration != null ? ev.duration : null,
           tipo: 'Evento',
           fuente: 'streamxhd',
