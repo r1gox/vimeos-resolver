@@ -28,6 +28,7 @@ var PELISPLUS_BASE = 'https://www.pelisplushd.la';
 var ANIMEAV1_BASE = 'https://animeav1.com';
 var DORAMASFLIX_BASE = 'https://doramasflix.io';
 var DORAMASFLIX_GQL = 'https://user-api.fluxcedene.net/graphql';
+var FUTBOLLIBRE_BASE = 'https://futbollibretvhd.org';
 // Metadatos TMDB vía worker público (no cambia el flujo de embeds/fuentes)
 var TMDB_META_API = ''; // desactivado: meta solo de la página fuente (+ TMDB key si hay)
 
@@ -238,7 +239,8 @@ async function handleRequest(request, env) {
         '2': 'hackstore',
         '3': 'pelisplushd',
         '4': 'animeav1',
-        '6': 'doramasflix'
+        '6': 'doramasflix',
+        '7': 'futbollibre'
       },
       endpoints: {
         search: origin + '/search?q={texto}',
@@ -264,7 +266,10 @@ async function handleRequest(request, env) {
         streamwish_streamurl: origin + '/wish/streamurl?url={embed_streamwish}',
         vidhide_streamurl: origin + '/vidhide/streamurl?url={embed}',
         voe_streamurl: origin + '/voe/streamurl?url={embed}',
-        goodstream_streamurl: origin + '/goodstream/streamurl?url={embed}'
+        goodstream_streamurl: origin + '/goodstream/streamurl?url={embed}',
+        futbollibre_canales: origin + '/7/canales',
+        futbollibre_agenda: origin + '/7/agenda',
+        futbollibre_canal: origin + '/7/canal/{slug}'
       },
       ejemplos: {
         buscar: origin + '/search?q=acaramelados',
@@ -332,6 +337,8 @@ async function handleRequest(request, env) {
     }
   }
 
+
+  
   // ---------- episodePostId (compat) ----------
   var episodePostId = url.searchParams.get('episodePostId');
   if (episodePostId) {
@@ -424,6 +431,55 @@ async function handleRequest(request, env) {
     }
   }
 
+
+  // ---------- LIVE: futbollibretvhd (7) — canales + agenda ----------
+  if (parts[0] === '7' || parts[0] === 'futbollibre' || parts[0] === 'futbol' || parts[0] === 'fltv') {
+    try {
+      if (!parts[1] || parts[1] === 'canales') {
+        var itemsFl = await listarFutbollibreCanales();
+        return json({
+          success: true,
+          fuente: 'futbollibre',
+          source_id: '7',
+          tipo: 'Canales',
+          items: itemsFl,
+          total: itemsFl.length
+        });
+      }
+      if (parts[1] === 'agenda') {
+        var agendaFl = await listarFutbollibreAgenda();
+        return json({
+          success: true,
+          fuente: 'futbollibre',
+          source_id: '7',
+          tipo: 'Agenda',
+          link: FUTBOLLIBRE_BASE + '/agenda',
+          items: agendaFl,
+          total: agendaFl.length
+        });
+      }
+      if (parts[1] === 'canal' && parts[2]) {
+        return json(await scrapearFutbollibreCanal(parts[2]));
+      }
+      return json({
+        success: false,
+        error: 'Uso: /7/canales | /7/agenda | /7/canal/{slug}',
+        ejemplos: [
+          origin + '/7/canales',
+          origin + '/7/agenda',
+          origin + '/7/canal/espn-1'
+        ]
+      }, 400);
+    } catch (errFl) {
+      return json({
+        success: false,
+        fuente: 'futbollibre',
+        source_id: '7',
+        error: errFl.message || String(errFl)
+      }, 502);
+    }
+  }
+  
   // ---------- Rutas con ID: /{id}/serie|pelicula|anime/{slug}[/{s}/{e}] ----------
   // parts[0] puede ser 1|2|3|lamovie|hackstore|pelisplushd
   var pathSource = normalizarSourceId(parts[0] || '');
@@ -9033,5 +9089,236 @@ async function scrapearDoramasflix(pageUrl, opts) {
     embeds: [],
     reproductores: [],
     descargas: []
+  };
+}
+
+
+// ======================================================
+// FUTBOL LIBRE TV HD (7)
+// Canales en vivo + agenda
+// https://futbollibretvhd.org/
+// ======================================================
+function futbolLibreHeaders() {
+  return {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+    'Referer': FUTBOLLIBRE_BASE + '/'
+  };
+}
+
+function b64DecodeUtf8(str) {
+  try {
+    var s = String(str || '').replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    if (typeof atob === 'function') {
+      var bin = atob(s);
+      try {
+        return decodeURIComponent(escape(bin));
+      } catch (e1) {
+        return bin;
+      }
+    }
+    if (typeof Buffer !== 'undefined') {
+      return Buffer.from(s, 'base64').toString('utf8');
+    }
+  } catch (e) {}
+  return null;
+}
+
+function decodeFutbollibreEmbedIframe(iframePath) {
+  if (!iframePath) return null;
+  var m = String(iframePath).match(/[?&]r=([^&]+)/);
+  if (!m) {
+    if (String(iframePath).indexOf('http') === 0) return iframePath;
+    return FUTBOLLIBRE_BASE + (iframePath.charAt(0) === '/' ? iframePath : '/' + iframePath);
+  }
+  return b64DecodeUtf8(decodeURIComponent(m[1]));
+}
+
+/** GET /7/canales — todos los canales deportivos en vivo */
+async function listarFutbollibreCanales() {
+  var res = await fetch(FUTBOLLIBRE_BASE + '/', { headers: futbolLibreHeaders() });
+  if (!res.ok) throw new Error('FutbolLibre canales HTTP ' + res.status);
+  var html = await res.text();
+  var bySlug = Object.create(null);
+
+  var reNamed = /href=["']\/en-vivo\/([a-z0-9\-]+)["'][^>]*>\s*([^<]{1,80})</gi;
+  var m;
+  while ((m = reNamed.exec(html))) {
+    var slug = m[1];
+    var titulo = String(m[2] || '').replace(/\s+/g, ' ').trim();
+    if (!slug) continue;
+    if (/^ver canal$/i.test(titulo) || !titulo) {
+      if (!bySlug[slug]) bySlug[slug] = slug.replace(/-/g, ' ');
+      continue;
+    }
+    if (!bySlug[slug] || bySlug[slug] === slug.replace(/-/g, ' ')) {
+      bySlug[slug] = titulo;
+    }
+  }
+
+  var re = /\/en-vivo\/([a-z0-9\-]+)/gi;
+  while ((m = re.exec(html))) {
+    if (!bySlug[m[1]]) bySlug[m[1]] = m[1].replace(/-/g, ' ');
+  }
+
+  var out = [];
+  var slugs = Object.keys(bySlug).sort();
+  for (var i = 0; i < slugs.length; i++) {
+    var s = slugs[i];
+    out.push({
+      titulo: bySlug[s],
+      slug: s,
+      link: FUTBOLLIBRE_BASE + '/en-vivo/' + s,
+      tipo: 'Canal',
+      fuente: 'futbollibre',
+      source_id: '7'
+    });
+  }
+  return out;
+}
+
+/** GET /7/agenda — partidos del día + servers (agenda-data.php) */
+async function listarFutbollibreAgenda() {
+  var res = await fetch(FUTBOLLIBRE_BASE + '/agenda-data.php', {
+    headers: Object.assign({}, futbolLibreHeaders(), {
+      'Accept': 'application/json, text/javascript, */*',
+      'Referer': FUTBOLLIBRE_BASE + '/agenda',
+      'X-Requested-With': 'XMLHttpRequest'
+    })
+  });
+  if (!res.ok) throw new Error('FutbolLibre agenda HTTP ' + res.status);
+  var payload = await res.json();
+  var rows = (payload && payload.data) || [];
+  var out = [];
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i] || {};
+    var attr = row.attributes || {};
+    var desc = String(attr.diary_description || '').replace(/\s+/g, ' ').trim();
+    var fecha = attr.date_diary || null;
+    var hora = attr.diary_hour || null;
+    if (hora && /^\d{2}:\d{2}:\d{2}$/.test(hora)) hora = hora.slice(0, 5);
+
+    var embedsRaw = (attr.embeds && attr.embeds.data) || [];
+    var reproductores = [];
+    var seenUrl = Object.create(null);
+
+    for (var e = 0; e < embedsRaw.length; e++) {
+      var ea = (embedsRaw[e] && embedsRaw[e].attributes) || {};
+      var nombre = ea.embed_name || 'Server';
+      var iframePath = ea.embed_iframe || '';
+      var playUrl = decodeFutbollibreEmbedIframe(iframePath);
+      if (!playUrl || seenUrl[playUrl]) continue;
+      seenUrl[playUrl] = 1;
+
+      var wrapper = null;
+      if (iframePath) {
+        wrapper =
+          iframePath.indexOf('http') === 0
+            ? iframePath
+            : FUTBOLLIBRE_BASE + (iframePath.charAt(0) === '/' ? iframePath : '/' + iframePath);
+      }
+
+      reproductores.push({
+        servidor: nombre,
+        url: playUrl,
+        embed_wrapper: wrapper,
+        tipo: 'embed',
+        fuente: 'futbollibre'
+      });
+    }
+
+    out.push({
+      id: row.id || null,
+      titulo: desc || ('Evento ' + (row.id || '')),
+      fecha: fecha,
+      hora: hora,
+      fecha_hora: fecha && hora ? fecha + 'T' + (attr.diary_hour || hora) : null,
+      tipo: 'Evento',
+      fuente: 'futbollibre',
+      source_id: '7',
+      reproductores: reproductores,
+      embeds: reproductores.map(function (r) { return r.url; }),
+      total_servers: reproductores.length
+    });
+  }
+
+  out.sort(function (a, b) {
+    var ka = (a.fecha || '') + ' ' + (a.hora || '');
+    var kb = (b.fecha || '') + ' ' + (b.hora || '');
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
+
+  return out;
+}
+
+/** GET /7/canal/{slug} — un canal + iframe */
+async function scrapearFutbollibreCanal(slugOrUrl) {
+  var slug = String(slugOrUrl || '').trim();
+  if (slug.indexOf('http') === 0) {
+    var mm = slug.match(/\/en-vivo\/([^\/\?#]+)/i);
+    slug = mm ? decodeURIComponent(mm[1]) : slug;
+  }
+  if (!slug) throw new Error('FutbolLibre: falta slug del canal');
+
+  var detailUrl = FUTBOLLIBRE_BASE + '/en-vivo/' + encodeURIComponent(slug);
+  var res = await fetch(detailUrl, { headers: futbolLibreHeaders() });
+  if (!res.ok) throw new Error('FutbolLibre canal HTTP ' + res.status);
+  var html = await res.text();
+
+  var titulo =
+    (html.match(/<h1[^>]*class=["'][^"']*title[^"']*["'][^>]*>([^<]+)/i) || [])[1] ||
+    (html.match(/<title>([^<]+)/i) || [])[1] ||
+    slug.replace(/-/g, ' ');
+  titulo = String(titulo)
+    .replace(/\s*\|\s*Futbol Online.*$/i, '')
+    .replace(/\s*en vivo por [Ii]nternet.*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  var reproductores = [];
+  var seen = Object.create(null);
+  function addRep(url, servidor) {
+    if (!url || seen[url]) return;
+    seen[url] = 1;
+    reproductores.push({
+      servidor: servidor || 'tvf90',
+      url: url,
+      tipo: 'embed',
+      fuente: 'futbollibre'
+    });
+  }
+
+  var reIframe = /<iframe[^>]+src=["']([^"']+)["']/gi;
+  var im;
+  while ((im = reIframe.exec(html))) {
+    var u = im[1].trim();
+    if (u.indexOf('http') !== 0) {
+      u = u.charAt(0) === '/' ? 'https://tvf90.com' + u : FUTBOLLIBRE_BASE + '/' + u;
+    }
+    var host = 'embed';
+    try {
+      host = new URL(u).hostname.replace(/^www\./, '');
+    } catch (e) {}
+    addRep(u, host);
+  }
+
+  var reStream = /https?:\/\/tvf90\.com\/[^"'\s]+/gi;
+  var sm;
+  while ((sm = reStream.exec(html))) addRep(sm[0], 'tvf90.com');
+
+  return {
+    success: true,
+    fuente: 'futbollibre',
+    source_id: '7',
+    tipo: 'Canal',
+    link: detailUrl,
+    slug: slug,
+    titulo: titulo,
+    reproductores: reproductores,
+    embeds: reproductores.map(function (r) { return r.url; }),
+    total: reproductores.length
   };
 }
