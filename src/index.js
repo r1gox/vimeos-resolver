@@ -456,13 +456,34 @@ async function handleRequest(request, env) {
       }
       if (parts[1] === 'anime' && parts[2]) {
         var slugJk = parts[2];
-        var epJk = parts[4] ? parseInt(parts[4], 10) : (parts[3] ? parseInt(parts[3], 10) : null);
-        // /5/anime/{slug} o /5/anime/{slug}/{ep} o /5/anime/{slug}/{s}/{e}
+        var epJk = null;
         if (parts[4]) epJk = parseInt(parts[4], 10);
-        else if (parts[3] && !parts[4]) epJk = parseInt(parts[3], 10);
-        return json(await scrapearJkanime(JKANIME_BASE + '/' + slugJk + '/', {
+        else if (parts[3]) epJk = parseInt(parts[3], 10);
+
+        var detJk = await scrapearJkanime(JKANIME_BASE + '/' + slugJk + '/', {
           episode: epJk || null
-        }));
+        });
+
+        // Capítulo: solo reproductores (sin meta IMDb)
+        if (epJk || (detJk && (detJk.tipo === 'Capitulo' || detJk.tipo === 'Capítulo'))) {
+          return json(detJk);
+        }
+
+        // Detalle anime: enriquecer rating / votos / imdb_id (igual que el resto)
+        try {
+          detJk = await enriquecerDetalleConTmdb(detJk, 'anime');
+        } catch (eJkMeta) { /* silencioso */ }
+        try {
+          if (detJk) await aplicarPortadaPreferirFuente(detJk);
+        } catch (eJkPort) {}
+        try {
+          if (detJk) normalizarCamposResultado(detJk);
+        } catch (eJkNorm) {}
+        try {
+          if (detJk) detJk = formatearDetalleRespuesta(detJk, origin);
+        } catch (eJkFmt) {}
+
+        return json(detJk);
       }
       return json({
         success: false,
