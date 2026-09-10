@@ -349,68 +349,8 @@ async function handleRequest(request, env) {
     });
   }
 
-  // ---------- /search?q= ----------
-  if (parts[0] === 'search' || url.searchParams.has('q')) {
-    var query = url.searchParams.get('q') || parts[1] || '';
-    if (!query) return json({ error: 'Falta q. Usa /search?q=texto' }, 400);
-    try {
-      // /5/?q=... o /4/?q=... → fuerza esa fuente
-      var sourceFilter = sourceParam || 'all';
-      var pathSrc = normalizarSourceId(parts[0] || '');
-      if (
-        !sourceParam &&
-        pathSrc &&
-        pathSrc !== 'search' &&
-        ['lamovie', 'hackstore', 'pelisplushd', 'animeav1', 'jkanime', 'doramasflix'].indexOf(pathSrc) !== -1
-      ) {
-        sourceFilter = pathSrc;
-      }
-      
-      var limit = parseInt(url.searchParams.get('limit') || '40', 10);
-      if (!isFinite(limit) || limit < 1) limit = 40;
-      if (limit > 80) limit = 80;
-      var resultados = await buscarUniversal(query, sourceFilter, limit);
-      if (resultados.resultados) {
-        for (var ri = 0; ri < resultados.resultados.length; ri++) {
-          var r = resultados.resultados[ri];
-          var tipoPath = (r.tipo === 'Serie' || r.tipo === 'Anime')
-            ? (r.tipo === 'Anime' ? 'anime' : 'serie')
-            : 'pelicula';
-          var sid = sourceIdFromName(r.fuente);
-          r.titulo = limpiarTitulo(r.titulo || '');
-          // Título basura de la fuente (encoding / slug numérico)
-          if (tituloPareceRoto(r.titulo)) {
-            var fromSlug = tituloDesdeSlug(r.slug);
-            if (fromSlug) r.titulo = fromSlug;
-          }
-          if (r.slug) {
-            r.url_extract = origin + '/' + sid + '/' + tipoPath + '/' + r.slug;
-            r.source_id = sid;
-          }
-          delete r.link;
-          delete r.url;
-        }
-        // LISTADO/BÚSQUEDA: solo campos esenciales (meta completa va en detalle)
-        try {
-          for (var cj = 0; cj < resultados.resultados.length; cj++) {
-            resultados.resultados[cj] = slimResultadoLista(resultados.resultados[cj], origin);
-          }
-          resultados.total = resultados.resultados.length;
-        } catch (eSlim) { /* silencioso */ }
-      }
-      var pageNum = parseInt(url.searchParams.get('page') || '1', 10) || 1;
-      var lista = (resultados && resultados.resultados) ? resultados.resultados : [];
-      return json({
-        query: query,
-        page: pageNum,
-        count: lista.length,
-        results: lista
-      });
-    } catch (err) {
-      return json({ success: false, error: err.message }, 500);
-    }
-  }
 
+  // ---------- /search?q= ----------
 
   
   // ---------- episodePostId (compat) ----------
@@ -509,9 +449,10 @@ async function handleRequest(request, env) {
     // ---------- JKANIME (5) ----------
   if (parts[0] === '5' || parts[0] === 'jkanime' || parts[0] === 'jk') {
     try {
-      if (parts[1] === 'buscar' || parts[1] === 'search') {
-        var qJk = url.searchParams.get('q') || url.searchParams.get('query') || parts[2] || '';
-        return json(await buscarJkanime(decodeURIComponent(qJk)));
+
+      var qJkRoot = url.searchParams.get('q') || url.searchParams.get('query');
+      if (qJkRoot && (!parts[1] || parts[1] === 'buscar' || parts[1] === 'search')) {
+        return json(await buscarJkanime(decodeURIComponent(qJkRoot)));
       }
       if (parts[1] === 'anime' && parts[2]) {
         var slugJk = parts[2];
@@ -537,6 +478,68 @@ async function handleRequest(request, env) {
     }
   }
 
+
+    if (parts[0] === 'search' || url.searchParams.has('q')) {
+    var query = url.searchParams.get('q') || parts[1] || '';
+    if (!query) return json({ error: 'Falta q. Usa /search?q=texto' }, 400);
+    try {
+      // /5/?q=... o /4/?q=... → fuerza esa fuente
+      var sourceFilter = sourceParam || 'all';
+      var pathSrc = normalizarSourceId(parts[0] || '');
+      if (
+        !sourceParam &&
+        pathSrc &&
+        pathSrc !== 'search' &&
+        ['lamovie', 'hackstore', 'pelisplushd', 'animeav1', 'jkanime', 'doramasflix'].indexOf(pathSrc) !== -1
+      ) {
+        sourceFilter = pathSrc;
+      }
+      
+      var limit = parseInt(url.searchParams.get('limit') || '40', 10);
+      if (!isFinite(limit) || limit < 1) limit = 40;
+      if (limit > 80) limit = 80;
+      var resultados = await buscarUniversal(query, sourceFilter, limit);
+      if (resultados.resultados) {
+        for (var ri = 0; ri < resultados.resultados.length; ri++) {
+          var r = resultados.resultados[ri];
+          var tipoPath = (r.tipo === 'Serie' || r.tipo === 'Anime')
+            ? (r.tipo === 'Anime' ? 'anime' : 'serie')
+            : 'pelicula';
+          var sid = sourceIdFromName(r.fuente);
+          r.titulo = limpiarTitulo(r.titulo || '');
+          // Título basura de la fuente (encoding / slug numérico)
+          if (tituloPareceRoto(r.titulo)) {
+            var fromSlug = tituloDesdeSlug(r.slug);
+            if (fromSlug) r.titulo = fromSlug;
+          }
+          if (r.slug) {
+            r.url_extract = origin + '/' + sid + '/' + tipoPath + '/' + r.slug;
+            r.source_id = sid;
+          }
+          delete r.link;
+          delete r.url;
+        }
+        // LISTADO/BÚSQUEDA: solo campos esenciales (meta completa va en detalle)
+        try {
+          for (var cj = 0; cj < resultados.resultados.length; cj++) {
+            resultados.resultados[cj] = slimResultadoLista(resultados.resultados[cj], origin);
+          }
+          resultados.total = resultados.resultados.length;
+        } catch (eSlim) { /* silencioso */ }
+      }
+      var pageNum = parseInt(url.searchParams.get('page') || '1', 10) || 1;
+      var lista = (resultados && resultados.resultados) ? resultados.resultados : [];
+      return json({
+        query: query,
+        page: pageNum,
+        count: lista.length,
+        results: lista
+      });
+    } catch (err) {
+      return json({ success: false, error: err.message }, 500);
+    }
+  }
+  
   // ---------- LIVE: futbollibretvhd (7) — canales + agenda ----------
   if (parts[0] === '7' || parts[0] === 'futbollibre' || parts[0] === 'futbol' || parts[0] === 'fltv') {
     try {
@@ -6502,7 +6505,11 @@ async function buscarUniversal(query, sourceFilter, limit) {
   // Merge por obra → sin duplicados. Tipo final: cine > dorama > anime basura.
   var cadena = [
     { id: 'animeav1', aliases: ['animeav1', '4', 'av1'], fn: function () { return buscarAnimeAv1(q, limit); } },
-    { id: 'jkanime', aliases: ['jkanime', '5', 'jk'], fn: function () { return buscarJkanime(q).then(function (r) { return (r && r.resultados) ? r.resultados : []; }).catch(function () { return []; }); } },
+    { id: 'jkanime', aliases: ['jkanime', '5', 'jk'], fn: function () {
+      return buscarJkanime(q).then(function (r) {
+      return (r && r.resultados) ? r.resultados : [];
+      }).catch(function () { return []; });
+    } },
     { id: 'doramasflix', aliases: ['doramasflix', '6', 'doramas', 'dfx'], fn: function () { return buscarDoramasflix(q, limit); } },
     { id: 'pelisplushd', aliases: ['pelisplushd', 'pelisplus', '3', 'pp'], fn: function () { return buscarPelisplus(q, limit); } },
     { id: 'lamovie', aliases: ['lamovie', '1', 'lm'], fn: function () { return buscarLamovie(q, limit); } },
@@ -9855,6 +9862,7 @@ function parseMetaListaJk(html, label) {
 async function buscarJkanime(query) {
   var q = String(query || '').trim();
   if (!q) throw new Error('Jkanime: falta query');
+
   var url = JKANIME_BASE + '/buscar/' + encodeURIComponent(q);
   var res = await fetch(url, { headers: jkanimeHeaders() });
   if (!res.ok) throw new Error('Jkanime buscar HTTP ' + res.status);
@@ -9863,13 +9871,14 @@ async function buscarJkanime(query) {
   var out = [];
   var seen = Object.create(null);
 
-  // Cada resultado es un bloque class="anime__item"
+  // Resultados: bloques class="anime__item"
   var partes = html.split('class="anime__item"');
   for (var pi = 1; pi < partes.length; pi++) {
-    var block = partes[pi].slice(0, 1500);
+    var block = partes[pi].slice(0, 2000);
 
     var hrefM = block.match(/href="(https:\/\/jkanime\.net\/([a-z0-9\-]+)\/)"/i);
     if (!hrefM) continue;
+
     var slug = hrefM[2];
     if (!slug || seen[slug]) continue;
     if (/^(buscar|genero|studio|temporada|idioma|dash|usuario|img|salir|directorio)$/i.test(slug)) continue;
@@ -9879,7 +9888,7 @@ async function buscarJkanime(query) {
     var portada = portadaM ? portadaM[1].replace(/&quot;/g, '').trim() : null;
 
     var titleM =
-      block.match(/anime__item__text[\s\S]{0,300}?href="[^"]+"[^>]*>\s*([^<]+)/i) ||
+      block.match(/anime__item__text[\s\S]{0,400}?href="[^"]+"[^>]*>\s*([^<]+)/i) ||
       block.match(/<h5[^>]*>\s*<a[^>]*>\s*([^<]+)/i);
     var titulo = titleM
       ? titleM[1].replace(/\s+/g, ' ').trim()
@@ -9901,53 +9910,6 @@ async function buscarJkanime(query) {
     });
   }
 
-  // Por cada card .anime__item (orden href/portada no importa)
-  var reCard = /class="anime__item"([\s\S]*?)class="anime__item__text"([\s\S]*?)<\/div>\s*<\/div>/gi;
-  var cm;
-  while ((cm = reCard.exec(html))) {
-    var block = cm[1] + cm[2];
-    var hrefM = block.match(/href="(https:\/\/jkanime\.net\/([^"\/]+)\/)"/i);
-    if (!hrefM) continue;
-    var portadaM = block.match(/data-setbg="([^"]+)"/i);
-    var titleM =
-      block.match(/<h5[^>]*>\s*<a[^>]*>([^<]+)<\/a>/i) ||
-      block.match(/<a[^>]*href="https:\/\/jkanime\.net\/[^"]+"[^>]*>\s*([^<]{2,120})</i);
-    var portada = portadaM ? portadaM[1].replace(/&quot;/g, '').trim() : null;
-    var titulo = titleM ? titleM[1].replace(/\s+/g, ' ').trim() : hrefM[2].replace(/-/g, ' ');
-    addItem(portada, hrefM[1], hrefM[2], titulo);
-  }
-
-  // Completar por si alguna card no matcheó el bloque
-  var re2 = /href="(https:\/\/jkanime\.net\/([a-z0-9\-]+)\/)"/gi;
-  var m2;
-  while ((m2 = re2.exec(html))) {
-    var slug2 = m2[2];
-    if (seen[slug2]) continue;
-    // título cerca del href
-    var slice = html.slice(Math.max(0, m2.index - 50), m2.index + 400);
-    var t2 =
-      (slice.match(/<h5[^>]*>\s*<a[^>]*>([^<]+)<\/a>/i) ||
-        slice.match(/data-setbg="[^"]+"[\s\S]{0,200}?>([^<]{2,80})</i) ||
-        [])[1];
-    var bg2 = (slice.match(/data-setbg="([^"]+)"/i) || [])[1];
-    addItem(bg2 || null, m2[1], slug2, t2 || slug2.replace(/-/g, ' '));
-  }
-
-  // 3) portadas sueltas por slug si faltan
-  var reBg = /data-setbg="([^"]+)"/gi;
-  var bgs = [];
-  while ((m = reBg.exec(html))) bgs.push(m[1].replace(/&quot;/g, '').trim());
-  // opcional: si un item no tiene portada y hay bg con el slug en la URL
-  for (var i = 0; i < out.length; i++) {
-    if (out[i].portada) continue;
-    for (var j = 0; j < bgs.length; j++) {
-      if (bgs[j].indexOf(out[i].slug) !== -1) {
-        out[i].portada = bgs[j];
-        out[i].image = bgs[j];
-        break;
-      }
-    }
-  }
   return {
     success: true,
     query: q,
