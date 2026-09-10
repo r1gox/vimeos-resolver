@@ -497,7 +497,8 @@ async function handleRequest(request, env) {
         // Quitar nulls y poner rating arriba (NO normalizarCamposResultado)
         detJk = limpiarDetalleJkanime(detJk);
 
-        return json(detJk);
+        return json(detJk);  
+      }
 
       return json({
         success: false,
