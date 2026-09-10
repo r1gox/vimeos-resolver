@@ -9911,12 +9911,9 @@ async function buscarJkanime(query) {
   }
 
   return {
-    success: true,
     query: q,
-    fuente: 'jkanime',
-    source_id: '5',
-    total: out.length,
-    resultados: out,
+    page: 1,
+    count: out.length,
     results: out
   };
 }
