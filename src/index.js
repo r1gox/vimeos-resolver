@@ -354,7 +354,18 @@ async function handleRequest(request, env) {
     var query = url.searchParams.get('q') || parts[1] || '';
     if (!query) return json({ error: 'Falta q. Usa /search?q=texto' }, 400);
     try {
+      // /5/?q=... o /4/?q=... → fuerza esa fuente
       var sourceFilter = sourceParam || 'all';
+      var pathSrc = normalizarSourceId(parts[0] || '');
+      if (
+        !sourceParam &&
+        pathSrc &&
+        pathSrc !== 'search' &&
+        ['lamovie', 'hackstore', 'pelisplushd', 'animeav1', 'jkanime', 'doramasflix'].indexOf(pathSrc) !== -1
+      ) {
+        sourceFilter = pathSrc;
+      }
+      
       var limit = parseInt(url.searchParams.get('limit') || '40', 10);
       if (!isFinite(limit) || limit < 1) limit = 40;
       if (limit > 80) limit = 80;
@@ -6488,12 +6499,14 @@ async function buscarUniversal(query, sourceFilter, limit) {
   // Merge por obra → sin duplicados. Tipo final: cine > dorama > anime basura.
   var cadena = [
     { id: 'animeav1', aliases: ['animeav1', '4', 'av1'], fn: function () { return buscarAnimeAv1(q, limit); } },
+    { id: 'jkanime', aliases: ['jkanime', '5', 'jk'], fn: function () { return buscarJkanime(q).then(function (r) { return (r && r.resultados) ? r.resultados : []; }).catch(function () { return []; }); } },
     { id: 'doramasflix', aliases: ['doramasflix', '6', 'doramas', 'dfx'], fn: function () { return buscarDoramasflix(q, limit); } },
     { id: 'pelisplushd', aliases: ['pelisplushd', 'pelisplus', '3', 'pp'], fn: function () { return buscarPelisplus(q, limit); } },
     { id: 'lamovie', aliases: ['lamovie', '1', 'lm'], fn: function () { return buscarLamovie(q, limit); } },
     { id: 'hackstore', aliases: ['hackstore', '2', 'hs'], fn: function () { return buscarHackstore(q, limit); } }
   ];
 
+  
   function withTimeout(promise, ms) {
     return Promise.race([
       Promise.resolve(promise).catch(function () { return []; }),
