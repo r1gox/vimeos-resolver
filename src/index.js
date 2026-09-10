@@ -9896,16 +9896,11 @@ async function buscarJkanime(query) {
 
     out.push({
       title: titulo,
-      titulo: titulo,
       slug: slug,
       url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug,
-      link: hrefM[1],
-      image: portada,
       portada: portada,
       source: 'jkanime',
-      fuente: 'jkanime',
       type: 'Anime',
-      tipo: 'Anime',
       source_id: '5'
     });
   }
