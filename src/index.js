@@ -730,8 +730,11 @@ function sourceIdFromName(name) {
   if (name === 'hackstore') return '2';
   if (name === 'pelisplushd') return '3';
   if (name === 'animeav1') return '4';
+  if (name === 'jkanime') return '5';
   if (name === 'doramasflix') return '6';
-  return '1'; // lamovie default
+  if (name === 'futbollibre' || name === 'futbol') return '7';
+  if (name === 'lamovie') return '1';
+  return '1';
 }
 
 function sourceNameFromId(id) {
@@ -6559,15 +6562,26 @@ async function buscarUniversal(query, sourceFilter, limit) {
   for (var ha = 0; ha < todos.length; ha++) {
     if (todos[ha] && todos[ha].fuente === 'animeav1') hitsAv1.push(todos[ha]);
   }
-  if (hitsAv1.length) {
+  if (hitsAv1.length && sourceFilter === 'all') {
+    // Búsqueda global: animeav1 manda en anime
     todos = hitsAv1;
   } else {
-    // Sin animeav1: no marcar como Anime resultados de pelisplus/otras
+    // Fuente forzada (/5/?q=) o sin av1: conservar jkanime y el resto
     var sinAnimeFalso = [];
     for (var ha2 = 0; ha2 < todos.length; ha2++) {
       var it2 = todos[ha2];
       if (!it2) continue;
-      if (String(it2.tipo || '') === 'Anime' && it2.fuente !== 'animeav1') continue;
+      var f2 = String(it2.fuente || '');
+      // Solo bloquear "Anime" falso de pelisplus/lamovie/hackstore
+      if (
+        String(it2.tipo || '') === 'Anime' &&
+        f2 !== 'animeav1' &&
+        f2 !== 'jkanime'
+      ) {
+        continue;
+      }
+      // jkanime siempre es Anime
+      if (f2 === 'jkanime') it2.tipo = 'Anime';
       sinAnimeFalso.push(it2);
     }
     todos = sinAnimeFalso;
