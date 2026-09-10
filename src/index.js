@@ -469,16 +469,35 @@ async function handleRequest(request, env) {
           return json(detJk);
         }
 
-        // Solo enriquecer meta (rating, votos, imdb_id) — sin reformatear
+        // Título en inglés para IMDb/TMDB (si no, no hay rating)
+        var tituloPagina = detJk.titulo;
+        var tituloBusqueda = tituloPagina;
+        if (detJk.titulos_alternativos) {
+          var ing = detJk.titulos_alternativos.ingles || detJk.titulos_alternativos.sinonimos;
+          if (ing) {
+            tituloBusqueda = String(ing)
+              .replace(/&#039;/g, "'")
+              .replace(/&quot;/g, '"')
+              .replace(/&amp;/g, '&')
+              .trim();
+          }
+        }
+        // Año desde "Domingo, 07 de Julio de 2024"
+        if (detJk.fecha_estreno_texto && !detJk.year) {
+          var ymJk = String(detJk.fecha_estreno_texto).match(/(19|20)\d{2}/);
+          if (ymJk) detJk.year = ymJk[0];
+        }
+
+        detJk.titulo = tituloBusqueda; // temporal solo para meta
         try {
           detJk = await enriquecerDetalleConTmdb(detJk, 'anime');
         } catch (eJkMeta) {}
-        try {
-          if (detJk) normalizarCamposResultado(detJk);
-        } catch (eJkNorm) {}
+        detJk.titulo = tituloPagina; // restaurar título jkanime
+
+        // Quitar nulls y poner rating arriba (NO normalizarCamposResultado)
+        detJk = limpiarDetalleJkanime(detJk);
 
         return json(detJk);
-      }
 
       return json({
         success: false,
@@ -9840,30 +9859,32 @@ async function scrapearFutbollibreCanal(slugOrUrl) {
 function limpiarDetalleJkanime(item) {
   if (!item || typeof item !== 'object') return item;
 
-  var rating =
-    item.rating != null ? item.rating
-      : (item.calificacion != null ? item.calificacion
-        : (item.imdb && item.imdb.rating != null ? item.imdb.rating : null));
-  var ratingSource =
-    item.rating_source ||
-    (item.imdb && item.imdb.rating != null ? 'imdb'
-      : (item.tmdb && item.tmdb.rating != null ? 'tmdb' : null));
-  var votos =
-    item.votos != null ? item.votos
-      : (item.imdb && item.imdb.votos != null ? item.imdb.votos : null);
+  var rating = item.rating != null ? item.rating
+    : (item.calificacion != null ? item.calificacion
+      : (item.imdb && item.imdb.rating != null ? item.imdb.rating
+        : (item.tmdb && item.tmdb.rating != null ? item.tmdb.rating : null)));
+
+  var votos = item.votos != null ? item.votos
+    : (item.imdb && item.imdb.votos != null ? item.imdb.votos : null);
+
+  var ratingSource = item.rating_source || null;
+  if (!ratingSource && rating != null) {
+    if (item.imdb && item.imdb.rating != null) ratingSource = 'imdb';
+    else if (item.tmdb && item.tmdb.rating != null) ratingSource = 'tmdb';
+    else if (item.calificacion != null) ratingSource = 'fuente';
+  }
 
   var out = {
-    success: item.success !== false,
+    success: true,
     fuente: item.fuente || 'jkanime',
-    source_id: item.source_id || '5',
+    source_id: String(item.source_id || '5'),
     tipo: item.tipo || 'Anime',
     link: item.link || null,
     slug: item.slug || null,
     titulo: item.titulo || null,
     titulo_original: item.titulo_original || null,
-    // rating arriba
     rating: rating != null ? Number(rating) : null,
-    rating_source: rating != null ? ratingSource : null,
+    rating_source: ratingSource,
     votos: votos != null ? String(votos) : null,
     portada: item.portada || null,
     descripcion: item.descripcion || null,
@@ -9876,8 +9897,8 @@ function limpiarDetalleJkanime(item) {
     temporada_anime: item.temporada_anime || null,
     demografia: item.demografia || null,
     idiomas: item.idiomas || null,
-    duracion_texto: item.duracion_texto || item.duracion_texto || null,
     duracion: item.duracion != null ? item.duracion : null,
+    duracion_texto: item.duracion_texto || null,
     estado: item.estado || null,
     en_emision: item.en_emision != null ? item.en_emision : null,
     finalizado: item.finalizado != null ? item.finalizado : null,
@@ -9892,12 +9913,10 @@ function limpiarDetalleJkanime(item) {
     url_extract: item.url_extract || null
   };
 
-  // Borrar null / undefined / "" 
   Object.keys(out).forEach(function (k) {
     if (out[k] == null || out[k] === '') delete out[k];
-    if (Array.isArray(out[k]) && !out[k].length) delete out[k];
+    if (Array.isArray(out[k]) && out[k].length === 0) delete out[k];
   });
-
   return out;
 }
 
