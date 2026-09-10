@@ -9862,15 +9862,11 @@ async function buscarJkanime(query) {
 
   var out = [];
   var seen = Object.create(null);
-  // cards: data-setbg + href + título
-  var re = /data-setbg="([^"]+)"[\s\S]{0,400}?href="(https:\/\/jkanime\.net\/([^"\/]+)\/)"[\s\S]{0,400}?<a[^>]*>([^<]{2,120})</gi;
-  var m;
-  while ((m = re.exec(html))) {
-    var portada = m[1].replace(/&quot;/g, '"').trim();
-    var link = m[2];
-    var slug = m[3];
-    var titulo = m[4].replace(/\s+/g, ' ').trim();
-    if (!slug || seen[slug]) continue;
+
+  function addItem(portada, link, slug, titulo) {
+    if (!slug || seen[slug]) return;
+    // ignorar rutas del sitio
+    if (/^(buscar|genero|studio|temporada|idioma|dash|usuario|img|salir|directorio)/i.test(slug)) return;
     seen[slug] = 1;
     out.push({
       title: titulo,
@@ -9878,34 +9874,49 @@ async function buscarJkanime(query) {
       slug: slug,
       url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug,
       link: link,
-      image: portada,
-      portada: portada,
+      image: portada || null,
+      portada: portada || null,
       source: 'jkanime',
+      fuente: 'jkanime',
       type: 'Anime',
+      tipo: 'Anime',
       source_id: '5'
     });
   }
-  // fallback más suelto
-  if (!out.length) {
-    var re2 = /href="(https:\/\/jkanime\.net\/([a-z0-9\-]+)\/)"[^>]*>\s*([^<]{2,80})</gi;
-    while ((m = re2.exec(html))) {
-      var slug2 = m[2];
-      if (/^(buscar|genero|studio|temporada|idioma|dash|usuario|img)/i.test(slug2)) continue;
-      if (seen[slug2]) continue;
-      seen[slug2] = 1;
-      out.push({
-        title: m[3].trim(),
-        titulo: m[3].trim(),
-        slug: slug2,
-        url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug2,
-        link: m[1],
-        source: 'jkanime',
-        type: 'Anime',
-        source_id: '5'
-      });
-    }
+
+  // 1) cards con portada
+  var re = /data-setbg="([^"]+)"[\s\S]{0,800}?href="(https:\/\/jkanime\.net\/([^"\/]+)\/)"[\s\S]{0,500}?<a[^>]*>([^<]{2,120})</gi;
+  var m;
+  while ((m = re.exec(html))) {
+    addItem(
+      m[1].replace(/&quot;/g, '').trim(),
+      m[2],
+      m[3],
+      m[4].replace(/\s+/g, ' ').trim()
+    );
   }
 
+  // 2) SIEMPRE completar con más links (season 2, OVAs, etc.)
+  var re2 = /href="(https:\/\/jkanime\.net\/([a-z0-9\-]+)\/)"[^>]*>\s*([^<]{2,100})</gi;
+  while ((m = re2.exec(html))) {
+    addItem(null, m[1], m[2], m[3].replace(/\s+/g, ' ').trim());
+  }
+
+  // 3) portadas sueltas por slug si faltan
+  var reBg = /data-setbg="([^"]+)"/gi;
+  var bgs = [];
+  while ((m = reBg.exec(html))) bgs.push(m[1].replace(/&quot;/g, '').trim());
+  // opcional: si un item no tiene portada y hay bg con el slug en la URL
+  for (var i = 0; i < out.length; i++) {
+    if (out[i].portada) continue;
+    for (var j = 0; j < bgs.length; j++) {
+      if (bgs[j].indexOf(out[i].slug) !== -1) {
+        out[i].portada = bgs[j];
+        out[i].image = bgs[j];
+        break;
+      }
+    }
+  }
   return {
     success: true,
     query: q,
