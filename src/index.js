@@ -446,24 +446,40 @@ async function handleRequest(request, env) {
   }
 
 
-    // ---------- JKANIME (5) ----------
+  // ---------- JKANIME (5) ----------
   if (parts[0] === '5' || parts[0] === 'jkanime' || parts[0] === 'jk') {
     try {
-
       var qJkRoot = url.searchParams.get('q') || url.searchParams.get('query');
       if (qJkRoot && (!parts[1] || parts[1] === 'buscar' || parts[1] === 'search')) {
         return json(await buscarJkanime(decodeURIComponent(qJkRoot)));
       }
 
-    
       if (parts[1] === 'anime' && parts[2]) {
         var slugJk = parts[2];
-        var epJk = ...
-        return json(await scrapearJkanime(JKANIME_BASE + '/' + slugJk + '/', {
+        var epJk = null;
+        if (parts[4]) epJk = parseInt(parts[4], 10);
+        else if (parts[3]) epJk = parseInt(parts[3], 10);
+
+        var detJk = await scrapearJkanime(JKANIME_BASE + '/' + slugJk + '/', {
           episode: epJk || null
-        }));
+        });
+
+        // Capítulo: igual que antes
+        if (epJk || (detJk && (detJk.tipo === 'Capitulo' || detJk.tipo === 'Capítulo'))) {
+          return json(detJk);
+        }
+
+        // Solo enriquecer meta (rating, votos, imdb_id) — sin reformatear
+        try {
+          detJk = await enriquecerDetalleConTmdb(detJk, 'anime');
+        } catch (eJkMeta) {}
+        try {
+          if (detJk) normalizarCamposResultado(detJk);
+        } catch (eJkNorm) {}
+
+        return json(detJk);
       }
-      
+
       return json({
         success: false,
         error: 'Uso: /5/buscar?q=... | /5/anime/{slug} | /5/anime/{slug}/{episodio}',
@@ -474,7 +490,12 @@ async function handleRequest(request, env) {
         ]
       }, 400);
     } catch (errJk) {
-      return json({ success: false, fuente: 'jkanime', source_id: '5', error: errJk.message || String(errJk) }, 502);
+      return json({
+        success: false,
+        fuente: 'jkanime',
+        source_id: '5',
+        error: errJk.message || String(errJk)
+      }, 502);
     }
   }
 
