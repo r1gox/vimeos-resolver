@@ -1094,6 +1094,9 @@ function slimCapituloJkanime(item, opts) {
   var reps = (item && item.reproductores) || [];
   var ep = opts.episodio != null ? opts.episodio : (item && (item.episodio || item.episode));
   var slug = opts.slug || (item && item.slug) || null;
+  
+  var reps = (item && item.reproductores) || [];
+  var dls = (item && item.descargas) || [];
 
   var out = {
     success: true,
@@ -1105,13 +1108,10 @@ function slimCapituloJkanime(item, opts) {
     temporada: 1,
     episodio: ep != null ? Number(ep) : null,
     total: reps.length,
-    reproductores: reps.map(function (r) {
-      return {
-        servidor: r.servidor || r.server || 'Server',
-        url: r.url || null,
-        tipo: r.tipo || 'embed',
-        fuente: 'jkanime'
-      };
+    reproductores: reps,
+    descargas: dls
+  };
+  if (!out.descargas || !out.descargas.length) delete out.descargas;
     })
   };
 
@@ -10132,6 +10132,48 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
   return all;
 }
 
+
+function esDescargaJk(servidor, url) {
+  var s = String(servidor || '').toLowerCase();
+  var u = String(url || '').toLowerCase();
+  if (/mediafire|mega\.nz|mega\.|google.?drive|drive\.google|zippyshare|1fichier|pixeldrain/i.test(s)) return true;
+  if (/mediafire\.com|mega\.nz|drive\.google\.com|1fichier\.com|pixeldrain\.com/i.test(u)) return true;
+  return false;
+}
+
+function parseJkanimeServers(html) {
+  var m = html.match(/var\s+servers\s*=\s*(\[[\s\S]*?\])\s*;/);
+  if (!m) return { reproductores: [], descargas: [] };
+  var arr;
+  try { arr = JSON.parse(m[1]); } catch (e) { return { reproductores: [], descargas: [] }; }
+
+  var reproductores = [];
+  var descargas = [];
+
+  for (var i = 0; i < arr.length; i++) {
+    var s = arr[i] || {};
+    var remote = b64DecodeJk(s.remote || '');
+    if (remote) remote = String(remote).replace(/\s+/g, '').trim();
+    if (!remote) continue;
+
+    var item = {
+      servidor: s.server || 'Server',
+      url: remote,
+      tipo: 'embed',
+      fuente: 'jkanime'
+    };
+    if (s.size) item.size = s.size;
+
+    if (esDescargaJk(item.servidor, item.url)) {
+      item.tipo = 'download';
+      descargas.push(item);
+    } else {
+      reproductores.push(item);
+    }
+  }
+  return { reproductores: reproductores, descargas: descargas };
+}
+
 function parseJkanimeServers(html) {
   var m = html.match(/var\s+servers\s*=\s*(\[[\s\S]*?\])\s*;/);
   if (!m) return [];
@@ -10181,8 +10223,7 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
       (slug + ' ' + epNum);
     tituloEp = String(tituloEp).split('—')[0].split('-')[0].trim();
 
-    var reps = parseJkanimeServers(epHtml);
-        
+    var parsed = parseJkanimeServers(epHtml);
     return {
       success: true,
       fuente: 'jkanime',
@@ -10192,9 +10233,9 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
       titulo: tituloEp,
       temporada: 1,
       episodio: epNum,
-      episode: epNum,
-      reproductores: reps,
-      total: reps.length
+      total: parsed.reproductores.length,
+      reproductores: parsed.reproductores,
+      descargas: parsed.descargas
     };/*
     return {
       success: true,
