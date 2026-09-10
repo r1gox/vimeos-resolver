@@ -3922,8 +3922,12 @@ function mapMetaFromSearchItem(it) {
  */
 function metaCoincideConItem(item, meta) {
   if (!item || !meta) return false;
-  var tItem = normalizarTituloKey(item.titulo || '');
-  var tMeta = normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
+  var tItem = normalizarTituloKey(
+    (item.titulo || '') + ' ' + (item.titulo_original || '') + ' ' + String(item.slug || '').replace(/-/g, ' ')
+  );
+  var tMeta = normalizarTituloKey(
+    (meta.titulo_tmdb || '') + ' ' + (meta.titulo_original || '')
+  );
   if (!tItem || !tMeta) return false;
 
   var yItem = extraerYearItem(item);
@@ -3989,53 +3993,68 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
 //  var sinPortada = !item.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(item.portada));
 
   // Mismo año + imdb: traducciones OK; otra obra con palabras distintas → NO
+  // Mismo año + imdb: SOLO si hay solape de título, actores o sinopsis
+  // (evita The Brink of War → The Dog Stars solo por año 2026)
   var yIt0 = extraerYearItem(item);
   var yMt0 = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
   if (!coincide && meta.imdb_id && yIt0 && yMt0 && String(yIt0) === String(yMt0)) {
-    var STOPX = {
-      the:1, and:1, film:1, movie:1, del:1, de:1, la:1, el:1, los:1, las:1,
-      un:1, una:1, y:1, o:1, en:1, a:1, for:1, of:1, to:1, part:1, parte:1
-    };
     function extrasX(t) {
-      return normalizarTituloKey(t || '').split(/\s+/).filter(function (w) {
-        return w.length >= 4 && !STOPX[w];
-      });
+      return normalizarTituloKey(t || '')
+        .split(/\s+/)
+        .filter(function (w) {
+          return w.length >= 3 &&
+            !/^(the|and|film|movie|una|uno|los|las|del|de|la|el|por|para|with)$/i.test(w);
+        });
     }
-    var tLoc = item.titulo || '';
-    var tMeta = meta.titulo_original || meta.titulo_tmdb || '';
-    var tSlug = String(item.slug || '').replace(/-/g, ' ');
-    var eLoc = extrasX(tLoc + ' ' + tSlug);
+    var tLoc =
+      (item.titulo || '') + ' ' +
+      (item.titulo_original || '') + ' ' +
+      String(item.slug || '').replace(/-/g, ' ');
+    var tMeta = (meta.titulo_original || '') + ' ' + (meta.titulo_tmdb || '');
+    var eLoc = extrasX(tLoc);
     var eMeta = extrasX(tMeta);
-    var sharedX = 0, missingX = 0;
+    var tMetaN = normalizarTituloKey(tMeta);
+    var tLocN = normalizarTituloKey(tLoc);
+
+    var sharedX = 0;
+    var missingX = 0;
     for (var xi = 0; xi < eLoc.length; xi++) {
-      if (normalizarTituloKey(tMeta).indexOf(eLoc[xi]) !== -1) sharedX++;
+      if (tMetaN.indexOf(eLoc[xi]) !== -1) sharedX++;
       else missingX++;
     }
     var extraX = 0;
-    var tLocN = normalizarTituloKey(tLoc + ' ' + tSlug);
     for (var xj = 0; xj < eMeta.length; xj++) {
       if (tLocN.indexOf(eMeta[xj]) === -1) extraX++;
     }
-    // Ej: falta "tiburon" y meta tiene familia/barrio/partido
-    var conflictoTitulo = sharedX >= 1 && missingX >= 1 && extraX >= 2 && sharedX < eLoc.length;
 
-    if (!conflictoTitulo) {
-      coincide = true;
-    } else {
-      var actHits = 0;
-      if (Array.isArray(item.actores) && meta.descripcion) {
-        var dL = String(meta.descripcion).toLowerCase();
-        for (var ai = 0; ai < Math.min(item.actores.length, 6); ai++) {
-          var ap = String(item.actores[ai] || '').split(/\s+/);
-          var last = ap[ap.length - 1] || '';
-          if (last.length >= 5 && dL.indexOf(last.toLowerCase()) !== -1) actHits++;
-        }
+    // Actores de la fuente en la descripción/meta
+    var actHits = 0;
+    if (Array.isArray(item.actores) && (meta.descripcion || meta.titulo_original)) {
+      var dL = String(meta.descripcion || '').toLowerCase() + ' ' + String(meta.titulo_original || '').toLowerCase();
+      for (var ai = 0; ai < Math.min(item.actores.length, 8); ai++) {
+        var ap = String(item.actores[ai] || '').split(/\s+/);
+        var last = ap[ap.length - 1] || '';
+        if (last.length >= 4 && dL.indexOf(last.toLowerCase()) !== -1) actHits++;
       }
-      if (actHits >= 1) {
+    }
+
+    var simDesc = 0;
+    if (item.descripcion && meta.descripcion &&
+      String(item.descripcion).length > 40 && String(meta.descripcion).length > 40) {
+      simDesc = similitudDescripcion(item.descripcion, meta.descripcion);
+    }
+
+    // REGLA ESTRICTA:
+    // - 0 palabras en común → solo actores (>=2) o sinopsis parecida
+    // - algunas en común → OK si no hay conflicto fuerte
+    if (sharedX === 0) {
+      if (actHits >= 2 || simDesc >= 0.18) coincide = true;
+      // si no: se queda false (Dog Stars no pasa)
+    } else {
+      var conflictoTitulo = missingX >= 1 && extraX >= 2 && sharedX < Math.ceil(eLoc.length / 2);
+      if (!conflictoTitulo) {
         coincide = true;
-      } else if (item.descripcion && meta.descripcion &&
-        String(item.descripcion).length > 40 && String(meta.descripcion).length > 40 &&
-        similitudDescripcion(item.descripcion, meta.descripcion) >= 0.12) {
+      } else if (actHits >= 1 || simDesc >= 0.12) {
         coincide = true;
       }
     }
