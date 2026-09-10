@@ -34,6 +34,7 @@ var TMDB_META_API = ''; // desactivado: meta solo de la página fuente (+ TMDB k
 var FUTBOLLIBRE_IMG_BASE = 'https://futbollibres.st';
 var FUTBOLLIBRE_IMG_DEFAULT = FUTBOLLIBRE_IMG_BASE + '/img/librestv.png';
 var STREAMXHD_BASE = 'https://streamxhd.com';
+var JKANIME_BASE = 'https://jkanime.net';
 
 
 function fechaAgendaEnEspanol(isoDate) {
@@ -298,6 +299,7 @@ async function handleRequest(request, env) {
         '2': 'hackstore',
         '3': 'pelisplushd',
         '4': 'animeav1',
+        '5': 'jkanime',
         '6': 'doramasflix',
         '7': 'futbollibre'
       },
@@ -493,6 +495,37 @@ async function handleRequest(request, env) {
   }
 
 
+    // ---------- JKANIME (5) ----------
+  if (parts[0] === '5' || parts[0] === 'jkanime' || parts[0] === 'jk') {
+    try {
+      if (parts[1] === 'buscar' || parts[1] === 'search') {
+        var qJk = url.searchParams.get('q') || url.searchParams.get('query') || parts[2] || '';
+        return json(await buscarJkanime(decodeURIComponent(qJk)));
+      }
+      if (parts[1] === 'anime' && parts[2]) {
+        var slugJk = parts[2];
+        var epJk = parts[4] ? parseInt(parts[4], 10) : (parts[3] ? parseInt(parts[3], 10) : null);
+        // /5/anime/{slug} o /5/anime/{slug}/{ep} o /5/anime/{slug}/{s}/{e}
+        if (parts[4]) epJk = parseInt(parts[4], 10);
+        else if (parts[3] && !parts[4]) epJk = parseInt(parts[3], 10);
+        return json(await scrapearJkanime(JKANIME_BASE + '/' + slugJk + '/', {
+          episode: epJk || null
+        }));
+      }
+      return json({
+        success: false,
+        error: 'Uso: /5/buscar?q=... | /5/anime/{slug} | /5/anime/{slug}/{episodio}',
+        ejemplos: [
+          origin + '/5/buscar?q=one+piece',
+          origin + '/5/anime/one-piece',
+          origin + '/5/anime/one-piece/1'
+        ]
+      }, 400);
+    } catch (errJk) {
+      return json({ success: false, fuente: 'jkanime', source_id: '5', error: errJk.message || String(errJk) }, 502);
+    }
+  }
+
   // ---------- LIVE: futbollibretvhd (7) — canales + agenda ----------
   if (parts[0] === '7' || parts[0] === 'futbollibre' || parts[0] === 'futbol' || parts[0] === 'fltv') {
     try {
@@ -645,6 +678,8 @@ async function handleRequest(request, env) {
       resultado = await scrapearPelisplus(targetUrl, commonOpts);
     } else if (source === 'hackstore') {
       resultado = await scrapearHackstore(targetUrl, commonOpts);
+    } else if (source === 'jkanime') {
+      resultado = await scrapearJkanime(targetUrl, commonOpts);
     } else if (source === 'animeav1') {
       resultado = await scrapearAnimeAv1(targetUrl, commonOpts);
     } else if (source === 'doramasflix') {
@@ -675,6 +710,7 @@ function normalizarSourceId(s) {
   if (s === '3' || s === 'pelisplushd' || s === 'pelisplus' || s === 'pp') return 'pelisplushd';
   if (s === '4' || s === 'animeav1' || s === 'av1' || s === 'aa1') return 'animeav1';
   if (s === '6' || s === 'doramasflix' || s === 'doramas' || s === 'dfx') return 'doramasflix';
+  if (s === '5' || s === 'jkanime' || s === 'jk') return 'jkanime';
   return '';
 }
 
@@ -694,6 +730,7 @@ function sourceNameFromId(id) {
   if (id === '4' || id === 'animeav1' || id === 'av1') return 'animeav1';
   if (id === '6' || id === 'doramasflix' || id === 'dfx') return 'doramasflix';
   if (id === '1' || id === 'lamovie' || id === 'lm') return 'lamovie';
+  if (id === '5' || id === 'jkanime' || id === 'jk') return 'jkanime';
   return id || '';
 }
 
@@ -738,6 +775,7 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
       add('doramasflix', DORAMASFLIX_BASE + '/peliculas/' + s);
     } else if (tipoRuta === 'anime') {
       // ANIME: fuentes de anime primero
+      add('jkanime', JKANIME_BASE + '/' + s + '/');
       add('animeav1', ANIMEAV1_BASE + '/media/' + s);
       add('pelisplushd', PELISPLUS_BASE + '/anime/' + s + '/');
       add('lamovie', LAMOVIE_BASE + '/animes/' + s + '/');
@@ -9739,5 +9777,391 @@ async function scrapearFutbollibreCanal(slugOrUrl) {
       return r.url;
     }),
     total: reproductores.length
+  };
+}
+
+
+// ======================================================
+// JKANIME (5) — https://jkanime.net
+// ======================================================
+function jkanimeHeaders(extra) {
+  var h = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+    'Referer': JKANIME_BASE + '/'
+  };
+  if (extra) {
+    for (var k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) h[k] = extra[k];
+  }
+  return h;
+}
+
+function b64DecodeJk(str) {
+  try {
+    var s = String(str || '').replace(/\s+/g, '');
+    if (typeof atob === 'function') {
+      var bin = atob(s);
+      try { return decodeURIComponent(escape(bin)); } catch (e1) { return bin; }
+    }
+  } catch (e) {}
+  return null;
+}
+
+function parseMetaListaJk(html, label) {
+  var re = new RegExp('<span>\\s*' + label + '\\s*:?</span>\\s*([\\s\\S]*?)</li>', 'i');
+  var m = html.match(re);
+  if (!m) return null;
+  var block = m[1];
+  // textos de links o texto plano
+  var texts = [];
+  var reA = /<a[^>]*>([^<]+)<\/a>/gi;
+  var a;
+  while ((a = reA.exec(block))) texts.push(a[1].replace(/\s+/g, ' ').trim());
+  if (texts.length) return texts;
+  var plain = block.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return plain || null;
+}
+
+/** GET /5/buscar?q= */
+async function buscarJkanime(query) {
+  var q = String(query || '').trim();
+  if (!q) throw new Error('Jkanime: falta query');
+  var url = JKANIME_BASE + '/buscar/' + encodeURIComponent(q);
+  var res = await fetch(url, { headers: jkanimeHeaders() });
+  if (!res.ok) throw new Error('Jkanime buscar HTTP ' + res.status);
+  var html = await res.text();
+
+  var out = [];
+  var seen = Object.create(null);
+  // cards: data-setbg + href + título
+  var re = /data-setbg="([^"]+)"[\s\S]{0,400}?href="(https:\/\/jkanime\.net\/([^"\/]+)\/)"[\s\S]{0,400}?<a[^>]*>([^<]{2,120})</gi;
+  var m;
+  while ((m = re.exec(html))) {
+    var portada = m[1].replace(/&quot;/g, '"').trim();
+    var link = m[2];
+    var slug = m[3];
+    var titulo = m[4].replace(/\s+/g, ' ').trim();
+    if (!slug || seen[slug]) continue;
+    seen[slug] = 1;
+    out.push({
+      title: titulo,
+      titulo: titulo,
+      slug: slug,
+      url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug,
+      link: link,
+      image: portada,
+      portada: portada,
+      source: 'jkanime',
+      type: 'Anime',
+      source_id: '5'
+    });
+  }
+  // fallback más suelto
+  if (!out.length) {
+    var re2 = /href="(https:\/\/jkanime\.net\/([a-z0-9\-]+)\/)"[^>]*>\s*([^<]{2,80})</gi;
+    while ((m = re2.exec(html))) {
+      var slug2 = m[2];
+      if (/^(buscar|genero|studio|temporada|idioma|dash|usuario|img)/i.test(slug2)) continue;
+      if (seen[slug2]) continue;
+      seen[slug2] = 1;
+      out.push({
+        title: m[3].trim(),
+        titulo: m[3].trim(),
+        slug: slug2,
+        url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug2,
+        link: m[1],
+        source: 'jkanime',
+        type: 'Anime',
+        source_id: '5'
+      });
+    }
+  }
+
+  return {
+    success: true,
+    query: q,
+    fuente: 'jkanime',
+    source_id: '5',
+    total: out.length,
+    resultados: out,
+    results: out
+  };
+}
+
+async function fetchJkanimeEpisodes(animeId, refererUrl) {
+  // 1) página para CSRF + cookies (en Workers fetch no guarda cookies solo;
+  //    mandamos CSRF del HTML; si falla, devolvemos [])
+  var pageRes = await fetch(refererUrl || (JKANIME_BASE + '/'), { headers: jkanimeHeaders() });
+  var pageHtml = await pageRes.text();
+  var csrf = (pageHtml.match(/name="csrf-token"\s+content="([^"]+)"/i) || [])[1] || '';
+  var cookie = pageRes.headers.get('set-cookie') || '';
+  // Cloudflare Workers: Set-Cookie puede venir concatenado
+  var cookieHdr = '';
+  try {
+    // algunos runtimes exponen getSetCookie()
+    if (typeof pageRes.headers.getSetCookie === 'function') {
+      cookieHdr = pageRes.headers.getSetCookie().map(function (c) { return c.split(';')[0]; }).join('; ');
+    } else if (cookie) {
+      cookieHdr = cookie.split(/,(?=[^;]+?=)/).map(function (c) { return c.split(';')[0].trim(); }).join('; ');
+    }
+  } catch (eC) {}
+
+  var all = [];
+  var page = 1;
+  var lastPage = 1;
+  while (page <= lastPage && page <= 80) {
+    var epRes = await fetch(JKANIME_BASE + '/ajax/episodes/' + animeId + '/', {
+      method: 'POST',
+      headers: jkanimeHeaders({
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-CSRF-TOKEN': csrf,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Referer': refererUrl || (JKANIME_BASE + '/'),
+        'Cookie': cookieHdr
+      }),
+      body: page > 1 ? ('page=' + page) : ''
+    });
+    if (!epRes.ok) break;
+    var raw = await epRes.text();
+    var data;
+    try { data = JSON.parse(raw); } catch (eJ) { break; }
+    var rows = (data && data.data) || [];
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i] || {};
+      all.push({
+        episodio: row.number,
+        episode: row.number,
+        titulo: row.title || ('Episodio ' + row.number),
+        id: row.id,
+        image: row.image ? ('https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/' + row.image) : null
+      });
+    }
+    lastPage = parseInt(data.last_page || 1, 10) || 1;
+    if (!rows.length) break;
+    page++;
+  }
+  all.sort(function (a, b) { return (a.episodio || 0) - (b.episodio || 0); });
+  return all;
+}
+
+function parseJkanimeServers(html) {
+  var m = html.match(/var\s+servers\s*=\s*(\[[\s\S]*?\])\s*;/);
+  if (!m) return [];
+  var arr;
+  try { arr = JSON.parse(m[1]); } catch (e) { return []; }
+  var out = [];
+  for (var i = 0; i < arr.length; i++) {
+    var s = arr[i] || {};
+    var remote = b64DecodeJk(s.remote || '');
+    if (remote) remote = String(remote).replace(/\s+/g, '').trim();
+    if (!remote) continue;
+    out.push({
+      servidor: s.server || 'Server',
+      url: remote,
+      slug: s.slug || null,
+      lang: s.lang != null ? s.lang : null,
+      size: s.size || null,
+      tipo: 'embed',
+      fuente: 'jkanime'
+    });
+  }
+  return out;
+}
+
+/** Detalle anime o capítulo */
+async function scrapearJkanime(pageUrlOrSlug, opts) {
+  opts = opts || {};
+  var slug = String(pageUrlOrSlug || '').trim();
+  if (slug.indexOf('http') === 0) {
+    var mm = slug.match(/jkanime\.net\/([^\/\?#]+)/i);
+    slug = mm ? decodeURIComponent(mm[1]) : slug;
+  }
+  slug = slug.replace(/\/$/, '');
+  if (!slug) throw new Error('Jkanime: falta slug');
+
+  var detailUrl = JKANIME_BASE + '/' + slug + '/';
+  var epNum = opts.episode ? parseInt(opts.episode, 10) : null;
+
+  // --- CAPÍTULO ---
+  if (epNum && epNum > 0) {
+    var epUrl = JKANIME_BASE + '/' + slug + '/' + epNum + '/';
+    var epRes = await fetch(epUrl, { headers: jkanimeHeaders() });
+    if (!epRes.ok) throw new Error('Jkanime episodio HTTP ' + epRes.status);
+    var epHtml = await epRes.text();
+    var tituloEp =
+      (epHtml.match(/<title>([^<]+)/i) || [])[1] ||
+      (slug + ' ' + epNum);
+    tituloEp = String(tituloEp).split('—')[0].split('-')[0].trim();
+
+    var reps = parseJkanimeServers(epHtml);
+    return {
+      success: true,
+      fuente: 'jkanime',
+      source_id: '5',
+      tipo: 'Capitulo',
+      link: epUrl,
+      slug: slug,
+      titulo: tituloEp,
+      episodio: epNum,
+      episode: epNum,
+      temporada: 1,
+      season: 1,
+      reproductores: reps,
+      embeds: reps.map(function (r) { return r.url; }),
+      total: reps.length,
+      url_extract: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug + '/' + epNum
+    };
+  }
+
+  // --- DETALLE ANIME ---
+  var res = await fetch(detailUrl, { headers: jkanimeHeaders() });
+  if (!res.ok) throw new Error('Jkanime detalle HTTP ' + res.status);
+  var html = await res.text();
+
+  var titulo =
+    (html.match(/property="og:title"\s+content="([^"]+)"/i) || [])[1] ||
+    (html.match(/<title>([^<]+)/i) || [])[1] ||
+    slug;
+  titulo = String(titulo)
+    .replace(/\s*[-–—|]\s*anime.*$/i, '')
+    .replace(/\s*online.*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  var portada =
+    (html.match(/property="og:image"\s+content="([^"]+)"/i) || [])[1] ||
+    null;
+
+  var descripcion =
+    (html.match(/name="description"\s+content="([^"]+)"/i) || [])[1] ||
+    '';
+  descripcion = descripcion
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&amp;/g, '&')
+    .trim();
+
+  var tipo = parseMetaListaJk(html, 'Tipo');
+  if (Array.isArray(tipo)) tipo = tipo[0];
+  tipo = tipo || 'Anime';
+
+  var generos = parseMetaListaJk(html, 'Generos') || parseMetaListaJk(html, 'Géneros') || [];
+  if (typeof generos === 'string') generos = generos.split(',').map(function (g) { return g.trim(); }).filter(Boolean);
+
+  var studios = parseMetaListaJk(html, 'Studios') || parseMetaListaJk(html, 'Studio');
+  var temporada = parseMetaListaJk(html, 'Temporada');
+  if (Array.isArray(temporada)) temporada = temporada[0];
+  var demografia = parseMetaListaJk(html, 'Demografia') || parseMetaListaJk(html, 'Demografía');
+  if (Array.isArray(demografia)) demografia = demografia[0];
+  var idiomas = parseMetaListaJk(html, 'Idiomas') || parseMetaListaJk(html, 'Idioma');
+  if (typeof idiomas === 'string') idiomas = [idiomas];
+
+  var episodiosMeta = parseMetaListaJk(html, 'Episodios');
+  if (Array.isArray(episodiosMeta)) episodiosMeta = episodiosMeta[0];
+  var duracion = parseMetaListaJk(html, 'Duracion') || parseMetaListaJk(html, 'Duración');
+  if (Array.isArray(duracion)) duracion = duracion[0];
+  var emitido = parseMetaListaJk(html, 'Emitido');
+  if (Array.isArray(emitido)) emitido = emitido[0];
+
+  var estado = null;
+  var estM = html.match(/Estado:<\/span>\s*<div[^>]*>([^<]+)/i) ||
+    html.match(/Estado:<\/span>\s*([^<]+)/i);
+  if (estM) estado = estM[1].replace(/\s+/g, ' ').trim();
+
+  var calidad = parseMetaListaJk(html, 'Calidad');
+  if (Array.isArray(calidad)) calidad = calidad[0];
+
+  // títulos alternativos
+  var titulos_alt = {};
+  var altBlock = (html.match(/Titulos Alternativos[\s\S]{0,800}?related_div">([\s\S]*?)<\/div>/i) || [])[1] || '';
+  var sinon = altBlock.match(/Sinonimos<\/b>\s*([^<]+)/i);
+  var ingles = altBlock.match(/Ingles<\/b>\s*([^<]+)/i);
+  var japones = altBlock.match(/Japones<\/b>\s*([^<]+)/i);
+  if (sinon) titulos_alt.sinonimos = sinon[1].trim();
+  if (ingles) titulos_alt.ingles = ingles[1].trim();
+  if (japones) titulos_alt.japones = japones[1].trim();
+
+  var animeId = (html.match(/ajax\/episodes\/(\d+)/) || html.match(/ajax\/search_episode\/(\d+)/) || [])[1] || null;
+
+  var episodios = [];
+  if (animeId) {
+    try {
+      episodios = await fetchJkanimeEpisodes(animeId, detailUrl);
+    } catch (eEp) {
+      episodios = [];
+    }
+  }
+  // fallback: si no hay lista, al menos último cap visible
+  if (!episodios.length) {
+    var lastEp = html.match(new RegExp(slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/(\\d+)/'));
+    // mejor: todos los /slug/N/
+    var reEp = new RegExp(slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/(\\d+)/', 'g');
+    var nums = {};
+    var em;
+    while ((em = reEp.exec(html))) nums[em[1]] = 1;
+    Object.keys(nums).map(Number).filter(Boolean).sort(function (a, b) { return a - b; }).forEach(function (n) {
+      episodios.push({
+        episodio: n,
+        episode: n,
+        titulo: 'Episodio ' + n,
+        link: JKANIME_BASE + '/' + slug + '/' + n + '/',
+        url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug + '/' + n
+      });
+    });
+  } else {
+    episodios = episodios.map(function (ep) {
+      return Object.assign({}, ep, {
+        link: JKANIME_BASE + '/' + slug + '/' + ep.episodio + '/',
+        url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug + '/' + ep.episodio
+      });
+    });
+  }
+
+  var enEmision = /emisi[oó]n|airing|ongoing/i.test(String(estado || ''));
+  var finalizado = /final|conclu|ended|finished/i.test(String(estado || ''));
+
+  return {
+    success: true,
+    fuente: 'jkanime',
+    source_id: '5',
+    tipo: /pel[ií]cula|movie/i.test(String(tipo)) ? 'Pelicula' : 'Anime',
+    link: detailUrl,
+    slug: slug,
+    titulo: titulo,
+    titulo_original: (titulos_alt.japones || titulos_alt.ingles || null),
+    titulos_alternativos: titulos_alt,
+    portada: portada,
+    descripcion: descripcion,
+    generos: generos,
+    genero: Array.isArray(generos) ? generos.join(', ') : generos,
+    studios: Array.isArray(studios) ? studios : (studios ? [studios] : []),
+    temporada_anime: temporada || null,
+    demografia: demografia || null,
+    idiomas: idiomas || [],
+    duracion_texto: duracion || null,
+    fecha_estreno_texto: emitido || null,
+    estado: estado || null,
+    en_emision: enEmision,
+    finalizado: finalizado,
+    calidad: calidad || null,
+    anime_id: animeId,
+    total_episodios: episodios.length,
+    total_temporadas: 1,
+    temporadas: [{
+      temporada: 1,
+      total_episodios: episodios.length,
+      episodios: episodios.map(function (ep) {
+        return {
+          temporada: 1,
+          episodio: ep.episodio,
+          titulo: ep.titulo || ('Episodio ' + ep.episodio),
+          link: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug + '/' + ep.episodio,
+          slug: slug + '-' + ep.episodio
+        };
+      })
+    }],
+    url_extract: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug
   };
 }
