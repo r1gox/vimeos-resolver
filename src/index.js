@@ -1112,9 +1112,7 @@ function slimCapituloJkanime(item, opts) {
     descargas: dls
   };
   if (!out.descargas || !out.descargas.length) delete out.descargas;
-    })
-  };
-
+  
   Object.keys(out).forEach(function (k) {
     if (out[k] == null || out[k] === '') delete out[k];
   });
@@ -10174,29 +10172,7 @@ function parseJkanimeServers(html) {
   return { reproductores: reproductores, descargas: descargas };
 }
 
-function parseJkanimeServers(html) {
-  var m = html.match(/var\s+servers\s*=\s*(\[[\s\S]*?\])\s*;/);
-  if (!m) return [];
-  var arr;
-  try { arr = JSON.parse(m[1]); } catch (e) { return []; }
-  var out = [];
-  for (var i = 0; i < arr.length; i++) {
-    var s = arr[i] || {};
-    var remote = b64DecodeJk(s.remote || '');
-    if (remote) remote = String(remote).replace(/\s+/g, '').trim();
-    if (!remote) continue;
-    out.push({
-      servidor: s.server || 'Server',
-      url: remote,
-      slug: s.slug || null,
-      lang: s.lang != null ? s.lang : null,
-      size: s.size || null,
-      tipo: 'embed',
-      fuente: 'jkanime'
-    });
-  }
-  return out;
-}
+
 
 /** Detalle anime o capítulo */
 async function scrapearJkanime(pageUrlOrSlug, opts) {
