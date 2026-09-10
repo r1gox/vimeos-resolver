@@ -9863,19 +9863,36 @@ async function buscarJkanime(query) {
   var out = [];
   var seen = Object.create(null);
 
-  function addItem(portada, link, slug, titulo) {
-    if (!slug || seen[slug]) return;
-    if (/^(buscar|genero|studio|temporada|idioma|dash|usuario|img|salir|directorio)/i.test(slug)) return;
+  // Cada resultado es un bloque class="anime__item"
+  var partes = html.split('class="anime__item"');
+  for (var pi = 1; pi < partes.length; pi++) {
+    var block = partes[pi].slice(0, 1500);
+
+    var hrefM = block.match(/href="(https:\/\/jkanime\.net\/([a-z0-9\-]+)\/)"/i);
+    if (!hrefM) continue;
+    var slug = hrefM[2];
+    if (!slug || seen[slug]) continue;
+    if (/^(buscar|genero|studio|temporada|idioma|dash|usuario|img|salir|directorio)$/i.test(slug)) continue;
     seen[slug] = 1;
-    titulo = String(titulo || slug).replace(/\s+/g, ' ').trim();
+
+    var portadaM = block.match(/data-setbg="([^"]+)"/i);
+    var portada = portadaM ? portadaM[1].replace(/&quot;/g, '').trim() : null;
+
+    var titleM =
+      block.match(/anime__item__text[\s\S]{0,300}?href="[^"]+"[^>]*>\s*([^<]+)/i) ||
+      block.match(/<h5[^>]*>\s*<a[^>]*>\s*([^<]+)/i);
+    var titulo = titleM
+      ? titleM[1].replace(/\s+/g, ' ').trim()
+      : slug.replace(/-/g, ' ');
+
     out.push({
       title: titulo,
       titulo: titulo,
       slug: slug,
       url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug,
-      link: link || (JKANIME_BASE + '/' + slug + '/'),
-      image: portada || null,
-      portada: portada || null,
+      link: hrefM[1],
+      image: portada,
+      portada: portada,
       source: 'jkanime',
       fuente: 'jkanime',
       type: 'Anime',
