@@ -9865,15 +9865,15 @@ async function buscarJkanime(query) {
 
   function addItem(portada, link, slug, titulo) {
     if (!slug || seen[slug]) return;
-    // ignorar rutas del sitio
     if (/^(buscar|genero|studio|temporada|idioma|dash|usuario|img|salir|directorio)/i.test(slug)) return;
     seen[slug] = 1;
+    titulo = String(titulo || slug).replace(/\s+/g, ' ').trim();
     out.push({
       title: titulo,
       titulo: titulo,
       slug: slug,
       url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug,
-      link: link,
+      link: link || (JKANIME_BASE + '/' + slug + '/'),
       image: portada || null,
       portada: portada || null,
       source: 'jkanime',
@@ -9884,22 +9884,36 @@ async function buscarJkanime(query) {
     });
   }
 
-  // 1) cards con portada
-  var re = /data-setbg="([^"]+)"[\s\S]{0,800}?href="(https:\/\/jkanime\.net\/([^"\/]+)\/)"[\s\S]{0,500}?<a[^>]*>([^<]{2,120})</gi;
-  var m;
-  while ((m = re.exec(html))) {
-    addItem(
-      m[1].replace(/&quot;/g, '').trim(),
-      m[2],
-      m[3],
-      m[4].replace(/\s+/g, ' ').trim()
-    );
+  // Por cada card .anime__item (orden href/portada no importa)
+  var reCard = /class="anime__item"([\s\S]*?)class="anime__item__text"([\s\S]*?)<\/div>\s*<\/div>/gi;
+  var cm;
+  while ((cm = reCard.exec(html))) {
+    var block = cm[1] + cm[2];
+    var hrefM = block.match(/href="(https:\/\/jkanime\.net\/([^"\/]+)\/)"/i);
+    if (!hrefM) continue;
+    var portadaM = block.match(/data-setbg="([^"]+)"/i);
+    var titleM =
+      block.match(/<h5[^>]*>\s*<a[^>]*>([^<]+)<\/a>/i) ||
+      block.match(/<a[^>]*href="https:\/\/jkanime\.net\/[^"]+"[^>]*>\s*([^<]{2,120})</i);
+    var portada = portadaM ? portadaM[1].replace(/&quot;/g, '').trim() : null;
+    var titulo = titleM ? titleM[1].replace(/\s+/g, ' ').trim() : hrefM[2].replace(/-/g, ' ');
+    addItem(portada, hrefM[1], hrefM[2], titulo);
   }
 
-  // 2) SIEMPRE completar con más links (season 2, OVAs, etc.)
-  var re2 = /href="(https:\/\/jkanime\.net\/([a-z0-9\-]+)\/)"[^>]*>\s*([^<]{2,100})</gi;
-  while ((m = re2.exec(html))) {
-    addItem(null, m[1], m[2], m[3].replace(/\s+/g, ' ').trim());
+  // Completar por si alguna card no matcheó el bloque
+  var re2 = /href="(https:\/\/jkanime\.net\/([a-z0-9\-]+)\/)"/gi;
+  var m2;
+  while ((m2 = re2.exec(html))) {
+    var slug2 = m2[2];
+    if (seen[slug2]) continue;
+    // título cerca del href
+    var slice = html.slice(Math.max(0, m2.index - 50), m2.index + 400);
+    var t2 =
+      (slice.match(/<h5[^>]*>\s*<a[^>]*>([^<]+)<\/a>/i) ||
+        slice.match(/data-setbg="[^"]+"[\s\S]{0,200}?>([^<]{2,80})</i) ||
+        [])[1];
+    var bg2 = (slice.match(/data-setbg="([^"]+)"/i) || [])[1];
+    addItem(bg2 || null, m2[1], slug2, t2 || slug2.replace(/-/g, ' '));
   }
 
   // 3) portadas sueltas por slug si faltan
