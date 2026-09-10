@@ -73,6 +73,24 @@ function portadaDesdeAgendaItem(attr) {
     return FUTBOLLIBRE_IMG_DEFAULT;
   }
 }
+
+
+
+/** PelisPlus: el .jpg full suele ser placeholder; el -thumb es el real */
+function portadaPelisplusThumb(url, slug) {
+  var u = String(url || '').trim();
+  if (!u && slug) {
+    return PELISPLUS_BASE + '/poster/' + slug + '-thumb.jpg';
+  }
+  if (!u) return u;
+  // ya es thumb
+  if (/-thumb\.(jpg|jpeg|png|webp)(\?|$)/i.test(u)) return u;
+  // full → thumb
+  if (/\/poster\/[^\/\?]+\.(jpg|jpeg|png|webp)/i.test(u)) {
+    return u.replace(/\.(jpg|jpeg|png|webp)(\?.*)?$/i, '-thumb.$1$2');
+  }
+  return u;
+}
 /*
 var REPRODUCTORES_PERMITIDOS = [
   'vimeos.net', 'player.vimeos',
@@ -6746,10 +6764,11 @@ async function buscarPelisplus(query, limit) {
         if (pm) {
           portada = pm[1].indexOf('http') === 0 ? pm[1] : PELISPLUS_BASE + (pm[1].charAt(0) === '/' ? pm[1] : '/' + pm[1]);
           // Preferir poster completo sin -thumb si existe patrón
-          portada = portada.replace(/-thumb\.(jpg|png|webp)/i, '.$1');
+         // portada = portada.replace(/-thumb\.(jpg|png|webp)/i, '.$1');
         }
         if (!portada) {
-          portada = PELISPLUS_BASE + '/poster/' + slug + '.jpg';
+        //  portada = PELISPLUS_BASE + '/poster/' + slug + '.jpg';
+          portada = PELISPLUS_BASE + '/poster/' + slug + '-thumb.jpg';
         }
 
         var titulo = tituloDesdeSlug(slug);
@@ -7295,6 +7314,8 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin) {
       if (!portada) portada = bySlug;
       else if (portada.indexOf('/poster/' + slug + '.') === -1) portada = bySlug;
     }
+    
+    portada = portadaPelisplusThumb(portada, slug);
 
     items.push({
       titulo: titulo,
