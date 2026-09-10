@@ -454,37 +454,16 @@ async function handleRequest(request, env) {
       if (qJkRoot && (!parts[1] || parts[1] === 'buscar' || parts[1] === 'search')) {
         return json(await buscarJkanime(decodeURIComponent(qJkRoot)));
       }
+
+    
       if (parts[1] === 'anime' && parts[2]) {
         var slugJk = parts[2];
-        var epJk = null;
-        if (parts[4]) epJk = parseInt(parts[4], 10);
-        else if (parts[3]) epJk = parseInt(parts[3], 10);
-
-        var detJk = await scrapearJkanime(JKANIME_BASE + '/' + slugJk + '/', {
+        var epJk = ...
+        return json(await scrapearJkanime(JKANIME_BASE + '/' + slugJk + '/', {
           episode: epJk || null
-        });
-
-        // Capítulo: solo reproductores (sin meta IMDb)
-        if (epJk || (detJk && (detJk.tipo === 'Capitulo' || detJk.tipo === 'Capítulo'))) {
-          return json(detJk);
-        }
-
-        // Detalle anime: enriquecer rating / votos / imdb_id (igual que el resto)
-        try {
-          detJk = await enriquecerDetalleConTmdb(detJk, 'anime');
-        } catch (eJkMeta) { /* silencioso */ }
-        try {
-          if (detJk) await aplicarPortadaPreferirFuente(detJk);
-        } catch (eJkPort) {}
-        try {
-          if (detJk) normalizarCamposResultado(detJk);
-        } catch (eJkNorm) {}
-        try {
-          if (detJk) detJk = formatearDetalleRespuesta(detJk, origin);
-        } catch (eJkFmt) {}
-
-        return json(detJk);
+        }));
       }
+      
       return json({
         success: false,
         error: 'Uso: /5/buscar?q=... | /5/anime/{slug} | /5/anime/{slug}/{episodio}',
