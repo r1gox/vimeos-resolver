@@ -465,8 +465,12 @@ async function handleRequest(request, env) {
         });
 
         // Capítulo: igual que antes
+            
         if (epJk || (detJk && (detJk.tipo === 'Capitulo' || detJk.tipo === 'Capítulo'))) {
-          return json(detJk);
+          return json(slimCapituloJkanime(detJk, {
+            slug: slugJk,
+            episodio: epJk || detJk.episodio || detJk.episode
+          }));
         }
 
         // Título en inglés para IMDb/TMDB (si no, no hay rating)
@@ -1083,6 +1087,38 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     : ('No se encontro "' + slug + '" en ninguna fuente')) +
   (lastErr && lastErr.message ? (': ' + lastErr.message) : '')
   );
+}
+
+function slimCapituloJkanime(item, opts) {
+  opts = opts || {};
+  var reps = (item && item.reproductores) || [];
+  var ep = opts.episodio != null ? opts.episodio : (item && (item.episodio || item.episode));
+  var slug = opts.slug || (item && item.slug) || null;
+
+  var out = {
+    success: true,
+    tipo: 'Capitulo',
+    fuente: 'jkanime',
+    source_id: '5',
+    slug: slug,
+    titulo: (item && item.titulo) || null,
+    temporada: 1,
+    episodio: ep != null ? Number(ep) : null,
+    total: reps.length,
+    reproductores: reps.map(function (r) {
+      return {
+        servidor: r.servidor || r.server || 'Server',
+        url: r.url || null,
+        tipo: r.tipo || 'embed',
+        fuente: 'jkanime'
+      };
+    })
+  };
+
+  Object.keys(out).forEach(function (k) {
+    if (out[k] == null || out[k] === '') delete out[k];
+  });
+  return out;
 }
 
 /** Normaliza URL de embed para deduplicar entre fuentes (misma URL = mismo player) */
@@ -6564,12 +6600,12 @@ async function buscarUniversal(query, sourceFilter, limit) {
   // Fuentes en paralelo (rápido). Orden de score decide principal, no "el primero gana".
   // Merge por obra → sin duplicados. Tipo final: cine > dorama > anime basura.
   var cadena = [
-    { id: 'animeav1', aliases: ['animeav1', '4', 'av1'], fn: function () { return buscarAnimeAv1(q, limit); } },
     { id: 'jkanime', aliases: ['jkanime', '5', 'jk'], fn: function () {
       return buscarJkanime(q).then(function (r) {
-      return (r && r.resultados) ? r.resultados : [];
+        return (r && r.resultados) ? r.resultados : [];
       }).catch(function () { return []; });
     } },
+    { id: 'animeav1', aliases: ['animeav1', '4', 'av1'], fn: function () { return buscarAnimeAv1(q, limit); } },
     { id: 'doramasflix', aliases: ['doramasflix', '6', 'doramas', 'dfx'], fn: function () { return buscarDoramasflix(q, limit); } },
     { id: 'pelisplushd', aliases: ['pelisplushd', 'pelisplus', '3', 'pp'], fn: function () { return buscarPelisplus(q, limit); } },
     { id: 'lamovie', aliases: ['lamovie', '1', 'lm'], fn: function () { return buscarLamovie(q, limit); } },
@@ -6625,33 +6661,34 @@ async function buscarUniversal(query, sourceFilter, limit) {
   }
 
   // AnimeAV1 exclusivo para anime: si trajo hits → SOLO esos
+  // Anime: jkanime 1º, animeav1 2º (solo en búsqueda global)
+  var hitsJk = [];
   var hitsAv1 = [];
   for (var ha = 0; ha < todos.length; ha++) {
+    if (todos[ha] && todos[ha].fuente === 'jkanime') hitsJk.push(todos[ha]);
     if (todos[ha] && todos[ha].fuente === 'animeav1') hitsAv1.push(todos[ha]);
   }
-  if (hitsAv1.length && sourceFilter === 'all') {
-    // Búsqueda global: animeav1 manda en anime
-    todos = hitsAv1;
-  } else {
-    // Fuente forzada (/5/?q=) o sin av1: conservar jkanime y el resto
-    var sinAnimeFalso = [];
-    for (var ha2 = 0; ha2 < todos.length; ha2++) {
-      var it2 = todos[ha2];
-      if (!it2) continue;
-      var f2 = String(it2.fuente || '');
-      // Solo bloquear "Anime" falso de pelisplus/lamovie/hackstore
-      if (
-        String(it2.tipo || '') === 'Anime' &&
-        f2 !== 'animeav1' &&
-        f2 !== 'jkanime'
-      ) {
-        continue;
+  if (sourceFilter === 'all') {
+    if (hitsJk.length) {
+      todos = hitsJk;              // 1º jkanime
+    } else if (hitsAv1.length) {
+      todos = hitsAv1;             // 2º animeav1
+    } else {
+      // Sin anime de esas fuentes: quitar "Anime" falso de otras
+      var sinAnimeFalso = [];
+      for (var ha2 = 0; ha2 < todos.length; ha2++) {
+        var it2 = todos[ha2];
+        if (!it2) continue;
+        if (String(it2.tipo || '') === 'Anime') continue;
+        sinAnimeFalso.push(it2);
       }
-      // jkanime siempre es Anime
-      if (f2 === 'jkanime') it2.tipo = 'Anime';
-      sinAnimeFalso.push(it2);
+      todos = sinAnimeFalso;
     }
-    todos = sinAnimeFalso;
+  } else {
+    // Fuente forzada (/5/?q= o /4/?q=): dejar lo de esa fuente
+    for (var hj = 0; hj < todos.length; hj++) {
+      if (todos[hj] && todos[hj].fuente === 'jkanime') todos[hj].tipo = 'Anime';
+    }
   }
 
   // Fusionar misma obra entre fuentes (sin duplicados)
@@ -10145,6 +10182,20 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
     tituloEp = String(tituloEp).split('—')[0].split('-')[0].trim();
 
     var reps = parseJkanimeServers(epHtml);
+        
+    return {
+      success: true,
+      fuente: 'jkanime',
+      source_id: '5',
+      tipo: 'Capitulo',
+      slug: slug,
+      titulo: tituloEp,
+      temporada: 1,
+      episodio: epNum,
+      episode: epNum,
+      reproductores: reps,
+      total: reps.length
+    };/*
     return {
       success: true,
       fuente: 'jkanime',
@@ -10161,7 +10212,7 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
       embeds: reps.map(function (r) { return r.url; }),
       total: reps.length,
       url_extract: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug + '/' + epNum
-    };
+    };*/
   }
 
   // --- DETALLE ANIME ---
