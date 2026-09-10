@@ -9809,7 +9809,8 @@ function b64DecodeJk(str) {
 }
 
 function parseMetaListaJk(html, label) {
-  var re = new RegExp('<span>\\s*' + label + '\\s*:?</span>\\s*([\\s\\S]*?)</li>', 'i');
+  //var re = new RegExp('<span>\\s*' + label + '\\s*:?</span>\\s*([\\s\\S]*?)</li>', 'i');
+  var re = new RegExp('<span>\\s*' + label + '\\s*:?\\s*</span>\\s*([\\s\\S]*?)</li>', 'i');
   var m = html.match(re);
   if (!m) return null;
   var block = m[1];
