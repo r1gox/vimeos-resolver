@@ -9836,6 +9836,71 @@ async function scrapearFutbollibreCanal(slugOrUrl) {
 }
 
 
+/** Ordena campos útiles y elimina nulls del detalle jkanime */
+function limpiarDetalleJkanime(item) {
+  if (!item || typeof item !== 'object') return item;
+
+  var rating =
+    item.rating != null ? item.rating
+      : (item.calificacion != null ? item.calificacion
+        : (item.imdb && item.imdb.rating != null ? item.imdb.rating : null));
+  var ratingSource =
+    item.rating_source ||
+    (item.imdb && item.imdb.rating != null ? 'imdb'
+      : (item.tmdb && item.tmdb.rating != null ? 'tmdb' : null));
+  var votos =
+    item.votos != null ? item.votos
+      : (item.imdb && item.imdb.votos != null ? item.imdb.votos : null);
+
+  var out = {
+    success: item.success !== false,
+    fuente: item.fuente || 'jkanime',
+    source_id: item.source_id || '5',
+    tipo: item.tipo || 'Anime',
+    link: item.link || null,
+    slug: item.slug || null,
+    titulo: item.titulo || null,
+    titulo_original: item.titulo_original || null,
+    // rating arriba
+    rating: rating != null ? Number(rating) : null,
+    rating_source: rating != null ? ratingSource : null,
+    votos: votos != null ? String(votos) : null,
+    portada: item.portada || null,
+    descripcion: item.descripcion || null,
+    year: item.year || null,
+    fecha_estreno: item.fecha_estreno || null,
+    fecha_estreno_texto: item.fecha_estreno_texto || null,
+    generos: item.generos || null,
+    genero: item.genero || null,
+    studios: item.studios || null,
+    temporada_anime: item.temporada_anime || null,
+    demografia: item.demografia || null,
+    idiomas: item.idiomas || null,
+    duracion_texto: item.duracion_texto || item.duracion_texto || null,
+    duracion: item.duracion != null ? item.duracion : null,
+    estado: item.estado || null,
+    en_emision: item.en_emision != null ? item.en_emision : null,
+    finalizado: item.finalizado != null ? item.finalizado : null,
+    calidad: item.calidad || null,
+    imdb_id: item.imdb_id || (item.imdb && item.imdb.id) || null,
+    tmdb_id: item.tmdb_id || (item.tmdb && item.tmdb.id) || null,
+    titulos_alternativos: item.titulos_alternativos || null,
+    anime_id: item.anime_id || null,
+    total_episodios: item.total_episodios != null ? item.total_episodios : null,
+    total_temporadas: item.total_temporadas != null ? item.total_temporadas : null,
+    temporadas: item.temporadas || null,
+    url_extract: item.url_extract || null
+  };
+
+  // Borrar null / undefined / "" 
+  Object.keys(out).forEach(function (k) {
+    if (out[k] == null || out[k] === '') delete out[k];
+    if (Array.isArray(out[k]) && !out[k].length) delete out[k];
+  });
+
+  return out;
+}
+
 // ======================================================
 // JKANIME (5) — https://jkanime.net
 // ======================================================
