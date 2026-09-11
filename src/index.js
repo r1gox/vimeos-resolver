@@ -6819,24 +6819,16 @@ async function buscarUniversal(query, sourceFilter, limit) {
     for (var rj = 0; rj < relevantes.length; rj++) todos.push(relevantes[rj]);
   }
 
-  // Anime: SOLO AnimeAV1 en búsqueda global (sin JKanime)
+  // Anime: SOLO AnimeAV1 — si hay hits AV1, la búsqueda global es SOLO esos (sin pelis/doramas/JK mezclados)
   var hitsAv1 = [];
   for (var ha = 0; ha < todos.length; ha++) {
     if (todos[ha] && todos[ha].fuente === 'animeav1') hitsAv1.push(todos[ha]);
   }
   if (sourceFilter === 'all') {
     if (hitsAv1.length) {
-      var otros = [];
-      for (var ha2 = 0; ha2 < todos.length; ha2++) {
-        var it2 = todos[ha2];
-        if (!it2) continue;
-        if (it2.fuente === 'animeav1') continue;
-        if (it2.fuente === 'jkanime') continue;
-        if (String(it2.tipo || '') === 'Anime') continue;
-        otros.push(it2);
-      }
-      todos = hitsAv1.concat(otros);
+      todos = hitsAv1; // monopolio AnimeAV1 (igual que antes hacía JKanime)
     } else {
+      // Sin AV1: quitar jkanime y cualquier "Anime" de otras fuentes
       var limpio = [];
       for (var ha3 = 0; ha3 < todos.length; ha3++) {
         var it3 = todos[ha3];
@@ -6846,10 +6838,6 @@ async function buscarUniversal(query, sourceFilter, limit) {
         limpio.push(it3);
       }
       todos = limpio;
-    }
-  } else if (sourceFilter === 'jkanime' || sourceFilter === '5' || sourceFilter === 'jk') {
-    for (var hj = 0; hj < todos.length; hj++) {
-      if (todos[hj] && todos[hj].fuente === 'jkanime') todos[hj].tipo = 'Anime';
     }
   }
 
