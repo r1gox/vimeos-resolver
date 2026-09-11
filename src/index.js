@@ -4208,21 +4208,27 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
   var metaYear = metaYearRaw ? (String(metaYearRaw).match(/(19|20)\d{2}/) || [])[0] : null;
   var yearConflict = itemYear && metaYear && String(itemYear) !== String(metaYear);
   if (yearConflict) {
-    meta = {
-      descripcion: meta.descripcion,
-      generos: meta.generos,
-      calificacion: null,
-      votos: null,
-      year: null,
-      fecha_estreno: null,
-      tmdb_id: null,
-      imdb_id: null,
-      portada_imdb: null,
-      portada_tmdb: null,
-      backdrop: null,
-      titulo_tmdb: meta.titulo_tmdb,
-      titulo_original: meta.titulo_original
-    };
+    var tSame =
+      normalizarTituloKey(item.titulo || '') ===
+      normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
+    // Mismo título → no anular rating/imdb (solo años raros tipo 1999–)
+    if (!tSame) {
+      meta = {
+        descripcion: meta.descripcion,
+        generos: meta.generos,
+        calificacion: null,
+        votos: null,
+        year: null,
+        fecha_estreno: null,
+        tmdb_id: null,
+        imdb_id: null,
+        portada_imdb: null,
+        portada_tmdb: null,
+        backdrop: null,
+        titulo_tmdb: meta.titulo_tmdb,
+        titulo_original: meta.titulo_original
+      };
+    }
   }
 
   if (meta.tmdb_id) item.tmdb_id = meta.tmdb_id;
@@ -6702,6 +6708,56 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   } else if (detalle.titulo) {
     detalle.titulo_original = detalle.titulo;
   }
+    // --- Rating final: IMDb → OMDb por id → TMDB → fuente ---
+  async function rellenarRatingSiFalta(det) {
+    if (!det) return det;
+    if (det.calificacion != null && det.calificacion !== '' && !isNaN(Number(det.calificacion))) {
+      return det;
+    }
+    var id = det.imdb_id || null;
+    // 1) OMDb por imdb_id
+    if (id && String(id).indexOf('tt') === 0) {
+      try {
+        var ou =
+          'https://www.omdbapi.com/?i=' + encodeURIComponent(id) +
+          '&apikey=' + encodeURIComponent(__OMDB_KEY__ || 'trilogy') +
+          '&plot=short';
+        var or_ = await fetch(ou, { headers: { Accept: 'application/json' } });
+        if (or_.ok) {
+          var od = await or_.json();
+          if (od && od.Response !== 'False' && od.imdbRating && od.imdbRating !== 'N/A') {
+            det.calificacion = normalizarCalificacion(od.imdbRating);
+            det.rating = det.calificacion;
+            det.rating_source = 'imdb';
+            if (od.imdbVotes && od.imdbVotes !== 'N/A') det.votos = od.imdbVotes;
+            return det;
+          }
+        }
+      } catch (eO) {}
+    }
+    // 2) TMDB por imdb_id (vote_average)
+    if (id && typeof completarDesdeTmdbPorImdbId === 'function') {
+      try {
+        var tx = await completarDesdeTmdbPorImdbId(id, tipoRuta || det.tipo);
+        if (tx && tx.calificacion != null && !isNaN(Number(tx.calificacion)) && Number(tx.calificacion) > 0) {
+          det.calificacion = normalizarCalificacion(tx.calificacion);
+          det.rating = det.calificacion;
+          det.rating_source = det.rating_source || 'tmdb';
+          if (tx.votos && !det.votos) det.votos = tx.votos;
+          if (!det.tmdb_id && tx.tmdb_id) det.tmdb_id = tx.tmdb_id;
+          return det;
+        }
+      } catch (eT) {}
+    }
+    // 3) rating que ya viniera de la página (PelisPlus a veces trae 8.7)
+    if (det.calificacion == null && det.rating != null) {
+      det.calificacion = normalizarCalificacion(det.rating);
+      det.rating_source = det.rating_source || 'fuente';
+    }
+    return det;
+  }
+
+  detalle = await rellenarRatingSiFalta(detalle);
   return detalle;
 }
 
