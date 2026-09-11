@@ -6602,7 +6602,13 @@ async function buscarUniversal(query, sourceFilter, limit) {
   if (sourceFilter === 'all' || sourceFilter === 'jkanime' || sourceFilter === '5' || sourceFilter === 'jk') {
     try {
       var rJk = await Promise.race([
-        buscarJkanime(q).then(function (r) { return (r && r.resultados) ? r.resultados : []; }),
+      //  buscarJkanime(q).then(function (r) { return (r && r.resultados) ? r.resultados : []; }),
+        buscarJkanime(q).then(function (r) {
+          if (!r) return [];
+          if (Array.isArray(r.resultados) && r.resultados.length) return r.resultados;
+          if (Array.isArray(r.results) && r.results.length) return r.results;
+          return [];
+        }),
         new Promise(function (resolve) { setTimeout(function () { resolve([]); }, 12000); })
       ]);
       if (Array.isArray(rJk)) {
