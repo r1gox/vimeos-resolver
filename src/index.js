@@ -4147,7 +4147,7 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
 
   
   // Soft poster: solo si NO hay conflicto de año (evita portada 2012 en película 2026)
-if (!coincide) {
+  if (!coincide) {
     // Anime: mismo título normalizado → aceptar rating/imdb aunque el año venga "1999–"
     var tA0 = normalizarTituloKey(item.titulo || '');
     var tB0 = normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
@@ -4167,6 +4167,30 @@ if (!coincide) {
       }
       return item;
     }
+
+    // Soft poster: solo si NO hay conflicto de año
+    var yItemSoft = extraerYearItem(item);
+    var yMetaSoft = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
+    var ySoft = yMetaSoft ? (String(yMetaSoft).match(/(19|20)\d{2}/) || [])[0] : null;
+    var yearSoftOk = !yItemSoft || !ySoft || String(yItemSoft) === String(ySoft);
+    var sinPortada = !item.portada || (typeof esPortadaSospechosa === 'function' && esPortadaSospechosa(item.portada));
+    if (sinPortada && yearSoftOk) {
+      var tA = normalizarTituloKey(item.titulo || '');
+      var tB = normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
+      if (tA && tB && (tA === tB || tA.indexOf(tB) === 0 || tB.indexOf(tA) === 0)) {
+        if (meta.portada_imdb && esPortadaUrlValida(meta.portada_imdb)) {
+          item.portada = meta.portada_imdb;
+          item.portada_imdb = meta.portada_imdb;
+          item.poster_source = 'imdb';
+        } else if (meta.portada_tmdb && esPortadaUrlValida(meta.portada_tmdb)) {
+          item.portada = meta.portada_tmdb;
+          item.portada_tmdb = meta.portada_tmdb;
+          item.poster_source = 'tmdb';
+        }
+      }
+    }
+    return item;
+  }
 
   // Evitar cruzar metadata de obras con años distintos (remakes)
   var itemYear = extraerYearItem(item);
