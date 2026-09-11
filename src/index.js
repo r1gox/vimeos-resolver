@@ -491,7 +491,54 @@ async function handleRequest(request, env) {
           var ymJk = String(detJk.fecha_estreno_texto).match(/(19|20)\d{2}/);
           if (ymJk) detJk.year = ymJk[0];
         }
+                detJk.titulo = tituloBusqueda; // temporal solo para meta
+        try {
+          detJk = await enriquecerDetalleConTmdb(detJk, 'anime');
+        } catch (eJkMeta) {}
 
+        // Si el match fue estricto y no pegó IMDb, reintentar con título EN
+        if (
+          (detJk.calificacion == null && detJk.rating == null) ||
+          !detJk.imdb_id
+        ) {
+          try {
+            var metaJk = await metaTmdbParaTitulo(
+              tituloBusqueda,
+              'anime',
+              detJk.year || (typeof extraerYearItem === 'function' ? extraerYearItem(detJk) : null),
+              detJk.descripcion
+            );
+            if (metaJk) {
+              if (metaJk.calificacion != null) {
+                detJk.calificacion = metaJk.calificacion;
+                detJk.rating = metaJk.calificacion;
+                detJk.rating_source = metaJk.rating_source || 'imdb';
+              }
+              if (metaJk.votos) detJk.votos = metaJk.votos;
+              if (metaJk.imdb_id) detJk.imdb_id = metaJk.imdb_id;
+              if (metaJk.tmdb_id) detJk.tmdb_id = metaJk.tmdb_id;
+              if (metaJk.portada_imdb) {
+                detJk.portada_imdb = metaJk.portada_imdb;
+                detJk.portada = metaJk.portada_imdb;
+                detJk.poster_source = 'imdb';
+              } else if (metaJk.portada_tmdb && (!detJk.portada || esPortadaSospechosa(detJk.portada))) {
+                detJk.portada = metaJk.portada_tmdb;
+                detJk.poster_source = 'tmdb';
+              }
+              if (metaJk.generos && metaJk.generos.length && (!detJk.generos || !detJk.generos.length)) {
+                detJk.generos = metaJk.generos;
+                detJk.genero = metaJk.generos.join(', ');
+              }
+            }
+          } catch (eJkMeta2) {}
+        }
+
+        detJk.titulo = tituloPagina; // restaurar título jkanime
+        detJk = limpiarDetalleJkanime(detJk);
+
+        return json(detJk);
+      }
+/*
         detJk.titulo = tituloBusqueda; // temporal solo para meta
         try {
           detJk = await enriquecerDetalleConTmdb(detJk, 'anime');
@@ -502,7 +549,8 @@ async function handleRequest(request, env) {
         detJk = limpiarDetalleJkanime(detJk);
 
         return json(detJk);  
-      }
+      }*/
+        
 
       return json({
         success: false,
