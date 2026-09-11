@@ -446,7 +446,7 @@ async function handleRequest(request, env) {
   }
 
 
-  // ---------- JKANIME (5) ----------
+    // ---------- JKANIME (5) ----------
   if (parts[0] === '5' || parts[0] === 'jkanime' || parts[0] === 'jk') {
     try {
       var qJkRoot = url.searchParams.get('q') || url.searchParams.get('query');
@@ -464,8 +464,6 @@ async function handleRequest(request, env) {
           episode: epJk || null
         });
 
-        // Capítulo: igual que antes
-            
         if (epJk || (detJk && (detJk.tipo === 'Capitulo' || detJk.tipo === 'Capítulo'))) {
           return json(slimCapituloJkanime(detJk, {
             slug: slugJk,
@@ -473,7 +471,6 @@ async function handleRequest(request, env) {
           }));
         }
 
-        // Título en inglés para IMDb/TMDB (si no, no hay rating)
         var tituloPagina = detJk.titulo;
         var tituloBusqueda = tituloPagina;
         if (detJk.titulos_alternativos) {
@@ -486,19 +483,16 @@ async function handleRequest(request, env) {
               .trim();
           }
         }
-        // Año desde "Domingo, 07 de Julio de 2024"
-        // Año desde "Domingo, 07 de Julio de 2024"
         if (detJk.fecha_estreno_texto && !detJk.year) {
           var ymJk = String(detJk.fecha_estreno_texto).match(/(19|20)\d{2}/);
           if (ymJk) detJk.year = ymJk[0];
         }
 
-        detJk.titulo = tituloBusqueda; // temporal solo para meta
+        detJk.titulo = tituloBusqueda;
         try {
           detJk = await enriquecerDetalleConTmdb(detJk, 'anime');
         } catch (eJkMeta) {}
 
-        // Reintento meta sin año (One Piece, etc.)
         if ((detJk.calificacion == null && detJk.rating == null) || !detJk.imdb_id) {
           try {
             var metaJk = await metaTmdbParaTitulo(tituloBusqueda, 'anime', null);
@@ -520,7 +514,6 @@ async function handleRequest(request, env) {
           } catch (eJkMeta2) {}
         }
 
-        // Último recurso: OMDb por título
         if ((detJk.calificacion == null && detJk.rating == null) && typeof buscarMetaOmdb === 'function') {
           try {
             var omdbJk = await buscarMetaOmdb(tituloBusqueda);
@@ -539,24 +532,10 @@ async function handleRequest(request, env) {
           } catch (eO) {}
         }
 
-        detJk.titulo = tituloPagina; // restaurar título jkanime
+        detJk.titulo = tituloPagina;
         detJk = limpiarDetalleJkanime(detJk);
-
-        return json(detJk);    
+        return json(detJk);
       }
-/*
-        detJk.titulo = tituloBusqueda; // temporal solo para meta
-        try {
-          detJk = await enriquecerDetalleConTmdb(detJk, 'anime');
-        } catch (eJkMeta) {}
-        detJk.titulo = tituloPagina; // restaurar título jkanime
-
-        // Quitar nulls y poner rating arriba (NO normalizarCamposResultado)
-        detJk = limpiarDetalleJkanime(detJk);
-
-        return json(detJk);  
-      }*/
-        
 
       return json({
         success: false,
@@ -576,8 +555,6 @@ async function handleRequest(request, env) {
       }, 502);
     }
   }
-
-
     if (parts[0] === 'search' || url.searchParams.has('q')) {
     var query = url.searchParams.get('q') || parts[1] || '';
     if (!query) return json({ error: 'Falta q. Usa /search?q=texto' }, 400);
