@@ -5526,7 +5526,13 @@ function resultadoRelevanteBusqueda(query, item) {
   if (tKey && tKey === qKey) return true;
   if (sKey && sKey === qKey) return true;
 
-  var qTokens = qKey.split(/\s+/).filter(function (w) { return w.length >= 3; });
+ // var qTokens = qKey.split(/\s+/).filter(function (w) { return w.length >= 3; });  
+  var qTokens = qKey.split(/\s+/).filter(function (w) {
+    // ignorar palabras muy genéricas
+    if (w.length < 4) return false;
+    if (/^(man|the|and|vs|del|los|las|una|one)$/i.test(w)) return false;
+    return true;
+  });
   if (!qTokens.length) {
     // query muy corto: exigir contención
     return (tKey && tKey.indexOf(qKey) !== -1) || (sKey && sKey.indexOf(qKey) !== -1);
@@ -6628,14 +6634,35 @@ async function buscarUniversal(query, sourceFilter, limit) {
   }
 
   // Si hay jkanime y no forzaron otra fuente → SOLO jkanime (todo JK)
+  // JKanime: filtrar relevancia. Solo monopolizar búsqueda si hay hits REALMENTE del query.
   if (hitsJkEarly.length && (sourceFilter === 'all' || sourceFilter === 'jkanime' || sourceFilter === '5' || sourceFilter === 'jk')) {
-    return {
-      success: true,
-      query: q,
-      fuente: 'jkanime',
-      total: hitsJkEarly.length,
-      resultados: hitsJkEarly.slice(0, limit)
-    };
+    var jkRelevantes = [];
+    for (var jkr = 0; jkr < hitsJkEarly.length; jkr++) {
+      if (resultadoRelevanteBusqueda(q, hitsJkEarly[jkr])) {
+        jkRelevantes.push(hitsJkEarly[jkr]);
+      }
+    }
+    // Fuente forzada /5 → devolver solo JK (ya filtrado)
+    if (sourceFilter === 'jkanime' || sourceFilter === '5' || sourceFilter === 'jk') {
+      return {
+        success: true,
+        query: q,
+        fuente: 'jkanime',
+        total: jkRelevantes.length,
+        resultados: jkRelevantes.slice(0, limit)
+      };
+    }
+    // Búsqueda global: SOLO monopolizar si hay coincidencias reales
+    if (jkRelevantes.length) {
+      return {
+        success: true,
+        query: q,
+        fuente: 'jkanime',
+        total: jkRelevantes.length,
+        resultados: jkRelevantes.slice(0, limit)
+      };
+    }
+    // Sin match real → seguir con pelisplus / doramas / etc.
   }
 
   // 2) Resto de fuentes en paralelo (si no hubo jkanime)
