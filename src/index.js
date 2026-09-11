@@ -505,8 +505,7 @@ async function handleRequest(request, env) {
             var metaJk = await metaTmdbParaTitulo(
               tituloBusqueda,
               'anime',
-              detJk.year || (typeof extraerYearItem === 'function' ? extraerYearItem(detJk) : null),
-              detJk.descripcion
+              detJk.year || (typeof extraerYearItem === 'function' ? extraerYearItem(detJk) : null)
             );
             if (metaJk) {
               if (metaJk.calificacion != null) {
