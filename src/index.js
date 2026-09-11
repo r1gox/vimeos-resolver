@@ -4027,9 +4027,10 @@ function metaCoincideConItem(item, meta) {
   }
 
   var yItem = extraerYearItem(item);
-  var yMeta = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
+  var yMetaRaw = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno) : null);
+  var yMeta = yMetaRaw ? (String(yMetaRaw).match(/(19|20)\d{2}/) || [])[0] : null;
 
-  // Año de la fuente manda: si difiere, NO es la misma obra
+  // Año: solo 4 dígitos (1999– → 1999)
   if (yItem && yMeta && String(yItem) !== String(yMeta)) return false;
 
   if (tItem === tMeta) {
@@ -4168,27 +4169,26 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
 
   
   // Soft poster: solo si NO hay conflicto de año (evita portada 2012 en película 2026)
-  if (!coincide) {
-    var yItemSoft = extraerYearItem(item);
-    var yMetaSoft = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
-    var yearSoftOk = !yItemSoft || !yMetaSoft || String(yItemSoft) === String(yMetaSoft);
-    if (sinPortada && yearSoftOk) {
-      var tA = normalizarTituloKey(item.titulo || '');
-      var tB = normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
-      if (tA && tB && (tA === tB || tA.indexOf(tB) === 0 || tB.indexOf(tA) === 0)) {
-        if (meta.portada_imdb && esPortadaUrlValida(meta.portada_imdb)) {
-          item.portada = meta.portada_imdb;
-          item.portada_imdb = meta.portada_imdb;
-          item.poster_source = 'imdb';
-        } else if (meta.portada_tmdb && esPortadaUrlValida(meta.portada_tmdb)) {
-          item.portada = meta.portada_tmdb;
-          item.portada_tmdb = meta.portada_tmdb;
-          item.poster_source = 'tmdb';
-        }
+if (!coincide) {
+    // Anime: mismo título normalizado → aceptar rating/imdb aunque el año venga "1999–"
+    var tA0 = normalizarTituloKey(item.titulo || '');
+    var tB0 = normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
+    var esAnimeItem = /anime/i.test(String(item.tipo || item.fuente || ''));
+    if (esAnimeItem && tA0 && tB0 && tA0 === tB0) {
+      if (meta.calificacion != null && item.calificacion == null) {
+        item.calificacion = meta.calificacion;
+        item.rating = meta.calificacion;
+        item.rating_source = meta.rating_source || 'imdb';
       }
+      if (meta.imdb_id && !item.imdb_id) item.imdb_id = meta.imdb_id;
+      if (meta.votos && !item.votos) item.votos = meta.votos;
+      if (meta.portada_imdb && (!item.portada || esPortadaSospechosa(item.portada))) {
+        item.portada = meta.portada_imdb;
+        item.portada_imdb = meta.portada_imdb;
+        item.poster_source = 'imdb';
+      }
+      return item;
     }
-    return item;
-  }
 
   // Evitar cruzar metadata de obras con años distintos (remakes)
   var itemYear = extraerYearItem(item);
@@ -4477,7 +4477,24 @@ async function buscarMetaOmdb(titulo) {
   var q = String(titulo || '').replace(/\(\d{4}\)/g, '').trim();
   if (!q) return null;
   try {
-    var url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
+//    var url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
+    
+    var url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) +
+      '&type=series&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
+    var res = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!res.ok) return null;
+    var d = await res.json();
+    // Si no hay serie, reintentar sin type (película)
+    if (!d || d.Response === 'False') {
+      url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) +
+        '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
+      res = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (!res.ok) return null;
+      d = await res.json();
+    }
+    if (!d || d.Response === 'False') return null;
+
+    
     var res = await fetch(url, { headers: { Accept: 'application/json' } });
     if (!res.ok) return null;
     var d = await res.json();
