@@ -6762,6 +6762,8 @@ async function buscarUniversal(query, sourceFilter, limit) {
   // Fuentes en paralelo (rápido). Orden de score decide principal, no "el primero gana".
   // Merge por obra → sin duplicados. Tipo final: cine > dorama > anime basura.
   // 1) Jkanime PRIMERO (no paralelo con timeout corto)
+
+  /*
   var hitsJkEarly = [];
   if (sourceFilter === 'all' || sourceFilter === 'jkanime' || sourceFilter === '5' || sourceFilter === 'jk') {
     try {
@@ -6821,7 +6823,7 @@ async function buscarUniversal(query, sourceFilter, limit) {
       };
     }
     // Sin match real → seguir con pelisplus / doramas / etc.
-  }
+  }*/
 
   // 2) Resto de fuentes en paralelo (si no hubo jkanime)
   var cadena = [
