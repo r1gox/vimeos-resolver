@@ -6597,13 +6597,45 @@ async function buscarUniversal(query, sourceFilter, limit) {
 
   // Fuentes en paralelo (rápido). Orden de score decide principal, no "el primero gana".
   // Merge por obra → sin duplicados. Tipo final: cine > dorama > anime basura.
+  // 1) Jkanime PRIMERO (no paralelo con timeout corto)
+  var hitsJkEarly = [];
+  if (sourceFilter === 'all' || sourceFilter === 'jkanime' || sourceFilter === '5' || sourceFilter === 'jk') {
+    try {
+      var rJk = await Promise.race([
+        buscarJkanime(q).then(function (r) { return (r && r.resultados) ? r.resultados : []; }),
+        new Promise(function (resolve) { setTimeout(function () { resolve([]); }, 12000); })
+      ]);
+      if (Array.isArray(rJk)) {
+        for (var ji0 = 0; ji0 < rJk.length; ji0++) {
+          if (!rJk[ji0]) continue;
+          // No filtrar tan agresivo: jkanime ya trajo lo de su buscador
+          rJk[ji0].fuente = 'jkanime';
+          rJk[ji0].fuentes = ['jkanime'];
+          rJk[ji0].tipo = 'Anime';
+          rJk[ji0].type = 'Anime';
+          rJk[ji0].source_id = '5';
+          if (rJk[ji0].titulo) rJk[ji0].titulo = limpiarTitulo(rJk[ji0].titulo);
+          hitsJkEarly.push(rJk[ji0]);
+        }
+      }
+    } catch (eJkEarly) { hitsJkEarly = []; }
+  }
+
+  // Si hay jkanime y no forzaron otra fuente → SOLO jkanime (todo JK)
+  if (hitsJkEarly.length && (sourceFilter === 'all' || sourceFilter === 'jkanime' || sourceFilter === '5' || sourceFilter === 'jk')) {
+    return {
+      success: true,
+      query: q,
+      fuente: 'jkanime',
+      total: hitsJkEarly.length,
+      resultados: hitsJkEarly.slice(0, limit)
+    };
+  }
+
+  // 2) Resto de fuentes en paralelo (si no hubo jkanime)
   var cadena = [
-    { id: 'jkanime', aliases: ['jkanime', '5', 'jk'], fn: function () {
-      return buscarJkanime(q).then(function (r) {
-        return (r && r.resultados) ? r.resultados : [];
-      }).catch(function () { return []; });
-    } },
     { id: 'animeav1', aliases: ['animeav1', '4', 'av1'], fn: function () { return buscarAnimeAv1(q, limit); } },
+    // jkanime ya se intentó arriba; no hace falta otra vez salvo source forzado
     { id: 'doramasflix', aliases: ['doramasflix', '6', 'doramas', 'dfx'], fn: function () { return buscarDoramasflix(q, limit); } },
     { id: 'pelisplushd', aliases: ['pelisplushd', 'pelisplus', '3', 'pp'], fn: function () { return buscarPelisplus(q, limit); } },
     { id: 'lamovie', aliases: ['lamovie', '1', 'lm'], fn: function () { return buscarLamovie(q, limit); } },
