@@ -4495,10 +4495,6 @@ async function buscarMetaOmdb(titulo) {
     if (!d || d.Response === 'False') return null;
 
     
-    var res = await fetch(url, { headers: { Accept: 'application/json' } });
-    if (!res.ok) return null;
-    var d = await res.json();
-    if (!d || d.Response === 'False') return null;
     var genres = d.Genre ? d.Genre.split(',').map(function (g) { return g.trim(); }) : [];
     var year = d.Year ? String(d.Year).slice(0, 4) : null;
     var released = d.Released && d.Released !== 'N/A' ? d.Released : null;
