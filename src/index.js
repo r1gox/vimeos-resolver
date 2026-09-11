@@ -514,22 +514,32 @@ async function handleRequest(request, env) {
           } catch (eJkMeta2) {}
         }
 
-        if ((detJk.calificacion == null && detJk.rating == null) && typeof buscarMetaOmdb === 'function') {
+        // Forzar OMDb (series) si aún no hay rating
+        if (detJk.calificacion == null && detJk.rating == null) {
           try {
-            var omdbJk = await buscarMetaOmdb(tituloBusqueda);
-            if (omdbJk && omdbJk.calificacion != null) {
-              detJk.calificacion = omdbJk.calificacion;
-              detJk.rating = omdbJk.calificacion;
-              detJk.rating_source = 'imdb';
-              if (omdbJk.imdb_id) detJk.imdb_id = omdbJk.imdb_id;
-              if (omdbJk.votos) detJk.votos = omdbJk.votos;
-              if (omdbJk.portada_imdb) {
-                detJk.portada_imdb = omdbJk.portada_imdb;
-                detJk.portada = omdbJk.portada_imdb;
-                detJk.poster_source = 'imdb';
+            var omdbUrl =
+              'https://www.omdbapi.com/?t=' + encodeURIComponent(tituloBusqueda || detJk.titulo || slugJk) +
+              '&type=series&apikey=' + encodeURIComponent(__OMDB_KEY__ || 'trilogy') +
+              '&plot=full';
+            var omdbRes = await fetch(omdbUrl, { headers: { Accept: 'application/json' } });
+            if (omdbRes.ok) {
+              var omdbD = await omdbRes.json();
+              if (omdbD && omdbD.Response !== 'False') {
+                if (omdbD.imdbRating && omdbD.imdbRating !== 'N/A') {
+                  detJk.calificacion = Number(omdbD.imdbRating);
+                  detJk.rating = detJk.calificacion;
+                  detJk.rating_source = 'imdb';
+                }
+                if (omdbD.imdbID) detJk.imdb_id = omdbD.imdbID;
+                if (omdbD.imdbVotes && omdbD.imdbVotes !== 'N/A') detJk.votos = omdbD.imdbVotes;
+                if (omdbD.Poster && omdbD.Poster !== 'N/A') {
+                  detJk.portada_imdb = omdbD.Poster;
+                  // opcional: no pises portada JK si ya es buena
+                  // detJk.portada = omdbD.Poster;
+                }
               }
             }
-          } catch (eO) {}
+          } catch (eForceOmdb) {}
         }
 
         detJk.titulo = tituloPagina;
