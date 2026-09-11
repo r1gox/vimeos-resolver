@@ -542,7 +542,8 @@ async function handleRequest(request, env) {
         detJk.titulo = tituloPagina; // restaurar título jkanime
         detJk = limpiarDetalleJkanime(detJk);
 
-        return json(detJk);
+        return json(detJk);    
+      }
 /*
         detJk.titulo = tituloBusqueda; // temporal solo para meta
         try {
