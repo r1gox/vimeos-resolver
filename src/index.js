@@ -6759,73 +6759,9 @@ async function buscarUniversal(query, sourceFilter, limit) {
   var q = String(query || '').trim();
   if (!q) throw new Error('Falta el termino de busqueda');
 
-  // Fuentes en paralelo (rápido). Orden de score decide principal, no "el primero gana".
-  // Merge por obra → sin duplicados. Tipo final: cine > dorama > anime basura.
-  // 1) Jkanime PRIMERO (no paralelo con timeout corto)
-
-  /*
-  var hitsJkEarly = [];
-  if (sourceFilter === 'all' || sourceFilter === 'jkanime' || sourceFilter === '5' || sourceFilter === 'jk') {
-    try {
-      var rJk = await Promise.race([
-      //  buscarJkanime(q).then(function (r) { return (r && r.resultados) ? r.resultados : []; }),
-        buscarJkanime(q).then(function (r) {
-          if (!r) return [];
-          if (Array.isArray(r.resultados) && r.resultados.length) return r.resultados;
-          if (Array.isArray(r.results) && r.results.length) return r.results;
-          return [];
-        }),
-        new Promise(function (resolve) { setTimeout(function () { resolve([]); }, 12000); })
-      ]);
-      if (Array.isArray(rJk)) {
-        for (var ji0 = 0; ji0 < rJk.length; ji0++) {
-          if (!rJk[ji0]) continue;
-          // No filtrar tan agresivo: jkanime ya trajo lo de su buscador
-          rJk[ji0].fuente = 'jkanime';
-          rJk[ji0].fuentes = ['jkanime'];
-          rJk[ji0].tipo = 'Anime';
-          rJk[ji0].type = 'Anime';
-          rJk[ji0].source_id = '5';
-          if (rJk[ji0].titulo) rJk[ji0].titulo = limpiarTitulo(rJk[ji0].titulo);
-          hitsJkEarly.push(rJk[ji0]);
-        }
-      }
-    } catch (eJkEarly) { hitsJkEarly = []; }
-  }
-
-  // Si hay jkanime y no forzaron otra fuente → SOLO jkanime (todo JK)
-  // JKanime: filtrar relevancia. Solo monopolizar búsqueda si hay hits REALMENTE del query.
-  if (hitsJkEarly.length && (sourceFilter === 'all' || sourceFilter === 'jkanime' || sourceFilter === '5' || sourceFilter === 'jk')) {
-    var jkRelevantes = [];
-    for (var jkr = 0; jkr < hitsJkEarly.length; jkr++) {
-      if (resultadoRelevanteBusqueda(q, hitsJkEarly[jkr])) {
-        jkRelevantes.push(hitsJkEarly[jkr]);
-      }
-    }
-    // Fuente forzada /5 → devolver solo JK (ya filtrado)
-    if (sourceFilter === 'jkanime' || sourceFilter === '5' || sourceFilter === 'jk') {
-      return {
-        success: true,
-        query: q,
-        fuente: 'jkanime',
-        total: jkRelevantes.length,
-        resultados: jkRelevantes.slice(0, limit)
-      };
-    }
-    // Búsqueda global: SOLO monopolizar si hay coincidencias reales
-    if (jkRelevantes.length) {
-      return {
-        success: true,
-        query: q,
-        fuente: 'jkanime',
-        total: jkRelevantes.length,
-        resultados: jkRelevantes.slice(0, limit)
-      };
-    }
-    // Sin match real → seguir con pelisplus / doramas / etc.
-  }*/
-
-  // 2) Resto de fuentes en paralelo (si no hubo jkanime)
+  // Anime en búsqueda global: SOLO AnimeAV1 (sin monopolio JKanime).
+  // Fuente forzada /5/?q= sigue en ruta /5/buscar del router, no aquí.
+  // 2) Fuentes en paralelo
   var cadena = [
     { id: 'animeav1', aliases: ['animeav1', '4', 'av1'], fn: function () { return buscarAnimeAv1(q, limit); } },
     // jkanime ya se intentó arriba; no hace falta otra vez salvo source forzado
@@ -6883,32 +6819,35 @@ async function buscarUniversal(query, sourceFilter, limit) {
     for (var rj = 0; rj < relevantes.length; rj++) todos.push(relevantes[rj]);
   }
 
-  // AnimeAV1 exclusivo para anime: si trajo hits → SOLO esos
-  // Anime: jkanime 1º, animeav1 2º (solo en búsqueda global)
-  var hitsJk = [];
+  // Anime: SOLO AnimeAV1 en búsqueda global (sin JKanime)
   var hitsAv1 = [];
   for (var ha = 0; ha < todos.length; ha++) {
-    if (todos[ha] && todos[ha].fuente === 'jkanime') hitsJk.push(todos[ha]);
     if (todos[ha] && todos[ha].fuente === 'animeav1') hitsAv1.push(todos[ha]);
   }
   if (sourceFilter === 'all') {
-    if (hitsJk.length) {
-      todos = hitsJk;              // 1º jkanime
-    } else if (hitsAv1.length) {
-      todos = hitsAv1;             // 2º animeav1
-    } else {
-      // Sin anime de esas fuentes: quitar "Anime" falso de otras
-      var sinAnimeFalso = [];
+    if (hitsAv1.length) {
+      var otros = [];
       for (var ha2 = 0; ha2 < todos.length; ha2++) {
         var it2 = todos[ha2];
         if (!it2) continue;
+        if (it2.fuente === 'animeav1') continue;
+        if (it2.fuente === 'jkanime') continue;
         if (String(it2.tipo || '') === 'Anime') continue;
-        sinAnimeFalso.push(it2);
+        otros.push(it2);
       }
-      todos = sinAnimeFalso;
+      todos = hitsAv1.concat(otros);
+    } else {
+      var limpio = [];
+      for (var ha3 = 0; ha3 < todos.length; ha3++) {
+        var it3 = todos[ha3];
+        if (!it3) continue;
+        if (it3.fuente === 'jkanime') continue;
+        if (String(it3.tipo || '') === 'Anime') continue;
+        limpio.push(it3);
+      }
+      todos = limpio;
     }
-  } else {
-    // Fuente forzada (/5/?q= o /4/?q=): dejar lo de esa fuente
+  } else if (sourceFilter === 'jkanime' || sourceFilter === '5' || sourceFilter === 'jk') {
     for (var hj = 0; hj < todos.length; hj++) {
       if (todos[hj] && todos[hj].fuente === 'jkanime') todos[hj].tipo = 'Anime';
     }
