@@ -3975,9 +3975,17 @@ function metaCoincideConItem(item, meta) {
     return true;
   }
 
-  var STOP = {
+ /* var STOP = {
     one:1, piece:1, the:1, and:1, film:1, movie:1, special:1, episode:1,
     anime:1, series:1, season:1, part:1
+  };*/
+    
+  var STOP = {
+    // NO poner one / piece (rompe "One Piece")
+    the: 1, and: 1, film: 1, movie: 1, special: 1, episode: 1,
+    anime: 1, series: 1, season: 1, part: 1,
+    // artículos ES
+    una: 1, uno: 1, los: 1, las: 1, del: 1, de: 1, la: 1, el: 1
   };
   function extras(t) {
     return t.split(/\s+/).filter(function (w) { return w.length >= 3 && !STOP[w]; });
