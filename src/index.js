@@ -3962,7 +3962,16 @@ function metaCoincideConItem(item, meta) {
   var tMeta = normalizarTituloKey(
     (meta.titulo_tmdb || '') + ' ' + (meta.titulo_original || '')
   );
-  if (!tItem || !tMeta) return false;
+  if (!tItem || !tMeta) return false;  
+  if (tItem === tMeta) return true;
+
+  // Títulos muy cortos (1–2 tokens): comparar enteros, no extras
+  var tokensItem = tItem.split(/\s+/).filter(Boolean);
+  var tokensMeta = tMeta.split(/\s+/).filter(Boolean);
+  if (tokensItem.length <= 2 && tokensMeta.length <= 2) {
+    if (tItem === tMeta) return true;
+    if (tMeta.indexOf(tItem) !== -1 || tItem.indexOf(tMeta) !== -1) return true;
+  }
 
   var yItem = extraerYearItem(item);
   var yMeta = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
