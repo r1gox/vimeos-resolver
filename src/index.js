@@ -493,65 +493,41 @@ async function handleRequest(request, env) {
           detJk.calificacion != null ? detJk.calificacion :
           (detJk.rating != null ? detJk.rating : null);
 
+        var tituloPagina = detJk.titulo;
+        var tituloBusqueda = tituloPagina;
+        if (detJk.titulos_alternativos) {
+          var ing = detJk.titulos_alternativos.ingles || detJk.titulos_alternativos.sinonimos;
+          if (ing) {
+            tituloBusqueda = String(ing)
+              .replace(/&#039;/g, "'")
+              .replace(/&quot;/g, '"')
+              .replace(/&amp;/g, '&')
+              .trim();
+          }
+        }
+        if (detJk.fecha_estreno_texto && !detJk.year) {
+          var ymJk = String(detJk.fecha_estreno_texto).match(/(19|20)\d{2}/);
+          if (ymJk) detJk.year = ymJk[0];
+        }
+
+        // Meta en paralelo con timeout: no encadenar 3 búsquedas
         detJk.titulo = tituloBusqueda;
         try {
-          detJk = await enriquecerDetalleConTmdb(detJk, 'anime');
+          var metaPromise = (async function () {
+            try {
+              return await enriquecerDetalleConTmdb(detJk, 'anime');
+            } catch (e1) {
+              return detJk;
+            }
+          })();
+          var timeoutPromise = new Promise(function (resolve) {
+            setTimeout(function () { resolve(null); }, 3500); // máx 3.5s de meta
+          });
+          var enriched = await Promise.race([metaPromise, timeoutPromise]);
+          if (enriched) detJk = enriched;
         } catch (eJkMeta) {}
 
-        if ((detJk.calificacion == null && detJk.rating == null) || !detJk.imdb_id) {
-          try {
-            var metaJk = await metaTmdbParaTitulo(tituloBusqueda, 'anime', null);
-            if (metaJk) {
-              if (metaJk.calificacion != null) {
-                detJk.calificacion = metaJk.calificacion;
-                detJk.rating = metaJk.calificacion;
-                detJk.rating_source = metaJk.rating_source || 'imdb';
-              }
-              if (metaJk.votos) detJk.votos = metaJk.votos;
-              if (metaJk.imdb_id) detJk.imdb_id = metaJk.imdb_id;
-              if (metaJk.tmdb_id) detJk.tmdb_id = metaJk.tmdb_id;
-              if (metaJk.portada_imdb) {
-                detJk.portada_imdb = metaJk.portada_imdb;
-                detJk.portada = metaJk.portada_imdb;
-                detJk.poster_source = 'imdb';
-              }
-            }
-          } catch (eJkMeta2) {}
-        }
-
-        // Forzar OMDb (series) si aún no hay rating
-        if (detJk.calificacion == null && detJk.rating == null) {
-          try {
-            var omdbUrl =
-              'https://www.omdbapi.com/?t=' + encodeURIComponent(tituloBusqueda || detJk.titulo || slugJk) +
-              '&type=series&apikey=' + encodeURIComponent(__OMDB_KEY__ || 'trilogy') +
-              '&plot=full';
-            var omdbRes = await fetch(omdbUrl, { headers: { Accept: 'application/json' } });
-            if (omdbRes.ok) {
-              var omdbD = await omdbRes.json();
-              if (omdbD && omdbD.Response !== 'False') {
-                if (omdbD.imdbRating && omdbD.imdbRating !== 'N/A') {
-                  detJk.calificacion = Number(omdbD.imdbRating);
-                  detJk.rating = detJk.calificacion;
-                  detJk.rating_source = 'imdb';
-                }
-                if (omdbD.imdbID) detJk.imdb_id = omdbD.imdbID;
-                if (omdbD.imdbVotes && omdbD.imdbVotes !== 'N/A') detJk.votos = omdbD.imdbVotes;
-                if (omdbD.Poster && omdbD.Poster !== 'N/A') {
-                  detJk.portada_imdb = omdbD.Poster;
-                  // opcional: no pises portada JK si ya es buena
-                  // detJk.portada = omdbD.Poster;
-                }
-              }
-            }
-          } catch (eForceOmdb) {}
-        }
-
-                // Si IMDb/OMDb no dieron nota, usar la de JKanime
-        if (
-          (detJk.calificacion == null || detJk.calificacion === '') &&
-          ratingFuenteJk != null
-        ) {
+        if ((detJk.calificacion == null || detJk.calificacion === '') && ratingFuenteJk != null) {
           detJk.calificacion = ratingFuenteJk;
           detJk.rating = ratingFuenteJk;
           detJk.rating_source = 'fuente';
@@ -10339,9 +10315,26 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
   } catch (eC) {}
 
   var all = [];
-  var page = 1;
-  var lastPage = 1;
-  while (page <= lastPage && page <= 80) {
+
+  function parseEpRows(data) {
+    var rows = (data && data.data) || [];
+    var list = [];
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i] || {};
+      list.push({
+        episodio: row.number,
+        episode: row.number,
+        titulo: row.title || ('Episodio ' + row.number),
+        id: row.id,
+        image: row.image
+          ? ('https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/' + row.image)
+          : null
+      });
+    }
+    return list;
+  }
+
+  async function fetchEpPage(pageNum) {
     var epRes = await fetch(JKANIME_BASE + '/ajax/episodes/' + animeId + '/', {
       method: 'POST',
       headers: jkanimeHeaders({
@@ -10352,28 +10345,40 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
         'Referer': refererUrl || (JKANIME_BASE + '/'),
         'Cookie': cookieHdr
       }),
-      body: page > 1 ? ('page=' + page) : ''
+      body: pageNum > 1 ? ('page=' + pageNum) : ''
     });
-    if (!epRes.ok) break;
+    if (!epRes.ok) return null;
     var raw = await epRes.text();
-    var data;
-    try { data = JSON.parse(raw); } catch (eJ) { break; }
-    var rows = (data && data.data) || [];
-    for (var i = 0; i < rows.length; i++) {
-      var row = rows[i] || {};
-      all.push({
-        episodio: row.number,
-        episode: row.number,
-        titulo: row.title || ('Episodio ' + row.number),
-        id: row.id,
-        image: row.image ? ('https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/' + row.image) : null
-      });
+    try {
+      return JSON.parse(raw);
+    } catch (eJ) {
+      return null;
     }
-    lastPage = parseInt(data.last_page || 1, 10) || 1;
-    if (!rows.length) break;
-    page++;
   }
-  all.sort(function (a, b) { return (a.episodio || 0) - (b.episodio || 0); });
+
+  // 1) Primera página (aquí sale last_page)
+  var data1 = await fetchEpPage(1);
+  if (!data1) return all;
+  all = all.concat(parseEpRows(data1));
+  var lastPage = parseInt(data1.last_page || 1, 10) || 1;
+  if (lastPage > 80) lastPage = 80;
+
+  // 2) Resto en lotes de 5 (mismo resultado, más rápido)
+  var CONC = 5;
+  for (var p = 2; p <= lastPage; p += CONC) {
+    var batch = [];
+    for (var b = p; b < p + CONC && b <= lastPage; b++) {
+      batch.push(fetchEpPage(b));
+    }
+    var results = await Promise.all(batch);
+    for (var r = 0; r < results.length; r++) {
+      if (results[r]) all = all.concat(parseEpRows(results[r]));
+    }
+  }
+
+  all.sort(function (a, b) {
+    return (a.episodio || 0) - (b.episodio || 0);
+  });
   return all;
 }
 
