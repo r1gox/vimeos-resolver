@@ -487,26 +487,21 @@ async function handleRequest(request, env) {
           }
         }
         // Año desde "Domingo, 07 de Julio de 2024"
+        // Año desde "Domingo, 07 de Julio de 2024"
         if (detJk.fecha_estreno_texto && !detJk.year) {
           var ymJk = String(detJk.fecha_estreno_texto).match(/(19|20)\d{2}/);
           if (ymJk) detJk.year = ymJk[0];
         }
-                detJk.titulo = tituloBusqueda; // temporal solo para meta
+
+        detJk.titulo = tituloBusqueda; // temporal solo para meta
         try {
           detJk = await enriquecerDetalleConTmdb(detJk, 'anime');
         } catch (eJkMeta) {}
 
-        // Si el match fue estricto y no pegó IMDb, reintentar con título EN
-        if (
-          (detJk.calificacion == null && detJk.rating == null) ||
-          !detJk.imdb_id
-        ) {
+        // Reintento meta sin año (One Piece, etc.)
+        if ((detJk.calificacion == null && detJk.rating == null) || !detJk.imdb_id) {
           try {
-            var metaJk = await metaTmdbParaTitulo(
-              tituloBusqueda,
-              'anime',
-              detJk.year || (typeof extraerYearItem === 'function' ? extraerYearItem(detJk) : null)
-            );
+            var metaJk = await metaTmdbParaTitulo(tituloBusqueda, 'anime', null);
             if (metaJk) {
               if (metaJk.calificacion != null) {
                 detJk.calificacion = metaJk.calificacion;
@@ -520,23 +515,34 @@ async function handleRequest(request, env) {
                 detJk.portada_imdb = metaJk.portada_imdb;
                 detJk.portada = metaJk.portada_imdb;
                 detJk.poster_source = 'imdb';
-              } else if (metaJk.portada_tmdb && (!detJk.portada || esPortadaSospechosa(detJk.portada))) {
-                detJk.portada = metaJk.portada_tmdb;
-                detJk.poster_source = 'tmdb';
-              }
-              if (metaJk.generos && metaJk.generos.length && (!detJk.generos || !detJk.generos.length)) {
-                detJk.generos = metaJk.generos;
-                detJk.genero = metaJk.generos.join(', ');
               }
             }
           } catch (eJkMeta2) {}
+        }
+
+        // Último recurso: OMDb por título
+        if ((detJk.calificacion == null && detJk.rating == null) && typeof buscarMetaOmdb === 'function') {
+          try {
+            var omdbJk = await buscarMetaOmdb(tituloBusqueda);
+            if (omdbJk && omdbJk.calificacion != null) {
+              detJk.calificacion = omdbJk.calificacion;
+              detJk.rating = omdbJk.calificacion;
+              detJk.rating_source = 'imdb';
+              if (omdbJk.imdb_id) detJk.imdb_id = omdbJk.imdb_id;
+              if (omdbJk.votos) detJk.votos = omdbJk.votos;
+              if (omdbJk.portada_imdb) {
+                detJk.portada_imdb = omdbJk.portada_imdb;
+                detJk.portada = omdbJk.portada_imdb;
+                detJk.poster_source = 'imdb';
+              }
+            }
+          } catch (eO) {}
         }
 
         detJk.titulo = tituloPagina; // restaurar título jkanime
         detJk = limpiarDetalleJkanime(detJk);
 
         return json(detJk);
-      }
 /*
         detJk.titulo = tituloBusqueda; // temporal solo para meta
         try {
@@ -4895,9 +4901,22 @@ async function buscarMetaImdb(titulo, tipoHint, yearHint, opts) {
     }
 
     if (wantedYear && y) {
-      if (wantedYear === y) score += 120;
-      else return -999; // año distinto = otra obra (La captura 2012 ≠ 2026)
+      var yCand = String(y).match(/(19|20)\d{2}/);
+      yCand = yCand ? yCand[0] : String(y).slice(0, 4);
+      if (wantedYear === yCand) {
+        score += 120;
+      } else if (wantedIsTv && ct === wantedTitle) {
+        // Anime/serie: mismo título exacto, año no idéntico (1999 vs 1999–)
+        score += 50;
+      } else if (wantedIsTv && Math.abs(parseInt(wantedYear, 10) - parseInt(yCand, 10)) <= 1) {
+        score += 40;
+      } else if (ct === wantedTitle) {
+        score += 20; // título exacto, no matar el candidato
+      } else {
+        return -999;
+      }
     }
+    
     var qid = String(item.qid || item.q || '').toLowerCase();
     var isTv = /tvseries|tvminiseries|tvspecial|tvmovie/.test(qid);
     var isMovie = /movie|feature|video|short/.test(qid);
@@ -5315,6 +5334,10 @@ async function buscarMetaTmdbApi(titulo, tipoHint, yearHint) {
       var release = r.release_date || r.first_air_date || '';
       var candidateYear = release ? String(release).slice(0, 4) : null;
       var score = 0;
+          // Título idéntico (One Piece = One Piece) → base alta siempre
+      if (ct === wantedTitle) {
+        score += 200;
+      }
 
       if (candidateTitle === wantedTitle) score += 100;
       else if (candidateTitle.indexOf(wantedTitle) !== -1 || wantedTitle.indexOf(candidateTitle) !== -1) score += 55;
