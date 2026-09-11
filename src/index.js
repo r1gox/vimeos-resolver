@@ -488,6 +488,11 @@ async function handleRequest(request, env) {
           if (ymJk) detJk.year = ymJk[0];
         }
 
+        // Guardar puntuación de JKanime (8.73) por si IMDb falla
+        var ratingFuenteJk =
+          detJk.calificacion != null ? detJk.calificacion :
+          (detJk.rating != null ? detJk.rating : null);
+
         detJk.titulo = tituloBusqueda;
         try {
           detJk = await enriquecerDetalleConTmdb(detJk, 'anime');
@@ -540,6 +545,16 @@ async function handleRequest(request, env) {
               }
             }
           } catch (eForceOmdb) {}
+        }
+
+                // Si IMDb/OMDb no dieron nota, usar la de JKanime
+        if (
+          (detJk.calificacion == null || detJk.calificacion === '') &&
+          ratingFuenteJk != null
+        ) {
+          detJk.calificacion = ratingFuenteJk;
+          detJk.rating = ratingFuenteJk;
+          detJk.rating_source = 'fuente';
         }
 
         detJk.titulo = tituloPagina;
@@ -10484,12 +10499,17 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
     null;
 
   var descripcion =
+    (html.match(/<p\s+class=["']scroll["'][^>]*>([\s\S]*?)<\/p>/i) || [])[1] ||
     (html.match(/name="description"\s+content="([^"]+)"/i) || [])[1] ||
     '';
-  descripcion = descripcion
+  descripcion = String(descripcion)
+    .replace(/<[^>]+>/g, ' ')
     .replace(/&quot;/g, '"')
     .replace(/&#039;/g, "'")
     .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
     .trim();
 
   var tipo = parseMetaListaJk(html, 'Tipo');
@@ -10521,6 +10541,17 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
 
   var calidad = parseMetaListaJk(html, 'Calidad');
   if (Array.isArray(calidad)) calidad = calidad[0];
+
+    // Puntuación: 8.73 (fuente JKanime)
+  var calificacionFuente = null;
+  var puntM =
+    html.match(/Puntuaci[oó]n:<\/span>\s*([0-9]+(?:\.[0-9]+)?)/i) ||
+    html.match(/Puntuaci[oó]n:<\/span>\s*([^<]+)/i) ||
+    html.match(/Puntuaci[oó]n:\s*([0-9]+(?:\.[0-9]+)?)/i);
+  if (puntM) {
+    var nP = parseFloat(String(puntM[1]).replace(',', '.').trim());
+    if (!isNaN(nP) && nP > 0 && nP <= 10) calificacionFuente = Math.round(nP * 100) / 100;
+  }
 
   // títulos alternativos
   var titulos_alt = {};
@@ -10581,6 +10612,8 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
     titulo: titulo,
     titulo_original: (titulos_alt.japones || titulos_alt.ingles || null),
     titulos_alternativos: titulos_alt,
+    rating: calificacionFuente,
+    rating_source: calificacionFuente != null ? 'fuente' : null,
     portada: portada,
     descripcion: descripcion,
     generos: generos,
