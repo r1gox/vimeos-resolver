@@ -4192,7 +4192,8 @@ if (!coincide) {
 
   // Evitar cruzar metadata de obras con años distintos (remakes)
   var itemYear = extraerYearItem(item);
-  var metaYear = meta.year || (meta.fecha_estreno ? String(meta.fecha_estreno).slice(0, 4) : null);
+  var metaYearRaw = meta.year || meta.fecha_estreno || null;
+  var metaYear = metaYearRaw ? (String(metaYearRaw).match(/(19|20)\d{2}/) || [])[0] : null;
   var yearConflict = itemYear && metaYear && String(itemYear) !== String(metaYear);
   if (yearConflict) {
     meta = {
@@ -4477,14 +4478,12 @@ async function buscarMetaOmdb(titulo) {
   var q = String(titulo || '').replace(/\(\d{4}\)/g, '').trim();
   if (!q) return null;
   try {
-//    var url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) + '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
-    
     var url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) +
       '&type=series&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
     var res = await fetch(url, { headers: { Accept: 'application/json' } });
     if (!res.ok) return null;
     var d = await res.json();
-    // Si no hay serie, reintentar sin type (película)
+
     if (!d || d.Response === 'False') {
       url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(q) +
         '&apikey=' + encodeURIComponent(__OMDB_KEY__) + '&plot=full';
