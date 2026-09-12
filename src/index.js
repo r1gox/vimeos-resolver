@@ -177,6 +177,17 @@ async function enriquecerSoloCinemeta(detalle, typeHint) {
   detalle.portada = meta.portada || detalle.portada;
   detalle.poster_source = 'metahub';
   detalle.imdb = meta.imdb;
+    // Logo Metahub siempre que haya tt…
+  if (imdbId) {
+    detalle.logo_imdb = metahubLogo(imdbId, 'medium');
+    detalle.logo = detalle.logo_imdb;
+    if (!detalle.portada_imdb) {
+      detalle.portada_imdb = metahubPoster(imdbId, 'medium');
+    }
+    if (!detalle.backdrop) {
+      detalle.backdrop = metahubBackground(imdbId, 'medium');
+    }
+  }
 
   var desc = detalle.descripcion || '';
   if ((!desc || desc.length < 40) && meta.descripcion) {
@@ -6536,7 +6547,9 @@ function formatearDetalleRespuesta(item, origin) {
     portada_fuente_raw: item.portada_fuente_raw || null,
     portada_imdb: item.portada_imdb || null,
     portada_tmdb: item.portada_tmdb || null,
-    backdrop: item.backdrop || null,
+    logo: item.logo || item.logo_imdb || null,
+    logo_imdb: item.logo_imdb || item.logo || null,
+    backdrop: item.backdrop || null,    
     descripcion: desc,
     year: item.year || null,
     fecha_estreno: item.fecha_estreno || null,
@@ -10162,6 +10175,8 @@ function limpiarDetalleJkanime(item) {
     fecha_estreno_texto: item.fecha_estreno_texto || null,
     generos: item.generos || null,
     genero: item.genero || null,
+    logo: item.logo || item.logo_imdb || null,
+    logo_imdb: item.logo_imdb || item.logo || null,
     studios: item.studios || null,
     temporada_anime: item.temporada_anime || null,
     demografia: item.demografia || null,
