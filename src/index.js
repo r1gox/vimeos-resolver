@@ -187,7 +187,77 @@ async function enriquecerSoloCinemeta(detalle, typeHint) {
 }
 
 
+/** Nombre → tt… (Cinemeta search, estilo Stremio) */
+async function resolverImdbIdPorTitulo(titulo, tipoHint, yearHint) {
+  var q = String(titulo || '').trim();
+  if (!q || q.length < 2) return null;
 
+  var t = String(tipoHint || '').toLowerCase();
+  var kind = /anime|serie|series|tv|dorama|show/.test(t) ? 'series' : 'movie';
+  // si falla series, se prueba movie (y al revés)
+  var kinds = kind === 'series' ? ['series', 'movie'] : ['movie', 'series'];
+
+  var year = yearHint ? String(yearHint).match(/(19|20)\d{2}/) : null;
+  year = year ? year[0] : null;
+
+  for (var k = 0; k < kinds.length; k++) {
+    try {
+      var url =
+        'https://v3-cinemeta.strem.io/catalog/' + kinds[k] +
+        '/top/search=' + encodeURIComponent(q) + '.json';
+      var res = await fetch(url, {
+        headers: { Accept: 'application/json', 'User-Agent': 'MovieZoneMeta/1.0' }
+      });
+      if (!res.ok) continue;
+      var data = await res.json();
+      var metas = (data && data.metas) || [];
+      var best = null;
+      for (var i = 0; i < metas.length; i++) {
+        var m = metas[i];
+        if (!m) continue;
+        var id = m.imdb_id || m.id;
+        if (!id || !/^tt\d+$/i.test(String(id))) continue;
+        var name = String(m.name || m.title || '').toLowerCase();
+        var qn = q.toLowerCase();
+        var score = 0;
+        if (name === qn) score += 100;
+        else if (name.indexOf(qn) !== -1 || qn.indexOf(name) !== -1) score += 50;
+        if (year && m.releaseInfo && String(m.releaseInfo).indexOf(year) !== -1) score += 40;
+        if (year && m.year && String(m.year).indexOf(year) !== -1) score += 40;
+        if (!best || score > best.score) best = { id: String(id), score: score };
+      }
+      if (best && best.score >= 50) return best.id;
+      if (best && !year) return best.id; // sin año, primer match razonable
+    } catch (e) {}
+  }
+  return null;
+}
+
+/** Fallback OMDb si Cinemeta search no da id */
+async function resolverImdbIdOmdb(titulo, tipoHint) {
+  var q = String(titulo || '').trim();
+  if (!q) return null;
+  var t = String(tipoHint || '').toLowerCase();
+  var type = /anime|serie|series|tv|dorama/.test(t) ? 'series' : 'movie';
+  try {
+    var url =
+      'https://www.omdbapi.com/?t=' + encodeURIComponent(q) +
+      '&type=' + type +
+      '&apikey=' + encodeURIComponent(__OMDB_KEY__ || 'trilogy');
+    var res = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!res.ok) return null;
+    var d = await res.json();
+    if ((!d || d.Response === 'False') && type === 'series') {
+      url =
+        'https://www.omdbapi.com/?t=' + encodeURIComponent(q) +
+        '&apikey=' + encodeURIComponent(__OMDB_KEY__ || 'trilogy');
+      res = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (res.ok) d = await res.json();
+    }
+    if (d && d.Response !== 'False' && d.imdbID) return String(d.imdbID);
+  } catch (e) {}
+  return null;
+}
 
 
 
@@ -6667,8 +6737,79 @@ async function enriquecerListaConTmdb(lista, query, opts) {
 }
 
 async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
+  if (!detalle || detalle.success === false) return detalle;
   try {
-    return await enriquecerSoloCinemeta(detalle, tipoRuta || (detalle && detalle.tipo));
+    var tipo = tipoRuta || detalle.tipo || '';
+    var imdbId =
+      detalle.imdb_id ||
+      (detalle.imdb && detalle.imdb.id) ||
+      null;
+
+    // Solo resolver id si falta
+    if (!imdbId || !/^tt\d+$/i.test(String(imdbId))) {
+      var titulo =
+        (detalle.titulos_alternativos && detalle.titulos_alternativos.ingles) ||
+        detalle.titulo_original ||
+        detalle.titulo ||
+        detalle.title ||
+        detalle.nombre ||
+        '';
+      var year = detalle.year || null;
+      var t = String(tipo).toLowerCase();
+      var kind = /anime|serie|series|tv|dorama/.test(t) ? 'series' : 'movie';
+
+      // 1) Cinemeta search
+      try {
+        var url =
+          'https://v3-cinemeta.strem.io/catalog/' + kind +
+          '/top/search=' + encodeURIComponent(String(titulo).trim()) + '.json';
+        var res = await fetch(url, {
+          headers: { Accept: 'application/json', 'User-Agent': 'MovieZoneMeta/1.0' }
+        });
+        if (res.ok) {
+          var data = await res.json();
+          var metas = (data && data.metas) || [];
+          for (var i = 0; i < metas.length; i++) {
+            var id = metas[i] && (metas[i].imdb_id || metas[i].id);
+            if (id && /^tt\d+$/i.test(String(id))) {
+              // si hay año, preferir el que coincida
+              if (year && metas[i].releaseInfo && String(metas[i].releaseInfo).indexOf(String(year)) === -1) {
+                if (metas[i].year && String(metas[i].year).indexOf(String(year)) === -1) continue;
+              }
+              imdbId = String(id);
+              break;
+            }
+          }
+          if (!imdbId && metas[0]) {
+            var id0 = metas[0].imdb_id || metas[0].id;
+            if (id0 && /^tt\d+$/i.test(String(id0))) imdbId = String(id0);
+          }
+        }
+      } catch (e1) {}
+
+      // 2) OMDb si Cinemeta no dio id
+      if (!imdbId) {
+        try {
+          var ou =
+            'https://www.omdbapi.com/?t=' + encodeURIComponent(String(titulo).trim()) +
+            '&type=' + kind +
+            '&apikey=' + encodeURIComponent(__OMDB_KEY__ || 'trilogy');
+          var oRes = await fetch(ou, { headers: { Accept: 'application/json' } });
+          if (oRes.ok) {
+            var od = await oRes.json();
+            if (od && od.Response !== 'False' && od.imdbID) imdbId = String(od.imdbID);
+          }
+        } catch (e2) {}
+      }
+
+      if (imdbId) detalle.imdb_id = imdbId;
+    }
+
+    // Con id → Cinemeta rellena rating, portada, etc.
+    if (detalle.imdb_id) {
+      return await enriquecerSoloCinemeta(detalle, tipo);
+    }
+    return detalle;
   } catch (e) {
     return detalle;
   }
