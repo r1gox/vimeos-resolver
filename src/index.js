@@ -36,6 +36,178 @@ var FUTBOLLIBRE_IMG_DEFAULT = FUTBOLLIBRE_IMG_BASE + '/img/librestv.png';
 var STREAMXHD_BASE = 'https://streamxhd.com';
 var JKANIME_BASE = 'https://jkanime.net';
 
+// ============================================================
+// Meta estilo Stremio: Cinemeta + Metahub (IMDb id)
+// Sin TMDB / OMDb aquí — más rápido
+// ============================================================
+
+var CINEMETA_BASE = 'https://v3-cinemeta.strem.io';
+var METAHUB_BASE = 'https://images.metahub.space';
+
+function metahubPoster(imdbId, size) {
+  size = size || 'medium';
+  return METAHUB_BASE + '/poster/' + size + '/' + imdbId + '/img';
+}
+function metahubLogo(imdbId, size) {
+  size = size || 'medium';
+  return METAHUB_BASE + '/logo/' + size + '/' + imdbId + '/img';
+}
+function metahubBackground(imdbId, size) {
+  size = size || 'medium';
+  return METAHUB_BASE + '/background/' + size + '/' + imdbId + '/img';
+}
+
+/**
+ * typeHint: 'movie' | 'series' | 'anime' | 'pelicula' | 'serie'
+ */
+async function fetchCinemetaByImdbId(imdbId, typeHint) {
+  if (!imdbId) return null;
+  imdbId = String(imdbId).trim();
+  if (!/^tt\d+$/i.test(imdbId)) return null;
+
+  var kinds = [];
+  var t = String(typeHint || '').toLowerCase();
+  if (/series|serie|anime|tv|show/.test(t)) {
+    kinds = ['series', 'movie'];
+  } else if (/movie|pelicula|film/.test(t)) {
+    kinds = ['movie', 'series'];
+  } else {
+    kinds = ['series', 'movie'];
+  }
+
+  for (var i = 0; i < kinds.length; i++) {
+    try {
+      var url = CINEMETA_BASE + '/meta/' + kinds[i] + '/' + imdbId + '.json';
+      var res = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 MovieZoneMeta/1.0',
+          Accept: 'application/json',
+        },
+      });
+      if (!res.ok) continue;
+      var data = await res.json();
+      if (data && data.meta && data.meta.imdb_id) {
+        return normalizarCinemetaMeta(data.meta, kinds[i]);
+      }
+    } catch (e) {
+      /* siguiente tipo */
+    }
+  }
+  return null;
+}
+
+function normalizarCinemetaMeta(meta, kind) {
+  var imdbId = meta.imdb_id || meta.id || null;
+  if (!imdbId) return null;
+
+  var year = null;
+  if (meta.year) {
+    var ym = String(meta.year).match(/(19|20)\d{2}/);
+    if (ym) year = ym[0];
+  }
+  if (!year && meta.released) {
+    year = String(meta.released).slice(0, 4);
+  }
+
+  var rating = meta.imdbRating != null ? parseFloat(meta.imdbRating) : null;
+  if (rating != null && isNaN(rating)) rating = null;
+
+  var generos = Array.isArray(meta.genres)
+    ? meta.genres
+    : Array.isArray(meta.genre)
+      ? meta.genre
+      : [];
+
+  return {
+    imdb_id: imdbId,
+    titulo: meta.name || null,
+    titulo_original: meta.name || null,
+    descripcion: meta.description || null,
+    year: year,
+    fecha_estreno: meta.released ? String(meta.released).slice(0, 10) : null,
+    rating: rating,
+    calificacion: rating,
+    rating_source: rating != null ? 'imdb' : null,
+    votos: null,
+    generos: generos,
+    genero: generos.length ? generos.join(', ') : null,
+    duracion_texto: meta.runtime || null,
+    certificacion: null,
+    estado: meta.status || null,
+    // Imágenes Metahub (como Stremio)
+    portada: metahubPoster(imdbId, 'medium'),
+    portada_imdb: metahubPoster(imdbId, 'medium'),
+    logo_imdb: metahubLogo(imdbId, 'medium'),
+    backdrop: metahubBackground(imdbId, 'medium'),
+    poster_source: 'metahub',
+    cinemeta_type: kind,
+    imdb: {
+      id: imdbId,
+      rating: rating,
+      portada: metahubPoster(imdbId, 'medium'),
+      logo: metahubLogo(imdbId, 'medium'),
+      backdrop: metahubBackground(imdbId, 'medium'),
+      generos: generos,
+      duracion_texto: meta.runtime || null,
+    },
+  };
+}
+
+/**
+ * Aplica meta Cinemeta/Metahub al detalle SIN tocar reproductores ni scrapers.
+ * Solo rellena huecos o sobrescribe rating/portada/backdrop/logo si hay imdb_id.
+ */
+async function enriquecerSoloCinemeta(detalle, typeHint) {
+  if (!detalle || detalle.success === false) return detalle;
+
+  var imdbId =
+    detalle.imdb_id ||
+    (detalle.imdb && detalle.imdb.id) ||
+    null;
+
+  // Si no hay id, no buscamos otras fuentes (más rápido, como pediste)
+  if (!imdbId) return detalle;
+
+  var meta = await fetchCinemetaByImdbId(imdbId, typeHint || detalle.tipo);
+  if (!meta) return detalle;
+
+  // Rating IMDb
+  if (meta.rating != null) {
+    detalle.rating = meta.rating;
+    detalle.calificacion = meta.rating;
+    detalle.rating_source = 'imdb';
+  }
+  if (meta.year && !detalle.year) detalle.year = meta.year;
+  if (meta.fecha_estreno && !detalle.fecha_estreno) {
+    detalle.fecha_estreno = meta.fecha_estreno;
+  }
+  if (meta.generos && meta.generos.length) {
+    if (!detalle.generos || !detalle.generos.length) detalle.generos = meta.generos;
+    if (!detalle.genero) detalle.genero = meta.genero;
+  }
+  if (meta.duracion_texto && !detalle.duracion_texto) {
+    detalle.duracion_texto = meta.duracion_texto;
+  }
+  if (meta.estado && !detalle.estado) detalle.estado = meta.estado;
+
+  // Portada / backdrop / logo Metahub
+  detalle.imdb_id = meta.imdb_id;
+  detalle.portada_imdb = meta.portada_imdb;
+  detalle.logo_imdb = meta.logo_imdb;
+  detalle.backdrop = meta.backdrop || detalle.backdrop;
+  detalle.portada = meta.portada || detalle.portada;
+  detalle.poster_source = 'metahub';
+  detalle.imdb = meta.imdb;
+
+  // Descripción: solo si la fuente no trajo una usable
+  var desc = detalle.descripcion || '';
+  if ((!desc || desc.length < 40) && meta.descripcion) {
+    detalle.descripcion = meta.descripcion;
+  }
+
+  return detalle;
+}
+
 
 function fechaAgendaEnEspanol(isoDate) {
   // isoDate: "2026-09-08"
