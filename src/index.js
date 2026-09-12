@@ -6667,7 +6667,6 @@ async function enriquecerListaConTmdb(lista, query, opts) {
 }
 
 async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
-  // Solo IMDb por imdb_id → Cinemeta + Metahub (como Stremio)
   try {
     return await enriquecerSoloCinemeta(detalle, tipoRuta || (detalle && detalle.tipo));
   } catch (e) {
