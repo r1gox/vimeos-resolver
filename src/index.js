@@ -7010,26 +7010,10 @@ async function buscarUniversal(query, sourceFilter, limit) {
     for (var rj = 0; rj < relevantes.length; rj++) todos.push(relevantes[rj]);
   }
 
-  // Anime: SOLO AnimeAV1 — si hay hits AV1, la búsqueda global es SOLO esos (sin pelis/doramas/JK mezclados)
-  var hitsAv1 = [];
-  for (var ha = 0; ha < todos.length; ha++) {
-    if (todos[ha] && todos[ha].fuente === 'animeav1') hitsAv1.push(todos[ha]);
-  }
+  // Ya NO monopolizar con AnimeAV1: "matrix" debe devolver Matrix (cine) + animes relacionados
+  // Solo si el usuario forzó fuente 4 se queda solo AV1 (sourceFilter !== all).
   if (sourceFilter === 'all') {
-    if (hitsAv1.length) {
-      todos = hitsAv1; // monopolio AnimeAV1 (igual que antes hacía JKanime)
-    } else {
-      // Sin AV1: quitar jkanime y cualquier "Anime" de otras fuentes
-      var limpio = [];
-      for (var ha3 = 0; ha3 < todos.length; ha3++) {
-        var it3 = todos[ha3];
-        if (!it3) continue;
-        if (it3.fuente === 'jkanime') continue;
-        if (String(it3.tipo || '') === 'Anime') continue;
-        limpio.push(it3);
-      }
-      todos = limpio;
-    }
+    // Opcional: no filtrar jkanime aquí; fusionarResultadosBusqueda deduplica por obra
   }
 
   // Fusionar misma obra entre fuentes (sin duplicados)
@@ -9285,6 +9269,56 @@ async function scrapearAnimeAv1(pageUrl, opts) {
       reproductores: mapped.reproductores,
       descargas: descargas
     };
+  }
+
+  // Película / OVA de 1 ep: cargar reproductores en la raíz (no dejar total:0)
+  var totalEpsEarly = parseInt(epsCount, 10) || 0;
+  if ((tipo === 'Pelicula' || formato === 'Pelicula' || formato === 'Movie' || totalEpsEarly === 1) && !epNum) {
+    try {
+      var epMovie = 1;
+      var erMovie = await fetchAnimeAv1Data('/media/' + encodeURIComponent(slug) + '/' + epMovie + '/__data.json');
+      var edMovie = decodeSvelteKitData(erMovie);
+      var mpMovie = mapAnimeAv1Embeds(edMovie && edMovie.embeds);
+      var repsMovie = (mpMovie && mpMovie.reproductores) ? mpMovie.reproductores : [];
+      var descargasMovie = [];
+      if (edMovie && edMovie.downloads && typeof edMovie.downloads === 'object') {
+        var dlangsM = Object.keys(edMovie.downloads);
+        for (var dmi = 0; dmi < dlangsM.length; dmi++) {
+          var dlistM = edMovie.downloads[dlangsM[dmi]];
+          if (!Array.isArray(dlistM)) continue;
+          for (var dmj = 0; dmj < dlistM.length; dmj++) {
+            if (dlistM[dmj] && dlistM[dmj].url) {
+              descargasMovie.push({
+                url: dlistM[dmj].url,
+                idioma: dlangsM[dmi] === 'SUB' ? 'Subtitulado' : dlangsM[dmi],
+                servidor: dlistM[dmj].server || extraerServidor(dlistM[dmj].url),
+                tipo: 'descarga'
+              });
+            }
+          }
+        }
+      }
+      return {
+        success: true,
+        fuente: 'animeav1',
+        source_id: '4',
+        tipo: 'Pelicula',
+        formato: formato || 'Pelicula',
+        link: ANIMEAV1_BASE + '/media/' + slug,
+        slug: slug,
+        titulo: titulo,
+        portada: portada,
+        descripcion: sinopsis,
+        calificacion: score,
+        year: yearAv1,
+        total: repsMovie.length,
+        embeds: repsMovie.map(function (r) { return r.url; }),
+        reproductores: repsMovie,
+        descargas: descargasMovie
+      };
+    } catch (eMovie) {
+      // si falla, seguir con listado stubs
+    }
   }
 
   // Listado de episodios (stubs ligeros; players al pedir /4/anime/slug/{temp}/{ep})
