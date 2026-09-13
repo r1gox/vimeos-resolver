@@ -7986,31 +7986,73 @@ async function scrapearPelisplus(pageUrl, opts) {
   }
 
   siteBase = (pageUrl.match(/^(https?:\/\/[^\/]+)/) || [null, PELISPLUS_BASE])[1] || PELISPLUS_BASE;
-  var res = await fetch(pageUrl, {
-    headers: Object.assign({}, HEADERS, { 'Referer': siteBase + '/' })
-  });
-  var html = res.ok ? await res.text() : '';
 
-  // Slugs de .bz (sufijo tipo -3FJBc8) suelen 404 en .la → reintentar en pelisplushd.bz
-  var looksBzSlug = /\/(?:pelicula|serie|anime)\/[a-z0-9-]+-[a-zA-Z0-9]{4,}\/?/i.test(pageUrl);
-  var badPage = !res.ok || /404\s*Not\s*found/i.test(html) || /<title>[^<]*404/i.test(html) ||
-    (/Just a moment/i.test(html) && html.length < 5000);
-  if (badPage && siteBase.indexOf('pelisplushd.bz') === -1) {
-    var altUrl = pageUrl.replace(/^https?:\/\/[^\/]+/i, PELISPLUS_BZ_BASE);
-    var res2 = await fetch(altUrl, {
-      headers: Object.assign({}, HEADERS, { 'Referer': PELISPLUS_BZ_BASE + '/' })
+  function pageLooksBad(status, body) {
+    if (!status || status >= 400) return true;
+    if (!body || body.length < 400) return true;
+    if (/404\s*Not\s*found/i.test(body) || /<title>[^<]*404/i.test(body)) return true;
+    if (/Just a moment/i.test(body) && body.length < 8000) return true;
+    return false;
+  }
+
+  async function fetchPelisHtml(url) {
+    var base = (String(url).match(/^(https?:\/\/[^\/]+)/) || [null, siteBase])[1] || siteBase;
+    var r = await fetch(url, {
+      headers: Object.assign({}, HEADERS, {
+        'Referer': base + '/',
+        'User-Agent': HEADERS['User-Agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      }),
+      redirect: 'follow'
     });
-    if (res2.ok) {
-      var html2 = await res2.text();
-      if (html2 && !/404\s*Not\s*found/i.test(html2) && !/<title>[^<]*404/i.test(html2)) {
-        pageUrl = altUrl;
-        siteBase = PELISPLUS_BZ_BASE;
-        html = html2;
-        res = res2;
-      }
+    var body = '';
+    try { body = await r.text(); } catch (eT) { body = ''; }
+    return { res: r, html: body, url: url, base: base };
+  }
+
+  // Probar URL pedida + variantes (slash, anime↔serie, .la→.bz)
+  var tryUrls = [];
+  function pushUrl(u) {
+    if (!u) return;
+    u = String(u).trim();
+    if (tryUrls.indexOf(u) === -1) tryUrls.push(u);
+  }
+  pushUrl(pageUrl);
+  pushUrl(pageUrl.replace(/\/$/, ''));
+  pushUrl(pageUrl.replace(/\/?$/, '/'));
+  if (/\/anime\//i.test(pageUrl)) {
+    pushUrl(pageUrl.replace(/\/anime\//i, '/serie/'));
+    pushUrl(pageUrl.replace(/\/anime\//i, '/serie/').replace(/\/?$/, ''));
+  } else if (/\/serie\//i.test(pageUrl) && !/\/temporada\//i.test(pageUrl)) {
+    pushUrl(pageUrl.replace(/\/serie\//i, '/anime/'));
+    pushUrl(pageUrl.replace(/\/serie\//i, '/anime/').replace(/\/?$/, ''));
+  }
+  // Si no es .bz, añadir espejo .bz
+  if (String(siteBase).indexOf('pelisplushd.bz') === -1) {
+    for (var ti = 0, n0 = tryUrls.length; ti < n0; ti++) {
+      pushUrl(tryUrls[ti].replace(/^https?:\/\/[^\/]+/i, PELISPLUS_BZ_BASE));
     }
   }
-  if (!html) throw new Error('HTTP ' + (res && res.status ? res.status : 0));
+
+  var res = null;
+  var html = '';
+  var lastStatus = 0;
+  for (var ui = 0; ui < tryUrls.length; ui++) {
+    try {
+      var got = await fetchPelisHtml(tryUrls[ui]);
+      lastStatus = got.res && got.res.status ? got.res.status : 0;
+      if (!pageLooksBad(lastStatus, got.html)) {
+        pageUrl = got.url;
+        siteBase = got.base;
+        html = got.html;
+        res = got.res;
+        break;
+      }
+    } catch (eFetch) {
+      lastStatus = 0;
+    }
+  }
+  if (!html) throw new Error('HTTP ' + (lastStatus || (res && res.status) || 404));
 
   var esSerie = /\/serie\//i.test(pageUrl) || /\/anime\//i.test(pageUrl);
   var esCapitulo = /\/temporada\/\d+\/capitulo\/\d+/i.test(pageUrl);
