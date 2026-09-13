@@ -355,7 +355,10 @@ var REPRODUCTORES_PERMITIDOS = [
   'ryderjet',
 
   // Opcional estable (embed / a veces útil)
-  'filemoon'
+  'filemoon',
+
+  // PelisPlus .bz
+  'embed69', 'embed69.org'
 ];
 var REPRODUCTORES_BLOQUEADOS = [
   'lamovie.org', 'lamovie', 'youtube.com', 'youtu.be',
@@ -1112,6 +1115,7 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     if (tipoRuta === 'pelicula') {
       // PELÍCULA: NUNCA animeav1 (contaminan con "Anime" el mismo slug)
       // Orden: pelisplus → lamovie → hackstore → doramasflix (cine)
+      add('pelisplushd_bz', PELISPLUS_BZ_BASE + '/pelicula/' + s);
       add('pelisplushd', PELISPLUS_BASE + '/pelicula/' + s + '/');
       add('lamovie', LAMOVIE_BASE + '/peliculas/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/peliculas/' + s + '/');
@@ -7631,22 +7635,36 @@ function extraerPlayurlsPelisplus(html) {
   var reproductores = [];
   var vistos = {};
 
-  function add(u, idioma) {
+  function add(u, idioma, servidor) {
     if (!u || vistos[u]) return;
+    u = String(u).trim();
+    if (u.indexOf('//') === 0) u = 'https:' + u;
     var ok = esReproductorValido(u) ||
-      /streamwish|vidhide|voe\.|filemoon|dood|waaw|hqq|netu|uqload|mixdrop/i.test(u);
+      /streamwish|vidhide|voe\.|filemoon|dood|waaw|hqq|netu|uqload|mixdrop|embed69/i.test(u);
     if (!ok) return;
     vistos[u] = true;
+    var serv = servidor || extraerServidor(u);
+    if (/embed69/i.test(u)) serv = 'Embed69';
     reproductores.push({
       url: u,
       idioma: idioma || 'Desconocido',
-      servidor: extraerServidor(u),
+      servidor: serv,
       tipo: 'reproductor'
     });
   }
 
-  var r1 = /data-url=["']([^"']+)["'][^>]*data-name=["']([^"']*)["']/gi;
+  // Formato .bz: video[1] = 'https://embed69.org/...'
+  var rVid = /video\s*\[\s*(\d+)\s*\]\s*=\s*['"](https?:\/\/[^'"]+)['"]/gi;
   var m;
+  while ((m = rVid.exec(html)) !== null) {
+    add(m[2], 'Desconocido', /embed69/i.test(m[2]) ? 'Embed69' : null);
+  }
+
+  // iframe directos
+  var rIframe = /<iframe[^>]+src=["'](https?:\/\/[^"']+)["']/gi;
+  while ((m = rIframe.exec(html)) !== null) add(m[1], 'Desconocido');
+
+  var r1 = /data-url=["']([^"']+)["'][^>]*data-name=["']([^"']*)["']/gi;
   while ((m = r1.exec(html)) !== null) add(m[1], m[2]);
 
   var r2 = /data-name=["']([^"']*)["'][^>]*data-url=["']([^"']+)["']/gi;
@@ -7781,12 +7799,32 @@ async function scrapearPelisplus(pageUrl, opts) {
     }
   }
 
-  var siteBase = (pageUrl.match(/^(https?:\/\/[^\/]+)/) || [null, PELISPLUS_BASE])[1] || PELISPLUS_BASE;
+  siteBase = (pageUrl.match(/^(https?:\/\/[^\/]+)/) || [null, PELISPLUS_BASE])[1] || PELISPLUS_BASE;
   var res = await fetch(pageUrl, {
     headers: Object.assign({}, HEADERS, { 'Referer': siteBase + '/' })
   });
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  var html = await res.text();
+  var html = res.ok ? await res.text() : '';
+
+  // Slugs de .bz (sufijo tipo -3FJBc8) suelen 404 en .la → reintentar en pelisplushd.bz
+  var looksBzSlug = /\/(?:pelicula|serie|anime)\/[a-z0-9-]+-[a-zA-Z0-9]{4,}\/?/i.test(pageUrl);
+  var badPage = !res.ok || /404\s*Not\s*found/i.test(html) || /<title>[^<]*404/i.test(html) ||
+    (/Just a moment/i.test(html) && html.length < 5000);
+  if (badPage && siteBase.indexOf('pelisplushd.bz') === -1) {
+    var altUrl = pageUrl.replace(/^https?:\/\/[^\/]+/i, PELISPLUS_BZ_BASE);
+    var res2 = await fetch(altUrl, {
+      headers: Object.assign({}, HEADERS, { 'Referer': PELISPLUS_BZ_BASE + '/' })
+    });
+    if (res2.ok) {
+      var html2 = await res2.text();
+      if (html2 && !/404\s*Not\s*found/i.test(html2) && !/<title>[^<]*404/i.test(html2)) {
+        pageUrl = altUrl;
+        siteBase = PELISPLUS_BZ_BASE;
+        html = html2;
+        res = res2;
+      }
+    }
+  }
+  if (!html) throw new Error('HTTP ' + (res && res.status ? res.status : 0));
 
   var esSerie = /\/serie\//i.test(pageUrl) || /\/anime\//i.test(pageUrl);
   var esCapitulo = /\/temporada\/\d+\/capitulo\/\d+/i.test(pageUrl);
