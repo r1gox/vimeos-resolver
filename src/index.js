@@ -1124,15 +1124,18 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
       // ANIME: fuentes de anime primero
       add('jkanime', JKANIME_BASE + '/' + s + '/');
       add('animeav1', ANIMEAV1_BASE + '/media/' + s);
+      add('pelisplushd_bz', PELISPLUS_BZ_BASE + '/anime/' + s);
       add('pelisplushd', PELISPLUS_BASE + '/anime/' + s + '/');
       add('lamovie', LAMOVIE_BASE + '/animes/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/animes/' + s + '/');
       // serie como último recurso (algunos animes solo en /serie/)
+      add('pelisplushd_bz', PELISPLUS_BZ_BASE + '/serie/' + s);
       add('pelisplushd', PELISPLUS_BASE + '/serie/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/series/' + s + '/');
     } else {
       // SERIE / dorama: NO poner animeav1 primero (mete películas live-action como Anime)
       add('doramasflix', DORAMASFLIX_BASE + '/doramas/' + s);
+      add('pelisplushd_bz', PELISPLUS_BZ_BASE + '/serie/' + s);
       add('pelisplushd', PELISPLUS_BASE + '/serie/' + s + '/');
       add('lamovie', LAMOVIE_BASE + '/series/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/series/' + s + '/');
@@ -1187,6 +1190,8 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
   if (esCapitulo) {
     for (var sc = 0; sc < slugsTry.length; sc++) {
       var ss = slugsTry[sc];
+      add('pelisplushd_bz', PELISPLUS_BZ_BASE + '/serie/' + ss + '/temporada/' + seasonOnly + '/capitulo/' + episodeOnly);
+      add('pelisplushd_bz', PELISPLUS_BZ_BASE + '/anime/' + ss + '/temporada/' + seasonOnly + '/capitulo/' + episodeOnly);
       add('pelisplushd', PELISPLUS_BASE + '/serie/' + ss + '/temporada/' + seasonOnly + '/capitulo/' + episodeOnly + '/');
       add('pelisplushd', PELISPLUS_BASE + '/anime/' + ss + '/temporada/' + seasonOnly + '/capitulo/' + episodeOnly + '/');
     }
@@ -1209,12 +1214,12 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     // Orden según tipo pedido (no mezclar anime en películas)
     var order;
     if (tipoRuta === 'pelicula') {
-      order = { pelisplushd: 0, lamovie: 1, hackstore: 2, doramasflix: 3 };
+      order = { pelisplushd_bz: 0, pelisplushd: 1, lamovie: 2, hackstore: 3, doramasflix: 4 };
     } else if (tipoRuta === 'anime') {
-      order = { animeav1: 0, pelisplushd: 2, lamovie: 3, hackstore: 4, doramasflix: 5 };
+      order = { animeav1: 0, pelisplushd_bz: 1, pelisplushd: 2, lamovie: 3, hackstore: 4, doramasflix: 5 };
     } else {
       // serie
-      order = { doramasflix: 0, pelisplushd: 1, lamovie: 2, hackstore: 3, animeav1: 8 };
+      order = { doramasflix: 0, pelisplushd_bz: 1, pelisplushd: 2, lamovie: 3, hackstore: 4, animeav1: 8 };
     }
     return (order[a.fuente] != null ? order[a.fuente] : 9) - (order[b.fuente] != null ? order[b.fuente] : 9);
   });
@@ -1238,12 +1243,16 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     try {
       var r;
       var o2 = Object.assign({}, opts);
-      if (c.fuente === 'pelisplushd') r = await scrapearPelisplus(c.url, o2);
+      if (c.fuente === 'pelisplushd' || c.fuente === 'pelisplushd_bz') r = await scrapearPelisplus(c.url, o2);
       else if (c.fuente === 'animeav1') r = await scrapearAnimeAv1(c.url, o2);
       else if (c.fuente === 'doramasflix') r = await scrapearDoramasflix(c.url, o2);
       else if (c.fuente === 'hackstore') r = await scrapearHackstore(c.url, o2);
       else r = await scrapearLamovie(c.url, o2);
       if (r && r.success !== false) {
+        if (c && c.fuente) {
+          r.fuente = c.fuente;
+          r.source_id = sourceIdFromName(c.fuente);
+        }
         if (esCapitulo && r.tipo === 'Capitulo' && (!r.reproductores || !r.reproductores.length)) {
           return null;
         }
@@ -1343,7 +1352,7 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
         }
       }
       var r2;
-      if (hf === 'pelisplushd') r2 = await scrapearPelisplus(hl, o3);
+      if (hf === 'pelisplushd' || hf === 'pelisplushd_bz') r2 = await scrapearPelisplus(hl, o3);
       else if (hf === 'hackstore') r2 = await scrapearHackstore(hl, o3);
       else if (hf === 'animeav1') r2 = await scrapearAnimeAv1(hl, o3);
       else if (hf === 'doramasflix') r2 = await scrapearDoramasflix(hl, o3);
