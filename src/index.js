@@ -6383,7 +6383,7 @@ function slimTemporada(t) {
  * Orden: vimeos → streamwish → vidhide → goodstream → m3u8 directo → voe (último)
  * El resto de embeds (streamtape, ok.ru, etc.) se dejan como fallback iframe.
  */
-function rankingReproductorHls_ORIG_PLACEHOLDER(rep) {
+function rankingReproductorHls(rep) {
   if (!rep || !rep.url) return 999;
   var u = String(rep.url).toLowerCase();
   var s = String(rep.servidor || rep.provider || '').toLowerCase();
@@ -6395,12 +6395,14 @@ function rankingReproductorHls_ORIG_PLACEHOLDER(rep) {
     prov = detectarProviderPorServidor(s) || '';
   }
   if (!prov) {
-    if (s.indexOf('vimeos') !== -1 || u.indexOf('vimeos') !== -1) prov = 'vimeos';
+    if (s.indexOf('jkplayer') !== -1 || u.indexOf('jkplayer') !== -1) prov = 'jkplayer';
+    else if (s.indexOf('vimeos') !== -1 || u.indexOf('vimeos') !== -1) prov = 'vimeos';
     else if (s.indexOf('streamwish') !== -1 || u.indexOf('streamwish') !== -1) prov = 'streamwish';
     else if (s.indexOf('vidhide') !== -1 || u.indexOf('vidhide') !== -1 || u.indexOf('callistanise') !== -1) prov = 'vidhide';
     else if (s.indexOf('goodstream') !== -1 || u.indexOf('goodstream') !== -1) prov = 'goodstream';
     else if (s.indexOf('voe') !== -1 || u.indexOf('voe') !== -1) prov = 'voe';
   }
+  if (prov === 'jkplayer' || /jkanime\.net\/jkplayer/i.test(u)) return 0; // iframe JK, primero
   if (/\.m3u8(\?|$)/i.test(u) || /master\.txt(\?|$)/i.test(u)) return 5; // m3u8 directo
   if (prov === 'vimeos') return 1;
   if (prov === 'streamwish') return 2;
