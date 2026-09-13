@@ -2970,31 +2970,53 @@ function attachStreamUrl(origin, rep) {
     rep.hls_resolve = rep.stream_url;
     rep.hls_resolve = rep.stream_url;
   }
-  // Otros (streamtape, ok.ru, etc.): sin stream_url — se usan como embed
+  // Fallback genérico (rápido, resolución bajo demanda)
+  if (!rep.stream_url) {
+    rep.stream_url = origin + '/streamurl?url=' + encodeURIComponent(u);
+    rep.hls_resolve = rep.stream_url;
+  }
   return rep;
 }
 
 function attachStreamUrlList(origin, list) {
   if (!Array.isArray(list)) return list;
-  // Orden: vimeos > streamwish > vidhide > goodstream > otros > voe último
+  // Orden preferido, pero stream_url en TODOS (solo URL, sin resolver → rápido)
   list.sort(function (a, b) {
     return rankingReproductorHls(a) - rankingReproductorHls(b);
   });
-  // Solo el primero resoluble recibe stream_url/hls; se muestran todos
-  var already = false;
   for (var i = 0; i < list.length; i++) {
     var rep = list[i];
     if (!rep || !rep.url) continue;
-    if (already) {
-      // Quitar stream_url/hls si se habían puesto antes
-      delete rep.stream_url;
-      delete rep.hls_resolve;
-      delete rep.hls;
-      continue;
+    attachStreamUrl(origin, rep);
+    // Si el provider no mapeó, genérico /streamurl
+    if (!rep.stream_url) {
+      var u = String(rep.url);
+      if (/\.m3u8(\?|$)/i.test(u) || /master\.txt(\?|$)/i.test(u)) {
+        rep.stream_url = origin + '/proxy?url=' + encodeURIComponent(u);
+      } else {
+        rep.stream_url = origin + '/streamurl?url=' + encodeURIComponent(u);
+      }
+      rep.hls_resolve = rep.stream_url;
     }
-    if (esReproductorHlsResoluble(rep)) {
-      attachStreamUrl(origin, rep);
-      already = true;
+    if (!rep.link) rep.link = rep.url;
+    if (!rep.server && rep.servidor) rep.server = String(rep.servidor).toLowerCase();
+    if (!rep.name && (rep.servidor || rep.server)) {
+      var nm = String(rep.servidor || rep.server);
+      rep.name = nm.charAt(0).toUpperCase() + nm.slice(1);
+    }
+    var idi = String(rep.idioma || rep.language || '').toLowerCase();
+    if (!rep.language) {
+      if (/lat|latino/i.test(idi)) rep.language = 'LATINO';
+      else if (/sub/i.test(idi)) rep.language = 'SUBTITULADO';
+      else if (/cast/i.test(idi)) rep.language = 'CASTELLANO';
+      else if (/eng|ingl/i.test(idi)) rep.language = 'ENGLISH';
+      else if (rep.idioma) rep.language = String(rep.idioma).toUpperCase();
+    }
+    if (!rep.lang_code && rep.language) {
+      if (rep.language === 'LATINO') rep.lang_code = 'LAT';
+      else if (rep.language === 'SUBTITULADO') rep.lang_code = 'SUB';
+      else if (rep.language === 'CASTELLANO') rep.lang_code = 'CAST';
+      else if (rep.language === 'ENGLISH') rep.lang_code = 'ENG';
     }
   }
   return list;
@@ -6369,20 +6391,16 @@ function formatearCapituloRespuesta(item, origin, ctx) {
     return rankingReproductorHls(a) - rankingReproductorHls(b);
   });
 
-  // Solo el primero resoluble recibe stream_url/hls; se muestran todos
-  var already = false;
+  // stream_url en TODOS (solo arma URL, no resuelve HLS aquí → respuesta rápida)
   for (var ri2 = 0; ri2 < reproductores.length; ri2++) {
     var rp2 = reproductores[ri2];
     if (!rp2 || !rp2.url) continue;
     var u2 = String(rp2.url);
     if (/\.m3u8(\?|$)/i.test(u2) || /master\.txt(\?|$)/i.test(u2)) {
-      if (!already) {
-        rp2.hls = u2;
-        rp2.stream_url = origin + '/proxy?url=' + encodeURIComponent(u2);
-        rp2.hls_resolve = rp2.stream_url;
-        rp2.tipo = 'hls';
-        already = true;
-      }
+      rp2.hls = u2;
+      rp2.stream_url = origin + '/proxy?url=' + encodeURIComponent(u2);
+      rp2.hls_resolve = rp2.stream_url;
+      rp2.tipo = 'hls';
       continue;
     }
     var prov2 = null;
@@ -6390,26 +6408,44 @@ function formatearCapituloRespuesta(item, origin, ctx) {
     if (!prov2) {
       try { prov2 = detectarProviderPorServidor(rp2.servidor); } catch (e4) {}
     }
-    if (prov2) {
-      rp2.provider = prov2;
-      if (!already) {
-        if (prov2 === 'streamwish') {
-          rp2.stream_url = origin + '/wish/streamurl?url=' + encodeURIComponent(u2);
-        } else if (prov2 === 'vidhide') {
-          rp2.stream_url = origin + '/vidhide/streamurl?url=' + encodeURIComponent(u2);
-        } else if (prov2 === 'voe') {
-          rp2.stream_url = origin + '/voe/streamurl?url=' + encodeURIComponent(u2);
-        } else if (prov2 === 'goodstream') {
-          rp2.stream_url = origin + '/goodstream/streamurl?url=' + encodeURIComponent(u2);
-        } else if (prov2 === 'vimeos') {
-          rp2.stream_url = origin + '/resolve/vimeos?url=' + encodeURIComponent(u2) + '&proxy=1';
-        } else {
-          rp2.stream_url = origin + '/resolve?url=' + encodeURIComponent(u2) + '&proxy=1';
-        }
-        rp2.hls_resolve = rp2.stream_url;
-        already = true;
-      }
-      rp2.tipo = rp2.tipo || 'reproductor';
+    if (prov2) rp2.provider = prov2;
+    if (prov2 === 'streamwish') {
+      rp2.stream_url = origin + '/wish/streamurl?url=' + encodeURIComponent(u2);
+    } else if (prov2 === 'vidhide') {
+      rp2.stream_url = origin + '/vidhide/streamurl?url=' + encodeURIComponent(u2);
+    } else if (prov2 === 'voe') {
+      rp2.stream_url = origin + '/voe/streamurl?url=' + encodeURIComponent(u2);
+    } else if (prov2 === 'goodstream') {
+      rp2.stream_url = origin + '/goodstream/streamurl?url=' + encodeURIComponent(u2);
+    } else if (prov2 === 'vimeos') {
+      rp2.stream_url = origin + '/resolve/vimeos?url=' + encodeURIComponent(u2) + '&proxy=1';
+    } else if (prov2 === 'streamtape') {
+      rp2.stream_url = origin + '/streamtape/streamurl?url=' + encodeURIComponent(u2);
+    } else {
+      // genérico: mismo estilo tvymas, resolución bajo demanda
+      rp2.stream_url = origin + '/streamurl?url=' + encodeURIComponent(u2);
+    }
+    rp2.hls_resolve = rp2.stream_url;
+    rp2.tipo = rp2.tipo || 'reproductor';
+    // Campos estilo API rápida
+    if (!rp2.link) rp2.link = u2;
+    if (!rp2.server && rp2.servidor) rp2.server = String(rp2.servidor).toLowerCase();
+    if (!rp2.name && rp2.servidor) {
+      rp2.name = String(rp2.servidor).charAt(0).toUpperCase() + String(rp2.servidor).slice(1);
+    }
+    var idi = String(rp2.idioma || rp2.language || '').toLowerCase();
+    if (!rp2.language) {
+      if (/lat|latino|espa[nñ]ol\s*latino/i.test(idi)) rp2.language = 'LATINO';
+      else if (/sub/i.test(idi)) rp2.language = 'SUBTITULADO';
+      else if (/cast|espa[nñ]ol/i.test(idi)) rp2.language = 'CASTELLANO';
+      else if (/eng|ingl/i.test(idi)) rp2.language = 'ENGLISH';
+      else if (rp2.idioma) rp2.language = String(rp2.idioma).toUpperCase();
+    }
+    if (!rp2.lang_code) {
+      if (rp2.language === 'LATINO') rp2.lang_code = 'LAT';
+      else if (rp2.language === 'SUBTITULADO') rp2.lang_code = 'SUB';
+      else if (rp2.language === 'CASTELLANO') rp2.lang_code = 'CAST';
+      else if (rp2.language === 'ENGLISH') rp2.lang_code = 'ENG';
     }
   }
   var descargas = item.descargas || item.downloads || [];
