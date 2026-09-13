@@ -767,8 +767,9 @@ async function handleRequest(request, env) {
           if (ymJk) detJk.year = ymJk[0];
         }
 
-        // Meta en paralelo con timeout: no encadenar 3 búsquedas
+        // Meta Cinemeta/Metahub (igual que el resto de fuentes): logo, backdrop, portada, rating
         detJk.titulo = tituloBusqueda;
+        detJk.portada_fuente_raw = detJk.portada_fuente_raw || detJk.portada || null;
         try {
           var metaPromise = (async function () {
             try {
@@ -778,7 +779,7 @@ async function handleRequest(request, env) {
             }
           })();
           var timeoutPromise = new Promise(function (resolve) {
-            setTimeout(function () { resolve(null); }, 3500); // máx 3.5s de meta
+            setTimeout(function () { resolve(null); }, 8000); // máx 8s de meta
           });
           var enriched = await Promise.race([metaPromise, timeoutPromise]);
           if (enriched) detJk = enriched;
@@ -787,11 +788,31 @@ async function handleRequest(request, env) {
         if ((detJk.calificacion == null || detJk.calificacion === '') && ratingFuenteJk != null) {
           detJk.calificacion = ratingFuenteJk;
           detJk.rating = ratingFuenteJk;
-          detJk.rating_source = 'fuente';
+          if (!detJk.rating_source) detJk.rating_source = 'fuente';
         }
 
         detJk.titulo = tituloPagina;
-        detJk = limpiarDetalleJkanime(detJk);
+        // Esquema unificado (logo, backdrop, portada_imdb, imdb_id, …)
+        try {
+          detJk = formatearDetalleRespuesta(detJk, origin);
+        } catch (eFmt) {
+          detJk = limpiarDetalleJkanime(detJk);
+        }
+        // Asegurar campos visuales aunque formatear no los copie
+        detJk = limpiarDetalleJkanime(Object.assign({}, detJk, {
+          portada: detJk.portada,
+          portada_imdb: detJk.portada_imdb,
+          logo: detJk.logo || detJk.logo_imdb,
+          logo_imdb: detJk.logo_imdb || detJk.logo,
+          backdrop: detJk.backdrop,
+          poster_source: detJk.poster_source,
+          imdb_id: detJk.imdb_id,
+          rating: detJk.rating,
+          rating_source: detJk.rating_source
+        }));
+        if (!detJk.url_extract && slugJk) {
+          detJk.url_extract = origin + '/5/anime/' + slugJk;
+        }
         return json(detJk);
       }
 
@@ -10669,9 +10690,20 @@ function limpiarDetalleJkanime(item) {
 
   var ratingSource = item.rating_source || null;
   if (!ratingSource && rating != null) {
-    if (item.imdb && item.imdb.rating != null) ratingSource = 'imdb';
+    if (item.imdb_id || (item.imdb && item.imdb.rating != null) || item.portada_imdb) ratingSource = 'imdb';
     else if (item.tmdb && item.tmdb.rating != null) ratingSource = 'tmdb';
     else if (item.calificacion != null) ratingSource = 'fuente';
+  }
+
+  // Misma info visual que el resto de fuentes (Metahub / Cinemeta)
+  var portadaImdb = item.portada_imdb || null;
+  var logoImdb = item.logo_imdb || item.logo || null;
+  var backdrop = item.backdrop || item.fondo || item.background || null;
+  var imdbId = item.imdb_id || (item.imdb && item.imdb.id) || null;
+  if (imdbId && /^tt\d+$/i.test(String(imdbId))) {
+    if (!portadaImdb && typeof metahubPoster === 'function') portadaImdb = metahubPoster(imdbId, 'medium');
+    if (!logoImdb && typeof metahubLogo === 'function') logoImdb = metahubLogo(imdbId, 'medium');
+    if (!backdrop && typeof metahubBackground === 'function') backdrop = metahubBackground(imdbId, 'medium');
   }
 
   var out = {
@@ -10686,15 +10718,20 @@ function limpiarDetalleJkanime(item) {
     rating: rating != null ? Number(rating) : null,
     rating_source: ratingSource,
     votos: votos != null ? String(votos) : null,
-    portada: item.portada || null,
+    portada: portadaImdb || item.portada || item.portada_tmdb || null,
+    portada_fuente_raw: item.portada_fuente_raw || item.portada || null,
+    portada_imdb: portadaImdb,
+    portada_tmdb: item.portada_tmdb || null,
+    logo: logoImdb,
+    logo_imdb: logoImdb,
+    backdrop: backdrop,
+    poster_source: item.poster_source || (portadaImdb ? 'metahub' : (item.portada ? 'fuente' : null)),
     descripcion: item.descripcion || null,
     year: item.year || null,
     fecha_estreno: item.fecha_estreno || null,
     fecha_estreno_texto: item.fecha_estreno_texto || null,
     generos: item.generos || null,
     genero: item.genero || null,
-    logo: item.logo || item.logo_imdb || null,
-    logo_imdb: item.logo_imdb || item.logo || null,
     studios: item.studios || null,
     temporada_anime: item.temporada_anime || null,
     demografia: item.demografia || null,
@@ -10705,13 +10742,14 @@ function limpiarDetalleJkanime(item) {
     en_emision: item.en_emision != null ? item.en_emision : null,
     finalizado: item.finalizado != null ? item.finalizado : null,
     calidad: item.calidad || null,
-    imdb_id: item.imdb_id || (item.imdb && item.imdb.id) || null,
+    imdb_id: imdbId,
     tmdb_id: item.tmdb_id || (item.tmdb && item.tmdb.id) || null,
     titulos_alternativos: item.titulos_alternativos || null,
     anime_id: item.anime_id || null,
     total_episodios: item.total_episodios != null ? item.total_episodios : null,
     total_temporadas: item.total_temporadas != null ? item.total_temporadas : null,
     temporadas: item.temporadas || null,
+    formato: item.formato || null,
     url_extract: item.url_extract || null
   };
 
