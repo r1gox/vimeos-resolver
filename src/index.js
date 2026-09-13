@@ -2976,6 +2976,18 @@ function attachStreamUrl(origin, rep) {
   if (!rep || !rep.url) return rep;
   var s = String(rep.servidor || '').toLowerCase();
   var u = String(rep.url);
+  // JKPlayer (jkanime): iframe directo, no resolve HLS
+  if (rep.tipo === 'jkplayer' || /jkanime\.net\/jkplayer\//i.test(u) || s.indexOf('jkplayer') !== -1) {
+    rep.provider = 'jkplayer';
+    rep.tipo = 'jkplayer';
+    rep.iframe = true;
+    rep.no_ads = true;
+    rep.link = u;
+    // sin stream_url de resolve (el cliente debe usar iframe con url)
+    delete rep.stream_url;
+    delete rep.hls_resolve;
+    return rep;
+  }
   // Ya es HLS directo → proxy
   if (/\.m3u8(\?|$)/i.test(u) || /master\.txt(\?|$)/i.test(u)) {
     rep.hls = u;
@@ -6371,7 +6383,7 @@ function slimTemporada(t) {
  * Orden: vimeos → streamwish → vidhide → goodstream → m3u8 directo → voe (último)
  * El resto de embeds (streamtape, ok.ru, etc.) se dejan como fallback iframe.
  */
-function rankingReproductorHls(rep) {
+function rankingReproductorHls_ORIG_PLACEHOLDER(rep) {
   if (!rep || !rep.url) return 999;
   var u = String(rep.url).toLowerCase();
   var s = String(rep.servidor || rep.provider || '').toLowerCase();
@@ -10902,35 +10914,103 @@ function esDescargaJk(servidor, url) {
 }
 
 function parseJkanimeServers(html) {
-  var m = html.match(/var\s+servers\s*=\s*(\[[\s\S]*?\])\s*;/);
-  if (!m) return { reproductores: [], descargas: [] };
-  var arr;
-  try { arr = JSON.parse(m[1]); } catch (e) { return { reproductores: [], descargas: [] }; }
-
   var reproductores = [];
   var descargas = [];
+  var seen = {};
 
-  for (var i = 0; i < arr.length; i++) {
-    var s = arr[i] || {};
-    var remote = b64DecodeJk(s.remote || '');
-    if (remote) remote = String(remote).replace(/\s+/g, '').trim();
-    if (!remote) continue;
+  function addRep(item) {
+    if (!item || !item.url) return;
+    var u = String(item.url).trim();
+    if (!u || seen[u]) return;
+    seen[u] = true;
+    item.url = u;
+    item.fuente = item.fuente || 'jkanime';
+    reproductores.push(item);
+  }
 
-    var item = {
-      servidor: s.server || 'Server',
-      url: remote,
-      tipo: 'embed',
-      fuente: 'jkanime'
-    };
-    if (s.size) item.size = s.size;
+  // 1) JKPlayer oficial (como KoiFlix): iframe um / umv — poco o nada de ads del host
+  // video[0] = '<iframe ... src="https://jkanime.net/jkplayer/um?e=...&t=...&op=..." ...'
+  var reJkPlayer = /https?:\/\/jkanime\.net\/jkplayer\/(umv?|c\d+)\?[^"'\s<>]+/gi;
+  var jm;
+  var jkIdx = 0;
+  while ((jm = reJkPlayer.exec(html)) !== null) {
+    var jkUrl = jm[0].replace(/&amp;/g, '&');
+    // cortar basura si el match se comió atributos
+    jkUrl = jkUrl.replace(/["'\s].*$/, '');
+    var kind = (jm[1] || 'um').toLowerCase();
+    var label = kind === 'umv' ? 'JKPlayer (UMV)' : (kind.indexOf('c') === 0 ? 'JKPlayer (' + kind + ')' : 'JKPlayer');
+    addRep({
+      servidor: label,
+      server: 'jkplayer',
+      name: label,
+      url: jkUrl,
+      link: jkUrl,
+      tipo: 'jkplayer',
+      idioma: 'Subtitulado',
+      language: 'SUBTITULADO',
+      lang_code: 'SUB',
+      no_ads: true,
+      preferente: jkIdx === 0
+    });
+    jkIdx++;
+  }
+  // src relativo /jkplayer/um?...
+  var reJkRel = /(?:src=["']|jkplayer\/)((?:https?:\/\/jkanime\.net)?\/jkplayer\/(umv?|c\d+)\?[^"'\s<>]+)/gi;
+  while ((jm = reJkRel.exec(html)) !== null) {
+    var path = jm[1];
+    if (path.indexOf('http') !== 0) path = JKANIME_BASE + (path.charAt(0) === '/' ? path : '/' + path);
+    path = path.replace(/&amp;/g, '&').replace(/["'\s].*$/, '');
+    if (!/jkplayer\/(umv?|c\d+)\?/i.test(path)) continue;
+    addRep({
+      servidor: 'JKPlayer',
+      server: 'jkplayer',
+      name: 'JKPlayer',
+      url: path,
+      link: path,
+      tipo: 'jkplayer',
+      idioma: 'Subtitulado',
+      language: 'SUBTITULADO',
+      lang_code: 'SUB',
+      no_ads: true
+    });
+  }
 
-    if (esDescargaJk(item.servidor, item.url)) {
-      item.tipo = 'download';
-      descargas.push(item);
-    } else {
-      reproductores.push(item);
+  // 2) servers[] clásico (Streamwish, Voe, Vidhide, etc.) — se mantienen igual
+  var m = html.match(/var\s+servers\s*=\s*(\[[\s\S]*?\])\s*;/);
+  if (m) {
+    var arr;
+    try { arr = JSON.parse(m[1]); } catch (e) { arr = null; }
+    if (arr && arr.length) {
+      for (var i = 0; i < arr.length; i++) {
+        var s = arr[i] || {};
+        var remote = b64DecodeJk(s.remote || '');
+        if (remote) remote = String(remote).replace(/\s+/g, '').trim();
+        if (!remote) continue;
+
+        var item = {
+          servidor: s.server || 'Server',
+          server: String(s.server || 'server').toLowerCase(),
+          name: s.server || 'Server',
+          url: remote,
+          link: remote,
+          tipo: 'embed',
+          fuente: 'jkanime'
+        };
+        if (s.size) item.size = s.size;
+
+        if (esDescargaJk(item.servidor, item.url)) {
+          item.tipo = 'download';
+          if (!seen[item.url]) {
+            seen[item.url] = true;
+            descargas.push(item);
+          }
+        } else {
+          addRep(item);
+        }
+      }
     }
   }
+
   return { reproductores: reproductores, descargas: descargas };
 }
 
@@ -10962,18 +11042,28 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
     tituloEp = String(tituloEp).split('—')[0].split('-')[0].trim();
 
     var parsed = parseJkanimeServers(epHtml);
+    var reps = parsed.reproductores || [];
+    // JKPlayer primero si existe
+    reps.sort(function (a, b) {
+      var aj = (a.tipo === 'jkplayer' || /jkplayer/i.test(a.url || '')) ? 0 : 1;
+      var bj = (b.tipo === 'jkplayer' || /jkplayer/i.test(b.url || '')) ? 0 : 1;
+      return aj - bj;
+    });
     return {
       success: true,
       fuente: 'jkanime',
       source_id: '5',
       tipo: 'Capitulo',
+      link: epUrl,
       slug: slug,
       titulo: tituloEp,
       temporada: 1,
       episodio: epNum,
-      total: parsed.reproductores.length,
-      reproductores: parsed.reproductores,
-      descargas: parsed.descargas
+      total: reps.length,
+      embeds: reps.map(function (r) { return r.url; }),
+      reproductores: reps,
+      descargas: parsed.descargas || [],
+      url_extract: (opts.requestUrl ? (function () { try { return new URL(opts.requestUrl).origin; } catch (e) { return ''; } })() : '') + '/5/anime/' + slug + '/' + epNum
     };/*
     return {
       success: true,
