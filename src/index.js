@@ -6909,70 +6909,133 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
       (detalle.imdb && detalle.imdb.id) ||
       null;
 
+    function normTitleKey(s) {
+      return String(s || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
     // Solo resolver id si falta
     if (!imdbId || !/^tt\d+$/i.test(String(imdbId))) {
-      var titulo =
-        (detalle.titulos_alternativos && detalle.titulos_alternativos.ingles) ||
-        detalle.titulo_original ||
-        detalle.titulo ||
-        detalle.title ||
-        detalle.nombre ||
-        '';
+      var alts = detalle.titulos_alternativos || {};
+      var candidatosTitulo = [];
+      function pushTit(t) {
+        t = String(t || '').replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').trim();
+        if (!t || t.length < 2) return;
+        if (candidatosTitulo.indexOf(t) === -1) candidatosTitulo.push(t);
+      }
+      pushTit(alts.ingles);
+      pushTit(alts.sinonimos);
+      pushTit(detalle.titulo_original);
+      pushTit(detalle.titulo);
+      pushTit(detalle.title);
+      pushTit(detalle.nombre);
+      // slug legible: one-piece → One Piece
+      if (detalle.slug) {
+        pushTit(String(detalle.slug).replace(/-[a-zA-Z0-9]{4,10}$/, '').replace(/-/g, ' '));
+      }
+      // quitar sufijos de temporada del título de búsqueda
+      for (var ci = candidatosTitulo.length - 1; ci >= 0; ci--) {
+        var cleaned = candidatosTitulo[ci]
+          .replace(/\s*\(\d{4}\)\s*$/, '')
+          .replace(/\s+(season|temporada|part|parte)\s*\d+$/i, '')
+          .trim();
+        pushTit(cleaned);
+      }
+
       var year = detalle.year || null;
       var t = String(tipo).toLowerCase();
-      var kind = /anime|serie|series|tv|dorama/.test(t) ? 'series' : 'movie';
+      var kinds = /anime|serie|series|tv|dorama/.test(t)
+        ? ['series', 'movie']
+        : /movie|pelicula|film/.test(t)
+          ? ['movie', 'series']
+          : ['series', 'movie'];
 
-      // 1) Cinemeta search
-      try {
+      async function cinemetaSearch(kind, q) {
         var url =
           'https://v3-cinemeta.strem.io/catalog/' + kind +
-          '/top/search=' + encodeURIComponent(String(titulo).trim()) + '.json';
+          '/top/search=' + encodeURIComponent(String(q).trim()) + '.json';
         var res = await fetch(url, {
           headers: { Accept: 'application/json', 'User-Agent': 'MovieZoneMeta/1.0' }
         });
-        if (res.ok) {
-          var data = await res.json();
-          var metas = (data && data.metas) || [];
-          for (var i = 0; i < metas.length; i++) {
-            var id = metas[i] && (metas[i].imdb_id || metas[i].id);
-            if (id && /^tt\d+$/i.test(String(id))) {
-              // si hay año, preferir el que coincida
-              if (year && metas[i].releaseInfo && String(metas[i].releaseInfo).indexOf(String(year)) === -1) {
-                if (metas[i].year && String(metas[i].year).indexOf(String(year)) === -1) continue;
-              }
-              imdbId = String(id);
-              break;
-            }
-          }
-          if (!imdbId && metas[0]) {
-            var id0 = metas[0].imdb_id || metas[0].id;
-            if (id0 && /^tt\d+$/i.test(String(id0))) imdbId = String(id0);
-          }
+        if (!res.ok) return [];
+        var data = await res.json();
+        return (data && data.metas) || [];
+      }
+
+      function scoreMeta(meta, qNorm, yearPref) {
+        if (!meta) return -1;
+        var id = meta.imdb_id || meta.id;
+        if (!id || !/^tt\d+$/i.test(String(id))) return -1;
+        var nameN = normTitleKey(meta.name || meta.title || '');
+        if (!nameN) return 0;
+        var sc = 0;
+        if (nameN === qNorm) sc += 100;
+        else if (nameN.indexOf(qNorm) === 0 || qNorm.indexOf(nameN) === 0) sc += 70;
+        else if (nameN.indexOf(qNorm) !== -1 || qNorm.indexOf(nameN) !== -1) sc += 40;
+        else return -1; // no parece la misma obra
+        if (yearPref) {
+          var ri = String(meta.releaseInfo || meta.year || '');
+          if (ri.indexOf(String(yearPref)) !== -1) sc += 25;
         }
-      } catch (e1) {}
+        // preferir serie larga anime (1999) vs live-action 2023 si el query es genérico
+        if (meta.type === 'series') sc += 5;
+        return sc;
+      }
+
+      var bestId = null;
+      var bestScore = -1;
+      for (var ki = 0; ki < kinds.length && bestScore < 100; ki++) {
+        for (var ti = 0; ti < candidatosTitulo.length && bestScore < 100; ti++) {
+          try {
+            var metas = await cinemetaSearch(kinds[ki], candidatosTitulo[ti]);
+            var qn = normTitleKey(candidatosTitulo[ti]);
+            for (var mi = 0; mi < metas.length; mi++) {
+              var sc = scoreMeta(metas[mi], qn, year);
+              if (sc > bestScore) {
+                bestScore = sc;
+                bestId = String(metas[mi].imdb_id || metas[mi].id);
+              }
+            }
+          } catch (eSearch) { /* next */ }
+        }
+      }
+      if (bestId && bestScore >= 40) imdbId = bestId;
 
       // 2) OMDb si Cinemeta no dio id
       if (!imdbId) {
-        try {
-          var ou =
-            'https://www.omdbapi.com/?t=' + encodeURIComponent(String(titulo).trim()) +
-            '&type=' + kind +
-            '&apikey=' + encodeURIComponent(__OMDB_KEY__ || 'trilogy');
-          var oRes = await fetch(ou, { headers: { Accept: 'application/json' } });
-          if (oRes.ok) {
-            var od = await oRes.json();
-            if (od && od.Response !== 'False' && od.imdbID) imdbId = String(od.imdbID);
-          }
-        } catch (e2) {}
+        for (var oi = 0; oi < Math.min(3, candidatosTitulo.length); oi++) {
+          try {
+            var ou =
+              'https://www.omdbapi.com/?t=' + encodeURIComponent(candidatosTitulo[oi]) +
+              '&type=' + (kinds[0] === 'movie' ? 'movie' : 'series') +
+              '&apikey=' + encodeURIComponent(__OMDB_KEY__ || 'trilogy');
+            if (year) ou += '&y=' + encodeURIComponent(String(year));
+            var oRes = await fetch(ou, { headers: { Accept: 'application/json' } });
+            if (oRes.ok) {
+              var od = await oRes.json();
+              if (od && od.Response !== 'False' && od.imdbID) {
+                imdbId = String(od.imdbID);
+                break;
+              }
+            }
+          } catch (e2) {}
+        }
       }
 
       if (imdbId) detalle.imdb_id = imdbId;
     }
 
-    // Con id → Cinemeta rellena rating, portada, etc.
+    // Con id → Cinemeta + Metahub (logo, backdrop, portada, rating)
     if (detalle.imdb_id) {
       return await enriquecerSoloCinemeta(detalle, tipo);
     }
+
+    // Último recurso: Metahub no aplica sin tt, pero dejamos portada fuente
     return detalle;
   } catch (e) {
     return detalle;
@@ -9199,6 +9262,32 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   var mediaData = decodeSvelteKitData(mediaRaw);
   var media = (mediaData && mediaData.media) || {};
   var titulo = media.title || slug;
+  // Título original / alternativo (aka, english, native…)
+  var tituloOriginalAv1 = null;
+  if (media.aka) {
+    if (typeof media.aka === 'string') tituloOriginalAv1 = media.aka;
+    else if (Array.isArray(media.aka) && media.aka.length) tituloOriginalAv1 = media.aka[0];
+    else if (typeof media.aka === 'object') {
+      tituloOriginalAv1 = media.aka.english || media.aka.romaji || media.aka.native ||
+        media.aka.japanese || media.aka['ja-jp'] || media.aka['en-us'] || media.aka['en'] || null;
+      if (!tituloOriginalAv1) {
+        var akaKeys = Object.keys(media.aka);
+        for (var ak = 0; ak < akaKeys.length; ak++) {
+          var av = media.aka[akaKeys[ak]];
+          if (av && typeof av === 'string' && av.trim()) { tituloOriginalAv1 = av.trim(); break; }
+        }
+      }
+    }
+  }
+  if (!tituloOriginalAv1) {
+    tituloOriginalAv1 = media.titleEnglish || media.title_english || media.englishTitle ||
+      media.english || media.native || media.titleJapanese || media.title_japanese || null;
+  }
+  if (tituloOriginalAv1) tituloOriginalAv1 = String(tituloOriginalAv1).trim();
+  if (tituloOriginalAv1 && titulo && String(tituloOriginalAv1).toLowerCase() === String(titulo).toLowerCase()) {
+    // igual al título mostrado: si hay otro aka, usarlo
+    if (Array.isArray(media.aka) && media.aka.length > 1) tituloOriginalAv1 = media.aka[1];
+  }
   var sinopsis = media.synopsis || null;
   var epsCount = media.episodesCount || 0;
   var score = media.score || null;
@@ -9292,6 +9381,7 @@ async function scrapearAnimeAv1(pageUrl, opts) {
       slug: slug,
       titulo: titulo + ' — Episodio ' + epNum,
       titulo_serie: titulo,
+      titulo_original: (typeof tituloOriginalAv1 !== 'undefined' && tituloOriginalAv1) ? tituloOriginalAv1 : null,
       temporada: seasonNum || epMeta.season || temporadaBase || 1,
       episodio: epNum,
       slug_media: mediaSlug,
@@ -9342,6 +9432,7 @@ async function scrapearAnimeAv1(pageUrl, opts) {
         link: ANIMEAV1_BASE + '/media/' + slug,
         slug: slug,
         titulo: titulo,
+        titulo_original: (typeof tituloOriginalAv1 !== 'undefined' && tituloOriginalAv1) ? tituloOriginalAv1 : null,
         portada: portada,
         descripcion: sinopsis,
         calificacion: score,
@@ -9478,6 +9569,7 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     link: ANIMEAV1_BASE + '/media/' + slug,
     slug: slug,
     titulo: titulo,
+    titulo_original: (typeof tituloOriginalAv1 !== 'undefined' && tituloOriginalAv1) ? tituloOriginalAv1 : null,
     portada: portada,
     descripcion: sinopsis,
     calificacion: score,
