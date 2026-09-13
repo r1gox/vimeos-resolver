@@ -1152,18 +1152,39 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
    * Solo acepta: slug exacto, variante season/part del MISMO slug, o título normalizado idéntico.
    */
   function resultadoCoincideSlug(requestedSlug, resultSlug, resultTitle) {
+    function stripBzNoise(s) {
+      // pelisplushd.bz: the-office-yyRNk2 / gracias-equipo-pZ1Guz
+      return String(s || '')
+        .replace(/-[a-zA-Z0-9]{4,10}$/g, '')
+        .replace(/-\d{4}$/g, '');
+    }
     var req = normalizarSlugKey(requestedSlug || '');
     var got = normalizarSlugKey(resultSlug || '');
     if (req && got && req === got) return true;
+    var reqB = normalizarSlugKey(stripBzNoise(requestedSlug || ''));
+    var gotB = normalizarSlugKey(stripBzNoise(resultSlug || ''));
+    if (reqB && gotB && reqB === gotB) return true;
+    // Un slug es prefijo del otro (hash .bz solo en uno)
+    if (reqB && gotB && (reqB.indexOf(gotB) === 0 || gotB.indexOf(reqB) === 0)) {
+      var longer = reqB.length >= gotB.length ? reqB : gotB;
+      var shorter = reqB.length >= gotB.length ? gotB : reqB;
+      var rest = longer.slice(shorter.length);
+      if (!rest || rest.length <= 10) return true;
+    }
     // Variante de temporada del mismo slug: one-piece-season-2
     if (req && got && got.indexOf(req) === 0) {
-      var rest = got.slice(req.length);
-      if (!rest || /^(season|part|temporada|s)?\d{0,2}$/i.test(rest)) return true;
+      var rest2 = got.slice(req.length);
+      if (!rest2 || /^(season|part|temporada|s)?\d{0,2}$/i.test(rest2)) return true;
     }
     // Título normalizado idéntico (no prefijo: "one piece" ≠ "one piece heroines")
     var titleReq = normalizarTituloKey(String(requestedSlug || '').replace(/-/g, ' '));
     var titleGot = normalizarTituloKey(resultTitle || String(resultSlug || '').replace(/-/g, ' '));
     if (titleReq && titleGot && titleReq === titleGot) return true;
+    // Título vs slug sin hash: "the eminence in shadow" ≈ h1
+    var titleReq2 = normalizarTituloKey(stripBzNoise(requestedSlug || '').replace(/-/g, ' '));
+    if (titleReq2 && titleGot && (titleReq2 === titleGot || titleGot.indexOf(titleReq2) === 0 || titleReq2.indexOf(titleGot) === 0)) {
+      return true;
+    }
     return false;
   }
 
@@ -1271,9 +1292,17 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
         if (tipoRuta === 'anime' && (tipoRes === 'pelicula' || tipoRes === 'película') && c.fuente !== 'animeav1' ) {
           // permitir: algunos animes vienen etiquetados raro
         }
-        // Debe coincidir con el slug pedido
-        if (!resultadoCoincideSlug(slug, r.slug, r.titulo || r.titulo_serie)) {
-          if (normalizarSlugKey(r.slug) !== normalizarSlugKey(slug)) return null;
+        // Debe coincidir con el slug pedido (flexible con sufijos .bz tipo -RK2W83)
+        if (!resultadoCoincideSlug(slug, r.slug, r.titulo || r.titulo_serie || r.nombre)) {
+          var sameForced = sourceParam && (c.fuente === sourceParam);
+          var slugOk = normalizarSlugKey(r.slug) === normalizarSlugKey(slug);
+          if (!slugOk && !sameForced) return null;
+          // Fuente forzada 9: aceptar si el scrape respondió de esa URL .bz
+          if (!slugOk && sameForced) {
+            if (!r.slug) r.slug = slug;
+          } else if (!slugOk) {
+            return null;
+          }
         }
         r.source_id = sourceIdFromName(c.fuente);
         r.fuente = c.fuente;
