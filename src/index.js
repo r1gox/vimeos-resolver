@@ -25,6 +25,7 @@ var LAMOVIE_API = 'https://lamovie.org/wp-api/v1';
 var LAMOVIE_BASE = 'https://lamovie.org';
 var HACKSTORE_BASE = 'https://www.hackstore.fo';
 var PELISPLUS_BASE = 'https://www.pelisplushd.la';
+var PELISPLUS_BZ_BASE = 'https://pelisplushd.bz';
 var ANIMEAV1_BASE = 'https://animeav1.com';
 var DORAMASFLIX_BASE = 'https://doramasflix.io';
 var DORAMASFLIX_GQL = 'https://user-api.fluxcedene.net/graphql';
@@ -536,7 +537,8 @@ async function handleRequest(request, env) {
         '4': 'animeav1',
         '5': 'jkanime',
         '6': 'doramasflix',
-        '7': 'futbollibre'
+        '7': 'futbollibre',
+        '9': 'pelisplushd_bz'
       },
       endpoints: {
         search: origin + '/search?q={texto}',
@@ -577,9 +579,13 @@ async function handleRequest(request, env) {
         hackstore_cap: origin + '/2/serie/asi-aprenderas-2026/1/1',
         pelisplus_serie: origin + '/3/serie/acaramelados',
         pelisplus_cap: origin + '/3/serie/acaramelados/1/1',
-        estrenos: origin + '/3/peliculas/estrenos'
+        estrenos: origin + '/3/peliculas/estrenos',
+        bz_peliculas: origin + '/9/peliculas?page=1',
+        bz_series: origin + '/9/series?page=1',
+        bz_animes: origin + '/9/animes?page=1',
+        bz_doramas: origin + '/9/doramas?page=1'
       },
-      nota: 'IDs de fuente: 1=lamovie, 2=hackstore, 3=pelisplushd, 4=animeav1. Van en la ruta: /{id}/anime/{slug}',
+      nota: 'IDs de fuente: 1=lamovie, 2=hackstore, 3=pelisplushd, 4=animeav1, 9=pelisplushd_bz. Van en la ruta: /{id}/anime/{slug}',
       meta: 'Búsqueda y detalle se enriquecen con TMDB (géneros, sinopsis, rating, poster, backdrop, temporadas)'
     });
   }
@@ -614,7 +620,7 @@ async function handleRequest(request, env) {
   // parts: [3, peliculas, estrenos] o [pelisplushd, peliculas, estrenos]
   var catSource = normalizarSourceId(parts[0] || '');
   var catTipoIdx = catSource ? 1 : 0;
-  var catSeccion = (parts[catTipoIdx] || '').toLowerCase(); // peliculas|series|animes
+  var catSeccion = (parts[catTipoIdx] || '').toLowerCase(); // peliculas|series|animes|doramas|dorama|doramas
   var catFiltro = (parts[catTipoIdx + 1] || '').toLowerCase(); // estrenos|populares|''
 
   if ((catSeccion === 'peliculas' || catSeccion === 'series' || catSeccion === 'animes') &&
@@ -644,8 +650,8 @@ async function handleRequest(request, env) {
         catalogo = await listarAnimeAv1Catalogo(filtroAv1, pageNum, origin);
       } else {
         // PelisPlus (flujo original)
-        if (srcCat !== 'pelisplushd' && srcCat !== '3') {
-          if (String(parts[0]) !== '3' && parts[0] !== 'pelisplushd' && parts[0] !== 'pp') {
+        if (srcCat !== 'pelisplushd' && srcCat !== '3' && srcCat !== 'pelisplushd_bz' && srcCat !== '9' && srcCat !== 'ppbz') {
+          if (String(parts[0]) !== '3' && parts[0] !== 'pelisplushd' && parts[0] !== 'pp' && String(parts[0]) !== '9' && parts[0] !== 'pelisplushd_bz' && parts[0] !== 'ppbz') {
             return json({
               success: false,
               error: 'Catalogos: PelisPlus /3/... o AnimeAV1 /4/animes/estrenos',
@@ -656,7 +662,12 @@ async function handleRequest(request, env) {
             }, 400);
           }
         }
-        catalogo = await listarPelisplusCatalogo(catSeccion, catFiltro || null, pageNum, origin);
+        var catBase = PELISPLUS_BASE;
+        if (srcCat === 'pelisplushd_bz' || srcCat === '9' || srcCat === 'ppbz' || srcCat === 'bz' ||
+            String(parts[0]) === '9' || parts[0] === 'pelisplushd_bz' || parts[0] === 'ppbz') {
+          catBase = PELISPLUS_BZ_BASE;
+        }
+        catalogo = await listarPelisplusCatalogo(catSeccion, catFiltro || null, pageNum, origin, catBase);
       }
       if (catalogo && catalogo.resultados && catalogo.resultados.length) {
         try {
@@ -673,7 +684,7 @@ async function handleRequest(request, env) {
         page: pageNum || 1,
         count: catLista.length,
         results: catLista,
-        fuente: esAnimeAv1Cat ? 'animeav1' : 'pelisplushd'
+        fuente: esAnimeAv1Cat ? 'animeav1' : ((String(parts[0]) === '9' || parts[0] === 'pelisplushd_bz' || parts[0] === 'ppbz') ? 'pelisplushd_bz' : 'pelisplushd')
       });
     } catch (err) {
       return json({ success: false, error: err.message }, 500);
@@ -802,7 +813,7 @@ async function handleRequest(request, env) {
         !sourceParam &&
         pathSrc &&
         pathSrc !== 'search' &&
-        ['lamovie', 'hackstore', 'pelisplushd', 'animeav1', 'jkanime', 'doramasflix'].indexOf(pathSrc) !== -1
+        ['lamovie', 'hackstore', 'pelisplushd', 'pelisplushd_bz', 'animeav1', 'jkanime', 'doramasflix'].indexOf(pathSrc) !== -1
       ) {
         sourceFilter = pathSrc;
       }
@@ -991,7 +1002,7 @@ async function handleRequest(request, env) {
         search: origin + '/search?q=matrix'
       },
       sources: { '1': 'lamovie', '2': 'hackstore', '3': 'pelisplushd', '4': 'animeav1',
-        '6': 'doramasflix' }
+        '6': 'doramasflix', '9': 'pelisplushd_bz' }
     }, 400);
   }
 
@@ -1000,7 +1011,7 @@ async function handleRequest(request, env) {
 
   try {
     var resultado;
-    if (source === 'pelisplushd') {
+    if (source === 'pelisplushd' || source === 'pelisplushd_bz') {
       resultado = await scrapearPelisplus(targetUrl, commonOpts);
     } else if (source === 'hackstore') {
       resultado = await scrapearHackstore(targetUrl, commonOpts);
@@ -1037,6 +1048,7 @@ function normalizarSourceId(s) {
   if (s === '4' || s === 'animeav1' || s === 'av1' || s === 'aa1') return 'animeav1';
   if (s === '6' || s === 'doramasflix' || s === 'doramas' || s === 'dfx') return 'doramasflix';
   if (s === '5' || s === 'jkanime' || s === 'jk') return 'jkanime';
+  if (s === '9' || s === 'pelisplushd_bz' || s === 'ppbz' || s === 'pelisplushd.bz' || s === 'bz') return 'pelisplushd_bz';
   return '';
 }
 
@@ -1049,6 +1061,7 @@ function sourceIdFromName(name) {
   if (name === 'doramasflix') return '6';
   if (name === 'futbollibre' || name === 'futbol') return '7';
   if (name === 'lamovie') return '1';
+  if (name === 'pelisplushd_bz') return '9';
   return '1';
 }
 
@@ -1058,6 +1071,7 @@ function sourceNameFromId(id) {
   if (id === '3' || id === 'pelisplushd' || id === 'pp') return 'pelisplushd';
   if (id === '4' || id === 'animeav1' || id === 'av1') return 'animeav1';
   if (id === '6' || id === 'doramasflix' || id === 'dfx') return 'doramasflix';
+  if (id === '9' || id === 'pelisplushd_bz' || id === 'ppbz') return 'pelisplushd_bz';
   if (id === '1' || id === 'lamovie' || id === 'lm') return 'lamovie';
   if (id === '5' || id === 'jkanime' || id === 'jk') return 'jkanime';
   return id || '';
@@ -1833,6 +1847,7 @@ function detectarFuente(u) {
   u = (u || '').toLowerCase();
   if (u.indexOf('animeav1') !== -1) return 'animeav1';
   if (u.indexOf('doramasflix') !== -1) return 'doramasflix';
+  if (u.indexOf('pelisplushd.bz') !== -1 || u.indexOf('pelisplushd_bz') !== -1) return 'pelisplushd_bz';
   if (u.indexOf('pelisplushd') !== -1) return 'pelisplushd';
   if (u.indexOf('hackstore') !== -1) return 'hackstore';
   if (u.indexOf('lamovie') !== -1) return 'lamovie';
@@ -7026,7 +7041,7 @@ async function buscarHackstore(query, limit) {
   html = html.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&');
   var out = [];
   var vistos = {};
-  var regex = /href=["'](https?:\/\/(?:www\.)?hackstore\.[a-z]+\/(peliculas|series|animes)\/([^"'\/\?]+))\/?["']/gi;
+  var regex = /href=["'](https?:\/\/(?:www\.)?hackstore\.[a-z]+\/(peliculas|series|animes|doramas|dorama)\/([^"'\/\?]+))\/?["']/gi;
   var m;
   while ((m = regex.exec(html)) !== null && out.length < (limit || 15)) {
     var link = m[1].replace(/\/$/, '') + '/';
@@ -7243,7 +7258,7 @@ async function buscarPelisplus(query, limit) {
 // LAMOVIE
 // ======================================================
 function extraerSlugLamovie(pageUrl) {
-  var m = pageUrl.match(/\/(?:peliculas|series|animes|pelicula|serie|anime)\/([^\/\?]+)/i);
+  var m = pageUrl.match(/\/(?:peliculas|series|animes|doramas|dorama|pelicula|serie|anime)\/([^\/\?]+)/i);
   return m ? m[1].replace(/\/$/, '') : null;
 }
 
@@ -7649,27 +7664,34 @@ function extraerPlayurlsPelisplus(html) {
   return reproductores;
 }
 
-async function listarPelisplusCatalogo(seccion, filtro, page, origin) {
+async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
   seccion = (seccion || 'peliculas').toLowerCase();
   filtro = (filtro || '').toLowerCase();
   page = page || 1;
+  var BASE = baseOpt || PELISPLUS_BASE;
 
   var pathCat = '/' + seccion;
-  if (filtro === 'estrenos' || filtro === 'populares') {
-    pathCat += '/' + filtro;
-  }
-  var listUrl = PELISPLUS_BASE + pathCat + (page > 1 ? '?page=' + page : '');
-
-  var res = await fetch(listUrl, {
-    headers: Object.assign({}, HEADERS, { 'Referer': PELISPLUS_BASE + '/' })
-  });
-  if (!res.ok) throw new Error('HTTP ' + res.status + ' en catalogo PelisPlus');
-  var html = await res.text();
-
   var tipoItem = 'Pelicula';
   var tipoPath = 'pelicula';
   if (seccion === 'series') { tipoItem = 'Serie'; tipoPath = 'serie'; }
-  if (seccion === 'animes') { tipoItem = 'Anime'; tipoPath = 'anime'; }
+  if (seccion === 'animes' || seccion === 'anime') { tipoItem = 'Anime'; tipoPath = 'anime'; seccion = 'animes'; pathCat = '/animes'; }
+  if (seccion === 'doramas' || seccion === 'dorama') {
+    pathCat = '/generos/dorama';
+    tipoItem = 'Serie';
+    tipoPath = 'serie';
+  } else {
+    pathCat = '/' + seccion;
+    if (filtro === 'estrenos' || filtro === 'populares') {
+      pathCat += '/' + filtro;
+    }
+  }
+  var listUrl = BASE + pathCat + (page > 1 ? '?page=' + page : '');
+
+  var res = await fetch(listUrl, {
+    headers: Object.assign({}, HEADERS, { 'Referer': BASE + '/' })
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status + ' en catalogo PelisPlus (' + BASE + ')');
+  var html = await res.text();
 
   var items = [];
   var vistos = {};
@@ -7698,12 +7720,12 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin) {
     if (imgM) {
       portada = imgM[1];
       if (portada.indexOf('http') !== 0) {
-        portada = PELISPLUS_BASE + (portada.charAt(0) === '/' ? portada : '/' + portada);
+        portada = BASE + (portada.charAt(0) === '/' ? portada : '/' + portada);
       }
     }
     // Si el src no coincide con el slug, preferir convención /poster/{slug}.jpg
     if (!portada || portada.indexOf('/poster/' + slug + '.') === -1) {
-      var bySlug = PELISPLUS_BASE + '/poster/' + slug + '.jpg';
+      var bySlug = BASE + '/poster/' + slug + '.jpg';
       // Solo forzar si no había imagen, o si la imagen es de otro slug
       if (!portada) portada = bySlug;
       else if (portada.indexOf('/poster/' + slug + '.') === -1) portada = bySlug;
@@ -7714,8 +7736,8 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin) {
     items.push({
       titulo: titulo,
       tipo: tipoItem,
-      fuente: 'pelisplushd',
-      source_id: '3',
+      fuente: (BASE === PELISPLUS_BZ_BASE ? 'pelisplushd_bz' : 'pelisplushd'),
+      source_id: (BASE === PELISPLUS_BZ_BASE ? '9' : '3'),
       slug: slug,
       portada: portada,
       url_extract: origin + '/3/' + tipoPath + '/' + slug
@@ -7724,8 +7746,8 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin) {
 
   return {
     success: true,
-    fuente: 'pelisplushd',
-    source_id: '3',
+    fuente: (BASE === PELISPLUS_BZ_BASE ? 'pelisplushd_bz' : 'pelisplushd'),
+    source_id: (BASE === PELISPLUS_BZ_BASE ? '9' : '3'),
     seccion: seccion,
     filtro: filtro || 'todas',
     page: page,
@@ -7736,6 +7758,7 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin) {
 
 async function scrapearPelisplus(pageUrl, opts) {
   opts = opts || {};
+  var siteBase = (String(pageUrl).match(/^(https?:\/\/[^\/]+)/) || [null, PELISPLUS_BASE])[1] || PELISPLUS_BASE;
   var maxCaps = opts.maxCaps || 5;
   var incluirPlayers = !!opts.players;
   var seasonOnly = opts.season ? parseInt(opts.season, 10) : null;
@@ -7753,13 +7776,14 @@ async function scrapearPelisplus(pageUrl, opts) {
     var slugM = pageUrl.match(/\/(?:serie|anime)\/([^\/\?]+)/i);
     var tipoPath = /\/anime\//i.test(pageUrl) ? 'anime' : 'serie';
     if (slugM) {
-      pageUrl = PELISPLUS_BASE + '/' + tipoPath + '/' + slugM[1] +
+      pageUrl = siteBase + '/' + tipoPath + '/' + slugM[1] +
         '/temporada/' + seasonOnly + '/capitulo/' + episodeOnly + '/';
     }
   }
 
+  var siteBase = (pageUrl.match(/^(https?:\/\/[^\/]+)/) || [null, PELISPLUS_BASE])[1] || PELISPLUS_BASE;
   var res = await fetch(pageUrl, {
-    headers: Object.assign({}, HEADERS, { 'Referer': PELISPLUS_BASE + '/' })
+    headers: Object.assign({}, HEADERS, { 'Referer': siteBase + '/' })
   });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   var html = await res.text();
