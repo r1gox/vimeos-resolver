@@ -3095,6 +3095,7 @@ function limpiarTexto(txt) {
 function limpiarTitulo(txt) {
   if (!txt) return '';
   var t = limpiarTexto(String(txt));
+  t = t.replace(/\(\s*\)/g, '').replace(/\[\s*\]/g, '').replace(/\s{2,}/g, ' ').trim();
   // Mojibake ya lo corrige limpiarTexto(); no mapear Ã suelto → Í (rompía textos)
   t = t.replace(/\s*[-|–—]\s*Hackstore\.fo Oficial.*$/i, '');
   t = t.replace(/\s*[-|–—]\s*Peliculas,?\s*Series y animes.*$/i, '');
@@ -7631,6 +7632,146 @@ async function scrapearLamovie(pageUrl, opts) {
 // ======================================================
 // PELISPLUSHD
 // ======================================================
+
+/** Embed69: PoW + AES-CBC → URLs reales (streamwish/voe/vidhide) */
+async function resolveEmbed69ToPlayers(embedUrl) {
+  var out = [];
+  try {
+    var res = await fetch(embedUrl, {
+      headers: Object.assign({}, HEADERS, {
+        'Referer': 'https://pelisplushd.bz/',
+        'Accept': 'text/html,application/xhtml+xml'
+      })
+    });
+    if (!res.ok) return out;
+    var html = await res.text();
+    var chM = html.match(/POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]/);
+    var dM = html.match(/POW_DIFFICULTY\s*=\s*(\d+)/);
+    var sM = html.match(/POW_SALT\s*=\s*['"]([^'"]+)['"]/);
+    if (!chM || !dM || !sM) return out;
+    var challenge = chM[1];
+    var difficulty = parseInt(dM[1], 10) || 3;
+    var salt = sM[1];
+    var prefix = '';
+    for (var pi = 0; pi < difficulty; pi++) prefix += '0';
+
+    function toHex(buf) {
+      var u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+      var h = '';
+      for (var i = 0; i < u8.length; i++) h += u8[i].toString(16).padStart(2, '0');
+      return h;
+    }
+    async function sha256Bytes(str) {
+      var data = new TextEncoder().encode(str);
+      return new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+    }
+    async function sha256Hex(str) {
+      return toHex(await sha256Bytes(str));
+    }
+
+    var nonce = 0;
+    var maxNonce = 2000000;
+    while (nonce < maxNonce) {
+      var hx = await sha256Hex(challenge + String(nonce));
+      if (hx.indexOf(prefix) === 0) break;
+      nonce++;
+    }
+    if (nonce >= maxNonce) return out;
+    var aesKey = await sha256Bytes(challenge + String(nonce) + salt);
+
+    async function decryptAES(b64, keyBytes) {
+      try {
+        var raw = Uint8Array.from(atob(b64), function (c) { return c.charCodeAt(0); });
+        if (raw.length < 17) return null;
+        var iv = raw.slice(0, 16);
+        var ciphertext = raw.slice(16);
+        var key = await crypto.subtle.importKey('raw', keyBytes.slice(0, 32), { name: 'AES-CBC' }, false, ['decrypt']);
+        var decrypted = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: iv }, key, ciphertext);
+        return new TextDecoder().decode(decrypted);
+      } catch (e) {
+        return null;
+      }
+    }
+
+    // dataLink JSON
+    var dataM = html.match(/let\s+dataLink\s*=\s*(\[[\s\S]*?\]);/);
+    if (!dataM) dataM = html.match(/dataLink\s*=\s*(\[[\s\S]*?\]);/);
+    if (!dataM) return out;
+    var dataLink;
+    try {
+      dataLink = JSON.parse(dataM[1]);
+    } catch (eJson) {
+      return out;
+    }
+
+    var seen = {};
+    for (var fi = 0; fi < dataLink.length; fi++) {
+      var block = dataLink[fi] || {};
+      var lang = block.video_language || block.language || 'Desconocido';
+      if (lang === 'LAT' || lang === 'LA') lang = 'Latino';
+      if (lang === 'SUB' || lang === 'ESP') lang = 'Subtitulado';
+      if (lang === 'CAST' || lang === 'ES') lang = 'Castellano';
+      if (lang === 'ENG' || lang === 'EN') lang = 'English';
+      var embeds = [].concat(block.sortedEmbeds || [], block.downloadEmbeds || []);
+      for (var ei = 0; ei < embeds.length; ei++) {
+        var emb = embeds[ei];
+        if (!emb || emb.type === 'download') continue;
+        var link = emb.link;
+        if (typeof link !== 'string') continue;
+        var url = link;
+        if (link.indexOf('http') !== 0) {
+          var dec = await decryptAES(link, aesKey);
+          if (!dec) continue;
+          url = dec;
+        }
+        if (!url || seen[url]) continue;
+        if (!/^https?:\/\//i.test(url)) continue;
+        seen[url] = true;
+        var serv = emb.servername || extraerServidor(url) || 'Server';
+        out.push({
+          url: url,
+          idioma: lang,
+          servidor: serv,
+          tipo: 'reproductor',
+          via: 'embed69'
+        });
+      }
+    }
+  } catch (e69) {
+    /* ignore */
+  }
+  return out;
+}
+
+async function expandEmbed69InReproductores(reproductores) {
+  if (!reproductores || !reproductores.length) return reproductores || [];
+  var finalList = [];
+  var seen = {};
+  for (var i = 0; i < reproductores.length; i++) {
+    var r = reproductores[i];
+    var u = r && r.url ? String(r.url) : '';
+    if (/embed69\.org/i.test(u)) {
+      var resolved = await resolveEmbed69ToPlayers(u);
+      if (resolved && resolved.length) {
+        for (var j = 0; j < resolved.length; j++) {
+          var x = resolved[j];
+          if (x.url && !seen[x.url]) {
+            seen[x.url] = true;
+            finalList.push(x);
+          }
+        }
+        continue;
+      }
+    }
+    if (u && !seen[u]) {
+      seen[u] = true;
+      finalList.push(r);
+    }
+  }
+  return finalList;
+}
+
+
 function extraerPlayurlsPelisplus(html) {
   var reproductores = [];
   var vistos = {};
@@ -7972,6 +8113,7 @@ async function scrapearPelisplus(pageUrl, opts) {
 
   // Película o capítulo
   var reproductores = extraerPlayurlsPelisplus(html);
+  reproductores = await expandEmbed69InReproductores(reproductores);
   var descargas = extraerDescargas(html);
   var capMatch = pageUrl.match(/\/temporada\/(\d+)\/capitulo\/(\d+)/i);
   
