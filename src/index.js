@@ -7935,7 +7935,7 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
       source_id: (BASE === PELISPLUS_BZ_BASE ? '9' : '3'),
       slug: slug,
       portada: portada,
-      url_extract: origin + '/3/' + tipoPath + '/' + slug
+      url_extract: origin + '/' + (BASE === PELISPLUS_BZ_BASE ? '9' : '3') + '/' + tipoPath + '/' + slug
     });
   }
 
