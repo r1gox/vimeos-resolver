@@ -767,23 +767,64 @@ async function handleRequest(request, env) {
           if (ymJk) detJk.year = ymJk[0];
         }
 
-        // Meta Cinemeta/Metahub (igual que el resto de fuentes): logo, backdrop, portada, rating
+        // Meta Cinemeta/Metahub — await completo (sin race: el timeout dejaba One Piece sin logo)
         detJk.titulo = tituloBusqueda;
+        detJk.titulo_original = detJk.titulo_original ||
+          (detJk.titulos_alternativos && (detJk.titulos_alternativos.japones || detJk.titulos_alternativos.ingles)) ||
+          null;
+        detJk.slug = detJk.slug || slugJk;
         detJk.portada_fuente_raw = detJk.portada_fuente_raw || detJk.portada || null;
+        detJk.tipo = detJk.tipo || 'Anime';
         try {
-          var metaPromise = (async function () {
-            try {
-              return await enriquecerDetalleConTmdb(detJk, 'anime');
-            } catch (e1) {
-              return detJk;
+          detJk = await enriquecerDetalleConTmdb(detJk, 'anime');
+        } catch (eJkMeta) { /* seguir con datos JK */ }
+
+        // Si aún no hay imdb_id: búsqueda rápida por slug (one-piece → One Piece)
+        if (!detJk.imdb_id && slugJk) {
+          try {
+            var qSlug = String(slugJk).replace(/-/g, ' ').trim();
+            var urlFast =
+              'https://v3-cinemeta.strem.io/catalog/series/top/search=' +
+              encodeURIComponent(qSlug) + '.json';
+            var resFast = await fetch(urlFast, {
+              headers: { Accept: 'application/json', 'User-Agent': 'MovieZoneMeta/1.0' }
+            });
+            if (resFast.ok) {
+              var dataFast = await resFast.json();
+              var metasF = (dataFast && dataFast.metas) || [];
+              var qn = qSlug.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+              for (var fi = 0; fi < metasF.length; fi++) {
+                var nm = String(metasF[fi].name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+                var idF = metasF[fi].imdb_id || metasF[fi].id;
+                if (!idF || !/^tt\d+$/i.test(String(idF))) continue;
+                if (nm === qn || nm.indexOf(qn) === 0 || qn.indexOf(nm) === 0) {
+                  detJk.imdb_id = String(idF);
+                  break;
+                }
+              }
+              if (!detJk.imdb_id && metasF[0] && (metasF[0].imdb_id || metasF[0].id)) {
+                var id0 = metasF[0].imdb_id || metasF[0].id;
+                if (/^tt\d+$/i.test(String(id0))) detJk.imdb_id = String(id0);
+              }
             }
-          })();
-          var timeoutPromise = new Promise(function (resolve) {
-            setTimeout(function () { resolve(null); }, 8000); // máx 8s de meta
-          });
-          var enriched = await Promise.race([metaPromise, timeoutPromise]);
-          if (enriched) detJk = enriched;
-        } catch (eJkMeta) {}
+            if (detJk.imdb_id) {
+              detJk = await enriquecerSoloCinemeta(detJk, 'anime');
+            }
+          } catch (eFast) { /* ok */ }
+        }
+
+        // Forzar Metahub si ya hay tt… (por si enriquecer no copió logo/backdrop)
+        if (detJk.imdb_id && /^tt\d+$/i.test(String(detJk.imdb_id))) {
+          var tt = String(detJk.imdb_id);
+          if (!detJk.logo_imdb && typeof metahubLogo === 'function') detJk.logo_imdb = metahubLogo(tt, 'medium');
+          if (!detJk.logo) detJk.logo = detJk.logo_imdb;
+          if (!detJk.portada_imdb && typeof metahubPoster === 'function') detJk.portada_imdb = metahubPoster(tt, 'medium');
+          if (!detJk.backdrop && typeof metahubBackground === 'function') detJk.backdrop = metahubBackground(tt, 'medium');
+          if (detJk.portada_imdb) {
+            detJk.portada = detJk.portada_imdb;
+            detJk.poster_source = detJk.poster_source || 'metahub';
+          }
+        }
 
         if ((detJk.calificacion == null || detJk.calificacion === '') && ratingFuenteJk != null) {
           detJk.calificacion = ratingFuenteJk;
@@ -792,16 +833,13 @@ async function handleRequest(request, env) {
         }
 
         detJk.titulo = tituloPagina;
-        // Esquema unificado (logo, backdrop, portada_imdb, imdb_id, …)
         try {
           detJk = formatearDetalleRespuesta(detJk, origin);
-        } catch (eFmt) {
-          detJk = limpiarDetalleJkanime(detJk);
-        }
-        // Asegurar campos visuales aunque formatear no los copie
+        } catch (eFmt) { /* ok */ }
         detJk = limpiarDetalleJkanime(Object.assign({}, detJk, {
-          portada: detJk.portada,
+          portada: detJk.portada || detJk.portada_imdb,
           portada_imdb: detJk.portada_imdb,
+          portada_fuente_raw: detJk.portada_fuente_raw,
           logo: detJk.logo || detJk.logo_imdb,
           logo_imdb: detJk.logo_imdb || detJk.logo,
           backdrop: detJk.backdrop,
