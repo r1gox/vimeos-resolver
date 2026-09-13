@@ -554,6 +554,8 @@ async function handleRequest(request, env) {
         estrenos_peliculas: origin + '/3/peliculas/estrenos',
         estrenos_series: origin + '/3/series/estrenos',
         estrenos_animes: origin + '/3/animes/estrenos',
+        doramas_3: origin + '/3/doramas?page=1',
+        doramas_9: origin + '/9/doramas?page=1',
         estrenos_animeav1: origin + '/4/animes/estrenos',
         emision_animeav1: origin + '/4/animes/emision',
         proximamente_animeav1: origin + '/4/animes/proximamente',
@@ -632,7 +634,7 @@ async function handleRequest(request, env) {
   var catSeccion = (parts[catTipoIdx] || '').toLowerCase(); // peliculas|series|animes|doramas|dorama|doramas
   var catFiltro = (parts[catTipoIdx + 1] || '').toLowerCase(); // estrenos|populares|''
 
-  if ((catSeccion === 'peliculas' || catSeccion === 'series' || catSeccion === 'animes') &&
+  if ((catSeccion === 'peliculas' || catSeccion === 'series' || catSeccion === 'animes' || catSeccion === 'doramas' || catSeccion === 'dorama') &&
       (catFiltro === 'estrenos' || catFiltro === 'populares' || catFiltro === 'emision' || catFiltro === 'proximo' || catFiltro === 'proximamente' || catFiltro === '' || catFiltro === 'page')) {
     var pageNum = parseInt(url.searchParams.get('page') || '1', 10);
     if (catFiltro === 'page' && parts[catTipoIdx + 2]) {
@@ -7985,21 +7987,43 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
   if (seccion === 'animes' || seccion === 'anime') { tipoItem = 'Anime'; tipoPath = 'anime'; seccion = 'animes'; pathCat = '/animes'; }
   if (seccion === 'doramas' || seccion === 'dorama') {
     pathCat = '/generos/dorama';
-    tipoItem = 'Serie';
-    tipoPath = 'serie';
+    tipoItem = 'Dorama';
+    tipoPath = 'serie'; // en la web viven bajo /serie/
   } else {
     pathCat = '/' + seccion;
     if (filtro === 'estrenos' || filtro === 'populares') {
       pathCat += '/' + filtro;
     }
   }
-  var listUrl = BASE + pathCat + (page > 1 ? '?page=' + page : '');
+  var listUrls = [BASE + pathCat + (page > 1 ? '?page=' + page : '')];
+  if (seccion === 'doramas' || seccion === 'dorama') {
+    listUrls = [
+      BASE + '/generos/dorama' + (page > 1 ? '?page=' + page : ''),
+      BASE + '/generos/doramas' + (page > 1 ? '?page=' + page : ''),
+      BASE + '/doramas' + (page > 1 ? '?page=' + page : ''),
+      BASE + '/series' + (page > 1 ? '?page=' + page : '') // fallback listado series si el género no responde
+    ];
+  }
 
-  var res = await fetch(listUrl, {
-    headers: Object.assign({}, HEADERS, { 'Referer': BASE + '/' })
-  });
-  if (!res.ok) throw new Error('HTTP ' + res.status + ' en catalogo PelisPlus (' + BASE + ')');
-  var html = await res.text();
+  var res = null;
+  var html = '';
+  var lastStatus = 0;
+  for (var lu = 0; lu < listUrls.length; lu++) {
+    try {
+      var resTry = await fetch(listUrls[lu], {
+        headers: Object.assign({}, HEADERS, { 'Referer': BASE + '/' })
+      });
+      lastStatus = resTry.status;
+      if (!resTry.ok) continue;
+      var htmlTry = await resTry.text();
+      if (!htmlTry || htmlTry.length < 500) continue;
+      if (/Just a moment/i.test(htmlTry) && htmlTry.length < 8000) continue;
+      res = resTry;
+      html = htmlTry;
+      break;
+    } catch (eLu) { /* next */ }
+  }
+  if (!html) throw new Error('HTTP ' + (lastStatus || 404) + ' en catalogo PelisPlus (' + BASE + ' ' + seccion + ')');
 
   var items = [];
   var vistos = {};
