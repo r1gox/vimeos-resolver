@@ -7144,24 +7144,29 @@ async function buscarUniversal(query, sourceFilter, limit) {
     relevantes = dedupePorSlugFuente(relevantes);
     for (var rj = 0; rj < relevantes.length; rj++) todos.push(relevantes[rj]);
   }
-
-  // ANIME en búsqueda global: solo AnimeAV1 (no pelisplus / lamovie / hackstore)
-  // Series y películas de otras fuentes se mantienen.
+  // Si AnimeAV1 trajo resultados → SOLO AnimeAV1 (no pelisplus/lamovie ni Series mal etiquetadas).
+  // Si AnimeAV1 no trajo nada → otras fuentes igual (series, películas, etc.).
   if (sourceFilter === 'all') {
-    var filtrados = [];
-    for (var fi = 0; fi < todos.length; fi++) {
-      var it = todos[fi];
-      if (!it) continue;
-      var tipoIt = String(it.tipo || it.type || '').toLowerCase();
-      var fuenteIt = String(it.fuente || it.source || '').toLowerCase();
-      if (tipoIt === 'anime') {
-        if (fuenteIt === 'animeav1') filtrados.push(it);
-        // descartar anime de pelisplushd, lamovie, hackstore, etc.
-        continue;
+    var hayAnimeAv1 = false;
+    for (var ai = 0; ai < todos.length; ai++) {
+      var aIt = todos[ai];
+      if (!aIt) continue;
+      var aFuente = String(aIt.fuente || aIt.source || '').toLowerCase();
+      if (aFuente === 'animeav1') {
+        hayAnimeAv1 = true;
+        break;
       }
-      filtrados.push(it);
     }
-    todos = filtrados;
+    if (hayAnimeAv1) {
+      var soloAv1 = [];
+      for (var fi = 0; fi < todos.length; fi++) {
+        var it = todos[fi];
+        if (!it) continue;
+        var fuenteIt = String(it.fuente || it.source || '').toLowerCase();
+        if (fuenteIt === 'animeav1') soloAv1.push(it);
+      }
+      todos = soloAv1;
+    }
   }
 
   // Fusionar misma obra entre fuentes (sin duplicados)
