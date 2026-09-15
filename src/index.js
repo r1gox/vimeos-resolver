@@ -7145,10 +7145,23 @@ async function buscarUniversal(query, sourceFilter, limit) {
     for (var rj = 0; rj < relevantes.length; rj++) todos.push(relevantes[rj]);
   }
 
-  // Ya NO monopolizar con AnimeAV1: "matrix" debe devolver Matrix (cine) + animes relacionados
-  // Solo si el usuario forzó fuente 4 se queda solo AV1 (sourceFilter !== all).
+  // ANIME en búsqueda global: solo AnimeAV1 (no pelisplus / lamovie / hackstore)
+  // Series y películas de otras fuentes se mantienen.
   if (sourceFilter === 'all') {
-    // Opcional: no filtrar jkanime aquí; fusionarResultadosBusqueda deduplica por obra
+    var filtrados = [];
+    for (var fi = 0; fi < todos.length; fi++) {
+      var it = todos[fi];
+      if (!it) continue;
+      var tipoIt = String(it.tipo || it.type || '').toLowerCase();
+      var fuenteIt = String(it.fuente || it.source || '').toLowerCase();
+      if (tipoIt === 'anime') {
+        if (fuenteIt === 'animeav1') filtrados.push(it);
+        // descartar anime de pelisplushd, lamovie, hackstore, etc.
+        continue;
+      }
+      filtrados.push(it);
+    }
+    todos = filtrados;
   }
 
   // Fusionar misma obra entre fuentes (sin duplicados)
