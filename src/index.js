@@ -28,7 +28,7 @@ var HACKSTORE_BASE = 'https://www.hackstore.fo';
 //var PELISPLUS_BASE = 'https://www.pelisplushd.to';
 //var PELISPLUS_BZ_BASE = 'https://pelisplushd.bz';
 
-var PELISPLUS_BASE = 'https://pelisplushd.to';
+var PELISPLUS_BASE = 'https://www.pelisplushd.to';
 var PELISPLUS_BZ_BASE = 'https://pelisplushd.bz';
 
 // NO mezclar dominios PelisPlus: .la (fuente 3), .bz (fuente 9) y .to son catálogos distintos.
