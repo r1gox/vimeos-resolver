@@ -1051,6 +1051,11 @@ async function handleRequest(request, env) {
       try {
         resultadoPath = await enriquecerDetalleConTmdb(resultadoPath, tipoRuta);
       } catch (eDet) { /* silencioso */ }
+      try {
+        if (resultadoPath && /serie|series|tv|dorama/i.test(String(resultadoPath.tipo || tipoRuta || ''))) {
+          resultadoPath = await enriquecerEpisodiosBackImgTmdb(resultadoPath);
+        }
+      } catch (eStill) { /* silencioso */ }
       if (resultadoPath) {
         await aplicarPortadaPreferirFuente(resultadoPath);
       }
@@ -1108,6 +1113,11 @@ async function handleRequest(request, env) {
     try {
       resultado = await enriquecerDetalleConTmdb(resultado, resultado.tipo || '');
     } catch (eUrl) { /* ok */ }
+    try {
+      if (resultado && /serie|series|tv|dorama/i.test(String(resultado.tipo || ''))) {
+        resultado = await enriquecerEpisodiosBackImgTmdb(resultado);
+      }
+    } catch (eStill2) { /* ok */ }
 
     if (resultado) {
       await aplicarPortadaPreferirFuente(resultado);
@@ -6399,10 +6409,17 @@ function slimEpisodio(ep) {
   if (ep.link) out.link = ep.link;
   if (ep.episode_id != null) out.episode_id = ep.episode_id;
   if (ep.postId != null) out.postId = ep.postId;
-  // Screenshot episodio AnimeAV1 (cdn.animeav1.com/screenshots/{id}/{ep}.jpg)
-  if (ep.back_img) out.back_img = ep.back_img;
-  else if (ep.screenshot) out.back_img = ep.screenshot;
-  else if (ep.still || ep.still_path) out.back_img = ep.still || ep.still_path;
+  // Screenshot: AnimeAV1 o still TMDB (series pelisplushd.bz)
+  var back = ep.back_img || ep.screenshot || ep.still || ep.still_path || null;
+  if (back) {
+    back = String(back).trim();
+    if (back && back.indexOf('http') !== 0 && back.charAt(0) === '/') {
+      back = 'https://image.tmdb.org/t/p/w342' + back;
+    } else if (back && back.indexOf('http') !== 0 && back.indexOf('/') === -1) {
+      back = 'https://image.tmdb.org/t/p/w342/' + back;
+    }
+    out.back_img = back;
+  }
 
   // Players solo si ya vienen en este ítem (capítulo resuelto)
   var reps = ep.reproductores || [];
@@ -6936,6 +6953,112 @@ async function enriquecerListaConTmdb(lista, query, opts) {
   }
   await Promise.all(jobs);
   return lista;
+}
+
+
+/** Still de episodio TMDB → URL pública (w342 como pide el front) */
+function stillTmdbUrl(path, size) {
+  if (!path) return null;
+  size = size || 'w342';
+  var p = String(path).trim();
+  if (!p) return null;
+  if (/^https?:\/\//i.test(p)) return p;
+  if (p.charAt(0) !== '/') p = '/' + p;
+  return 'https://image.tmdb.org/t/p/' + size + p;
+}
+
+/**
+ * Series (pelisplushd / pelisplushd.bz): asigna back_img a cada episodio
+ * con still de TMDB (misma idea que animeav1 screenshots).
+ * Ejemplo: https://image.tmdb.org/t/p/w342/HASH.jpg
+ */
+async function enriquecerEpisodiosBackImgTmdb(detalle) {
+  if (!detalle || detalle.success === false) return detalle;
+  var tipo = String(detalle.tipo || detalle.type || '').toLowerCase();
+  // Solo series/TV (no películas). AnimeAV1 ya trae back_img propio.
+  if (!/serie|series|tv|dorama/.test(tipo)) return detalle;
+  if (/anime/i.test(tipo) && String(detalle.fuente || '').toLowerCase() === 'animeav1') {
+    return detalle;
+  }
+
+  var temps = detalle.temporadas;
+  if (!Array.isArray(temps) || !temps.length) return detalle;
+
+  var key = (typeof __TMDB_KEY__ !== 'undefined' && __TMDB_KEY__) || null;
+  if (!key) return detalle;
+
+  var tmdbId = detalle.tmdb_id || (detalle.tmdb && detalle.tmdb.id) || null;
+  if (!tmdbId && detalle.imdb_id && typeof completarDesdeTmdbPorImdbId === 'function') {
+    try {
+      var meta = await completarDesdeTmdbPorImdbId(detalle.imdb_id, detalle.tipo || 'serie');
+      if (meta && meta.tmdb_id) {
+        tmdbId = meta.tmdb_id;
+        detalle.tmdb_id = tmdbId;
+      }
+    } catch (e1) { /* ok */ }
+  }
+  if (!tmdbId) return detalle;
+
+  for (var ti = 0; ti < temps.length && ti < 20; ti++) {
+    var t = temps[ti];
+    if (!t) continue;
+    var sn = Number(t.temporada != null ? t.temporada : (t.season_number != null ? t.season_number : (ti + 1))) || (ti + 1);
+    var lista = Array.isArray(t.lista) ? t.lista
+      : (Array.isArray(t.episodios) ? t.episodios : null);
+    if (!lista || !lista.length) continue;
+
+    var need = false;
+    for (var ci = 0; ci < lista.length; ci++) {
+      if (lista[ci] && !lista[ci].back_img && !lista[ci].still) { need = true; break; }
+    }
+    if (!need) continue;
+
+    try {
+      var url =
+        'https://api.themoviedb.org/3/tv/' + encodeURIComponent(String(tmdbId)) +
+        '/season/' + encodeURIComponent(String(sn)) +
+        '?api_key=' + encodeURIComponent(key) +
+        '&language=es-ES';
+      var res = typeof fetchWithTimeout === 'function'
+        ? await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 9000)
+        : await fetch(url, { headers: { Accept: 'application/json' } });
+      if (!res || !res.ok) continue;
+      var data = await res.json();
+      var eps = (data && data.episodes) || [];
+      var byNum = Object.create(null);
+      for (var ei = 0; ei < eps.length; ei++) {
+        var te = eps[ei];
+        if (!te || !te.still_path) continue;
+        var n = Number(te.episode_number) || 0;
+        if (n > 0) byNum[n] = stillTmdbUrl(te.still_path, 'w342');
+      }
+      for (var li = 0; li < lista.length; li++) {
+        var ep = lista[li];
+        if (!ep || ep.back_img) continue;
+        var en = Number(ep.episodio != null ? ep.episodio : (ep.episode != null ? ep.episode : ep.episode_number)) || 0;
+        var img = en > 0 ? byNum[en] : null;
+        if (img) {
+          ep.back_img = img;
+          if (!ep.still) ep.still = img;
+        }
+      }
+      // sincronizar lista / episodios
+      if (Array.isArray(t.lista)) t.lista = lista;
+      if (Array.isArray(t.episodios) && t.episodios !== lista) {
+        // si episodios son objetos, copiar back_img por número
+        for (var ej = 0; ej < t.episodios.length; ej++) {
+          var e2 = t.episodios[ej];
+          if (!e2 || e2.back_img) continue;
+          var n2 = Number(e2.episodio != null ? e2.episodio : e2.episode) || 0;
+          if (n2 && byNum[n2]) {
+            e2.back_img = byNum[n2];
+            if (!e2.still) e2.still = byNum[n2];
+          }
+        }
+      }
+    } catch (eSeason) { /* next season */ }
+  }
+  return detalle;
 }
 
 async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
