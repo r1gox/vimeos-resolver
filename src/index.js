@@ -6399,6 +6399,10 @@ function slimEpisodio(ep) {
   if (ep.link) out.link = ep.link;
   if (ep.episode_id != null) out.episode_id = ep.episode_id;
   if (ep.postId != null) out.postId = ep.postId;
+  // Screenshot episodio AnimeAV1 (cdn.animeav1.com/screenshots/{id}/{ep}.jpg)
+  if (ep.back_img) out.back_img = ep.back_img;
+  else if (ep.screenshot) out.back_img = ep.screenshot;
+  else if (ep.still || ep.still_path) out.back_img = ep.still || ep.still_path;
 
   // Players solo si ya vienen en este ítem (capítulo resuelto)
   var reps = ep.reproductores || [];
