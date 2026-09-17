@@ -3730,7 +3730,7 @@ function elegirFuentePrincipal(items, tipoFinal) {
   var order;
   if (t === 'pelicula') {
     // .bz (9) antes que .to (3)
-    order = ['pelisplushd', 'lamovie', 'hackstore', 'doramasflix'];
+    order = ['pelisplushd', 'hackstore', 'doramasflix'];
     //order = ['pelisplushd_bz', 'pelisplushd', 'lamovie', 'hackstore', 'doramasflix'];
   } else if (t === 'anime') {
     order = ['animeav1', 'pelisplushd_bz', 'lamovie', 'hackstore'];
