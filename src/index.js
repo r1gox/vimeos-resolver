@@ -7599,23 +7599,44 @@ async function buscarPelisplusBz(query, limit) {
       if (/\/serie\//i.test(full)) tipo = 'Serie';
       if (/\/anime\//i.test(full)) tipo = 'Anime';
       // .bz usa TMDB (image.tmdb.org), no /poster/slug-thumb.jpg
+      
+      var tipo = 'Pelicula';
+      if (/\/serie\//i.test(full)) tipo = 'Serie';
+      if (/\/anime\//i.test(full)) tipo = 'Anime';
+
+      // Ventana amplia: el <img> TMDB a veces está >500 chars después del href
       var portada = null;
-      var chunk = html.slice(Math.max(0, m.index - 400), m.index + 500);
+      var from = Math.max(0, m.index - 100);
+      var to = Math.min(html.length, m.index + 3000);
+      var slice = html.slice(from, to);
+
+      // Preferir el <a>...</a> de esta ficha
+      var aOpen = slice.search(/<a\b[^>]*Posters-link/i);
+      if (aOpen < 0) aOpen = slice.search(/<a\b/i);
+      if (aOpen < 0) aOpen = 0;
+      var aClose = slice.indexOf('</a>', aOpen);
+      var tag = aClose > aOpen ? slice.slice(aOpen, aClose + 4) : slice;
+
       var pm =
-        chunk.match(/(?:src|data-src)=["'](https?:\/\/image\.tmdb\.org\/[^"']+)["']/i) ||
-        chunk.match(/(?:src|data-src)=["'](https?:\/\/[^"']*\/t\/p\/[^"']+)["']/i) ||
-        chunk.match(/(?:src|data-src)=["']([^"']*\/poster\/[^"']+)["']/i);
+        tag.match(/(?:src|data-src)\s*=\s*["'](https?:\/\/image\.tmdb\.org\/[^"'\s>]+)["']/i) ||
+        tag.match(/(?:src|data-src)\s*=\s*["'](https?:\/\/[^"']*\/t\/p\/[^"'\s>]+)["']/i) ||
+        tag.match(/(?:src|data-src)\s*=\s*["']([^"']*\/poster\/[^"'\s>]+)["']/i);
+      // Por si el tag se corta: buscar TMDB suelto en el slice
+      if (!pm) {
+        pm = slice.match(/(https?:\/\/image\.tmdb\.org\/t\/p\/[a-z0-9_]+\/[A-Za-z0-9]+\.jpg)/i);
+      }
       if (pm) {
-        portada = pm[1].indexOf('http') === 0
-          ? pm[1]
-          : BASE + (pm[1].charAt(0) === '/' ? pm[1] : '/' + pm[1]);
+        portada = pm[1];
+        if (portada.indexOf('http') !== 0) {
+          portada = BASE + (portada.charAt(0) === '/' ? portada : '/' + portada);
+        }
       }
       if (!portada) {
-        // fallback solo si no hay img en el HTML
         portada = BASE + '/poster/' + slug + '-thumb.jpg';
       }
+
       var titulo = limpiarTitulo(slug.replace(/-[a-zA-Z0-9]{4,10}$/, '').replace(/-/g, ' '));
-      var tm = chunk.match(/alt=["']([^"']+)["']/i) || chunk.match(/data-title=["']([^"']+)["']/i);
+      var tm = tag.match(/data-title=["']([^"']+)["']/i) || tag.match(/alt=["']([^"']+)["']/i);
       if (tm) titulo = limpiarTitulo(tm[1].replace(/^VER\s+/i, '').replace(/\s+Online.*$/i, ''));
       resultados.push({
         titulo: titulo,
