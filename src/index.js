@@ -1051,6 +1051,12 @@ async function handleRequest(request, env) {
       try {
         resultadoPath = await enriquecerDetalleConTmdb(resultadoPath, tipoRuta);
       } catch (eDet) { /* silencioso */ }
+      try {
+        if (resultadoPath && (resultadoPath.fuente === 'pelisplushd' || resultadoPath.fuente === 'pelisplushd_bz' ||
+            /pelisplus/i.test(String(resultadoPath.link || '')))) {
+          resultadoPath = await attachTmdbEpisodeBackImgs(resultadoPath);
+        }
+      } catch (eBack2) { /* ok */ }
       if (resultadoPath) {
         await aplicarPortadaPreferirFuente(resultadoPath);
       }
@@ -1108,6 +1114,12 @@ async function handleRequest(request, env) {
     try {
       resultado = await enriquecerDetalleConTmdb(resultado, resultado.tipo || '');
     } catch (eUrl) { /* ok */ }
+    try {
+      if (resultado && (resultado.fuente === 'pelisplushd' || resultado.fuente === 'pelisplushd_bz' ||
+          /pelisplus/i.test(String(resultado.link || '')))) {
+        resultado = await attachTmdbEpisodeBackImgs(resultado);
+      }
+    } catch (eBack) { /* ok */ }
 
     if (resultado) {
       await aplicarPortadaPreferirFuente(resultado);
@@ -6439,10 +6451,18 @@ function slimEpisodio(ep) {
   if (ep.link) out.link = ep.link;
   if (ep.episode_id != null) out.episode_id = ep.episode_id;
   if (ep.postId != null) out.postId = ep.postId;
-  // Screenshot episodio AnimeAV1 (cdn.animeav1.com/screenshots/{id}/{ep}.jpg)
-  if (ep.back_img) out.back_img = ep.back_img;
-  else if (ep.screenshot) out.back_img = ep.screenshot;
-  else if (ep.still || ep.still_path) out.back_img = ep.still || ep.still_path;
+  // Screenshot episodio (AnimeAV1 CDN o TMDB still de series/animes pelisplus)
+  function normBackImg(u) {
+    if (!u) return null;
+    u = String(u).trim();
+    if (!u) return null;
+    if (/^https?:\/\//i.test(u)) return u;
+    if (u.charAt(0) === '/') return 'https://image.tmdb.org/t/p/w342' + u;
+    return u;
+  }
+  if (ep.back_img) out.back_img = normBackImg(ep.back_img);
+  else if (ep.screenshot) out.back_img = normBackImg(ep.screenshot);
+  else if (ep.still || ep.still_path) out.back_img = normBackImg(ep.still || ep.still_path);
 
   // Players solo si ya vienen en este ítem (capítulo resuelto)
   var reps = ep.reproductores || [];
@@ -8341,6 +8361,112 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
   };
 }
 
+
+/**
+ * Rellena back_img de episodios (series/anime pelisplus) con stills TMDB.
+ * Usa TMDB_API_KEY si existe; no rompe si falta.
+ */
+async function attachTmdbEpisodeBackImgs(detalle) {
+  try {
+    if (!detalle || detalle.success === false) return detalle;
+    var tipo = String(detalle.tipo || detalle.type || '').toLowerCase();
+    if (!/serie|anime|tv|dorama/.test(tipo) && !(detalle.temporadas && detalle.temporadas.length)) {
+      return detalle;
+    }
+    var temps = detalle.temporadas;
+    if (!Array.isArray(temps) || !temps.length) return detalle;
+
+    // ¿Ya tienen back_img la mayoría?
+    var totalEp = 0, withImg = 0;
+    for (var ti = 0; ti < temps.length; ti++) {
+      var lista0 = temps[ti].episodios || temps[ti].lista || temps[ti].capitulos || [];
+      for (var ei = 0; ei < lista0.length; ei++) {
+        totalEp++;
+        if (lista0[ei] && (lista0[ei].back_img || lista0[ei].still || lista0[ei].still_path)) withImg++;
+      }
+    }
+    if (totalEp && withImg >= totalEp * 0.8) return detalle;
+
+    var key = (typeof __TMDB_KEY__ !== 'undefined' && __TMDB_KEY__) ? __TMDB_KEY__ : null;
+    if (!key) return detalle;
+
+    var tmdbId =
+      detalle.tmdb_id ||
+      (detalle.tmdb && (detalle.tmdb.id || detalle.tmdb.tmdb_id)) ||
+      null;
+    if (!tmdbId) {
+      // buscar TV por título
+      var q = detalle.titulo_original || detalle.titulo || detalle.nombre || '';
+      q = String(q).replace(/\(\d{4}\)/g, '').trim();
+      if (!q) return detalle;
+      try {
+        var sUrl =
+          'https://api.themoviedb.org/3/search/tv?api_key=' +
+          encodeURIComponent(key) +
+          '&language=es-ES&query=' +
+          encodeURIComponent(q);
+        var sRes = await fetch(sUrl, { headers: { Accept: 'application/json' } });
+        if (sRes.ok) {
+          var sData = await sRes.json();
+          if (sData && sData.results && sData.results[0]) tmdbId = sData.results[0].id;
+        }
+      } catch (_) {}
+    }
+    if (!tmdbId) return detalle;
+    detalle.tmdb_id = tmdbId;
+
+    function stillUrl(path) {
+      if (!path) return null;
+      path = String(path);
+      if (/^https?:\/\//i.test(path)) {
+        return path.replace(/\/t\/p\/w\d+\//i, '/t/p/w342/');
+      }
+      if (path.charAt(0) !== '/') path = '/' + path;
+      return 'https://image.tmdb.org/t/p/w342' + path;
+    }
+
+    for (var t = 0; t < temps.length; t++) {
+      var sn = Number(temps[t].temporada || temps[t].season || temps[t].season_number) || 1;
+      var lista = temps[t].episodios || temps[t].lista || temps[t].capitulos || [];
+      if (!lista.length) continue;
+      try {
+        var u =
+          'https://api.themoviedb.org/3/tv/' +
+          encodeURIComponent(String(tmdbId)) +
+          '/season/' +
+          encodeURIComponent(String(sn)) +
+          '?api_key=' +
+          encodeURIComponent(key) +
+          '&language=es-ES';
+        var r = await fetch(u, { headers: { Accept: 'application/json' } });
+        if (!r.ok) continue;
+        var data = await r.json();
+        var eps = (data && data.episodes) || [];
+        var byNum = Object.create(null);
+        for (var i = 0; i < eps.length; i++) {
+          var e = eps[i];
+          if (!e) continue;
+          byNum[Number(e.episode_number)] = stillUrl(e.still_path);
+        }
+        for (var j = 0; j < lista.length; j++) {
+          var ep = lista[j];
+          if (!ep) continue;
+          if (ep.back_img || ep.still) continue;
+          var en = Number(ep.episodio || ep.episode || ep.episode_number) || 0;
+          var img = byNum[en];
+          if (img) {
+            ep.back_img = img;
+            ep.still = img;
+          }
+        }
+      } catch (_) {}
+    }
+    return detalle;
+  } catch (e) {
+    return detalle;
+  }
+}
+
 async function scrapearPelisplus(pageUrl, opts) {
   opts = opts || {};
   var siteBase = (String(pageUrl).match(/^(https?:\/\/[^\/]+)/) || [null, PELISPLUS_BASE])[1] || PELISPLUS_BASE;
@@ -8530,6 +8656,26 @@ async function scrapearPelisplus(pageUrl, opts) {
         if (nm3) epNombre = limpiarTitulo(nm3[1].replace(/\s+/g, ' ').trim());
       }
 
+      // Imagen del episodio (TMDB w342 en .bz, o cualquier img del enlace)
+      var epBack = null;
+      var imgM =
+        inner.match(/src=["'](https?:\/\/image\.tmdb\.org[^"']+)["']/i) ||
+        inner.match(/data-src=["'](https?:\/\/image\.tmdb\.org[^"']+)["']/i) ||
+        inner.match(/src=["'](https?:\/\/[^"']+\/(?:w\d+|original)\/[^"']+\.(?:jpg|jpeg|webp|png)[^"']*)["']/i) ||
+        inner.match(/src=["'](https?:\/\/[^"']+\.(?:jpg|jpeg|webp|png)[^"']*)["']/i);
+      if (imgM) epBack = imgM[1];
+      if (!epBack) {
+        var around = html.slice(Math.max(0, cm.index - 80), Math.min(html.length, cm.index + 400));
+        var imgM2 =
+          around.match(/src=["'](https?:\/\/image\.tmdb\.org[^"']+)["']/i) ||
+          around.match(/data-src=["'](https?:\/\/image\.tmdb\.org[^"']+)["']/i);
+        if (imgM2) epBack = imgM2[1];
+      }
+      // Preferir w342 si viene otra talla TMDB
+      if (epBack && /image\.tmdb\.org\/t\/p\//i.test(epBack)) {
+        epBack = epBack.replace(/\/t\/p\/w\d+\//i, '/t/p/w342/');
+      }
+
       caps.push({
         temporada: epSeason,
         episodio: epNum,
@@ -8538,6 +8684,8 @@ async function scrapearPelisplus(pageUrl, opts) {
         link: epLink,
         url: epLink,
         source_link: href,
+        back_img: epBack || null,
+        still: epBack || null,
         reproductor: null,
         embeds: [],
         reproductores: []
@@ -8588,8 +8736,8 @@ async function scrapearPelisplus(pageUrl, opts) {
 
     return {
       success: true,
-      fuente: 'pelisplushd',
-      tipo: 'Serie',
+      fuente: /pelisplushd\.bz/i.test(siteBase) ? 'pelisplushd_bz' : 'pelisplushd',
+      tipo: /\/anime\//i.test(pageUrl) ? 'Anime' : 'Serie',
       link: pageUrl,
       titulo: titulo,
       titulo_original: tituloOriginal,
