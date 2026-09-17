@@ -3724,8 +3724,30 @@ function preferirTipo(tipos, items) {
   return list[0] || 'Serie';
 }
 
-/** Fuente principal según tipo final (estrenos cine → pelisplus) */
 function elegirFuentePrincipal(items, tipoFinal) {
+  if (!items || !items.length) return null;
+  var t = normalizarTipoKey(tipoFinal);
+  var order;
+  if (t === 'pelicula') {
+    // .bz (9) antes que .to (3)
+    order = ['pelisplushd_bz', 'pelisplushd', 'lamovie', 'hackstore', 'doramasflix'];
+  } else if (t === 'anime') {
+    order = ['animeav1', 'pelisplushd_bz', 'pelisplushd', 'lamovie', 'hackstore'];
+  } else {
+    // serie / dorama
+    order = ['doramasflix', 'pelisplushd_bz', 'pelisplushd', 'lamovie', 'hackstore', 'animeav1'];
+  }
+  for (var i = 0; i < order.length; i++) {
+    for (var j = 0; j < items.length; j++) {
+      if (String(items[j].fuente || '').toLowerCase() === order[i]) return order[i];
+    }
+  }
+  return String(items[0].fuente || '').toLowerCase() || null;
+}
+
+  
+/** Fuente principal según tipo final (estrenos cine → pelisplus) */
+/*function elegirFuentePrincipal(items, tipoFinal) {
   if (!items || !items.length) return null;
   var t = normalizarTipoKey(tipoFinal);
   var order;
@@ -3744,7 +3766,7 @@ function elegirFuentePrincipal(items, tipoFinal) {
     }
   }
   return String(items[0].fuente || '').toLowerCase() || null;
-}
+}/*
 
 /** Extrae año de título, slug o campo year */
 function extraerYearItem(item) {
