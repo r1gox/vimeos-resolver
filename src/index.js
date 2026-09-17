@@ -8363,104 +8363,77 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
 
 
 /**
- * Rellena back_img de episodios (series/anime pelisplus) con stills TMDB.
- * Usa TMDB_API_KEY si existe; no rompe si falta.
+ * Rellena back_img de episodios (series/anime pelisplus).
+ * 1) Cinemeta por imdb_id (thumbnail por episodio)
+ * 2) Fallback Metahub: episodes.metahub.space/{imdb}/{s}/{e}/w780.jpg
+ * No requiere TMDB_API_KEY.
  */
 async function attachTmdbEpisodeBackImgs(detalle) {
   try {
     if (!detalle || detalle.success === false) return detalle;
-    var tipo = String(detalle.tipo || detalle.type || '').toLowerCase();
-    if (!/serie|anime|tv|dorama/.test(tipo) && !(detalle.temporadas && detalle.temporadas.length)) {
-      return detalle;
-    }
     var temps = detalle.temporadas;
     if (!Array.isArray(temps) || !temps.length) return detalle;
 
-    // ¿Ya tienen back_img la mayoría?
-    var totalEp = 0, withImg = 0;
-    for (var ti = 0; ti < temps.length; ti++) {
-      var lista0 = temps[ti].episodios || temps[ti].lista || temps[ti].capitulos || [];
-      for (var ei = 0; ei < lista0.length; ei++) {
-        totalEp++;
-        if (lista0[ei] && (lista0[ei].back_img || lista0[ei].still || lista0[ei].still_path)) withImg++;
-      }
-    }
-    if (totalEp && withImg >= totalEp * 0.8) return detalle;
-
-    var key = (typeof __TMDB_KEY__ !== 'undefined' && __TMDB_KEY__) ? __TMDB_KEY__ : null;
-    if (!key) return detalle;
-
-    var tmdbId =
-      detalle.tmdb_id ||
-      (detalle.tmdb && (detalle.tmdb.id || detalle.tmdb.tmdb_id)) ||
+    var imdb =
+      detalle.imdb_id ||
+      (detalle.imdb && (detalle.imdb.id || detalle.imdb.imdb_id)) ||
       null;
-    if (!tmdbId) {
-      // buscar TV por título
-      var q = detalle.titulo_original || detalle.titulo || detalle.nombre || '';
-      q = String(q).replace(/\(\d{4}\)/g, '').trim();
-      if (!q) return detalle;
-      try {
-        var sUrl =
-          'https://api.themoviedb.org/3/search/tv?api_key=' +
-          encodeURIComponent(key) +
-          '&language=es-ES&query=' +
-          encodeURIComponent(q);
-        var sRes = await fetch(sUrl, { headers: { Accept: 'application/json' } });
-        if (sRes.ok) {
-          var sData = await sRes.json();
-          if (sData && sData.results && sData.results[0]) tmdbId = sData.results[0].id;
-        }
-      } catch (_) {}
-    }
-    if (!tmdbId) return detalle;
-    detalle.tmdb_id = tmdbId;
+    if (imdb) imdb = String(imdb).trim();
+    if (!imdb || !/^tt\d+$/i.test(imdb)) return detalle;
 
-    function stillUrl(path) {
-      if (!path) return null;
-      path = String(path);
-      if (/^https?:\/\//i.test(path)) {
-        return path.replace(/\/t\/p\/w\d+\//i, '/t/p/w342/');
-      }
-      if (path.charAt(0) !== '/') path = '/' + path;
-      return 'https://image.tmdb.org/t/p/w342' + path;
-    }
-
-    for (var t = 0; t < temps.length; t++) {
-      var sn = Number(temps[t].temporada || temps[t].season || temps[t].season_number) || 1;
-      var lista = temps[t].episodios || temps[t].lista || temps[t].capitulos || [];
-      if (!lista.length) continue;
-      try {
-        var u =
-          'https://api.themoviedb.org/3/tv/' +
-          encodeURIComponent(String(tmdbId)) +
-          '/season/' +
-          encodeURIComponent(String(sn)) +
-          '?api_key=' +
-          encodeURIComponent(key) +
-          '&language=es-ES';
-        var r = await fetch(u, { headers: { Accept: 'application/json' } });
-        if (!r.ok) continue;
-        var data = await r.json();
-        var eps = (data && data.episodes) || [];
-        var byNum = Object.create(null);
-        for (var i = 0; i < eps.length; i++) {
-          var e = eps[i];
-          if (!e) continue;
-          byNum[Number(e.episode_number)] = stillUrl(e.still_path);
-        }
+    function applyMap(map) {
+      for (var t = 0; t < temps.length; t++) {
+        var lista = temps[t].episodios || temps[t].lista || temps[t].capitulos || [];
+        var sn = Number(temps[t].temporada || temps[t].season || 1) || 1;
         for (var j = 0; j < lista.length; j++) {
           var ep = lista[j];
           if (!ep) continue;
-          if (ep.back_img || ep.still) continue;
+          if (ep.back_img) continue;
           var en = Number(ep.episodio || ep.episode || ep.episode_number) || 0;
-          var img = byNum[en];
+          var key = sn + 'x' + en;
+          var img = map[key] || map[en] || null;
+          if (!img && en) {
+            // patrón Metahub estable
+            img =
+              'https://episodes.metahub.space/' +
+              imdb +
+              '/' +
+              sn +
+              '/' +
+              en +
+              '/w780.jpg';
+          }
           if (img) {
             ep.back_img = img;
             ep.still = img;
           }
         }
-      } catch (_) {}
+      }
     }
+
+    var map = Object.create(null);
+    try {
+      var url = 'https://v3-cinemeta.strem.io/meta/series/' + encodeURIComponent(imdb) + '.json';
+      var res = await fetch(url, {
+        headers: { Accept: 'application/json', 'User-Agent': 'MovieZoneMeta/1.0' }
+      });
+      if (res.ok) {
+        var data = await res.json();
+        var meta = (data && data.meta) || data || {};
+        var videos = meta.videos || [];
+        for (var i = 0; i < videos.length; i++) {
+          var v = videos[i];
+          if (!v) continue;
+          var s = Number(v.season) || 0;
+          var e = Number(v.episode != null ? v.episode : v.number) || 0;
+          var th = v.thumbnail || v.thumb || null;
+          if (s && e && th) map[s + 'x' + e] = th;
+        }
+      }
+    } catch (_) {}
+
+    // Siempre aplicar (Cinemeta o fallback Metahub por patrón)
+    applyMap(map);
     return detalle;
   } catch (e) {
     return detalle;
