@@ -9294,6 +9294,15 @@ function estadoDesdeAnimeAv1Media(media) {
 }
 
 
+
+/** Screenshot por episodio AnimeAV1: https://cdn.animeav1.com/screenshots/{mediaId}/{ep}.jpg */
+function animeAv1BackImg(mediaId, epNum) {
+  var id = mediaId != null ? String(mediaId).trim() : '';
+  var ep = parseInt(epNum, 10);
+  if (!id || !/^\d+$/.test(id) || !(ep > 0)) return null;
+  return 'https://cdn.animeav1.com/screenshots/' + id + '/' + ep + '.jpg';
+}
+
 async function scrapearAnimeAv1(pageUrl, opts) {
   opts = opts || {};
   var u = String(pageUrl || '');
@@ -9440,6 +9449,7 @@ async function scrapearAnimeAv1(pageUrl, opts) {
       temporada: seasonNum || epMeta.season || temporadaBase || 1,
       episodio: epNum,
       slug_media: mediaSlug,
+      back_img: animeAv1BackImg((epData && epData.media && epData.media.id) || media.id, epNum),
       portada: portada,
       descripcion: sinopsis,
       calificacion: score,
@@ -9531,7 +9541,8 @@ async function scrapearAnimeAv1(pageUrl, opts) {
       temporada: tempPrincipal,
       episodio: e,
       titulo: 'Episodio ' + e,
-      url_video: null
+      url_video: null,
+      back_img: animeAv1BackImg(media.id, e)
     });
   }
 
@@ -9598,7 +9609,8 @@ async function scrapearAnimeAv1(pageUrl, opts) {
           episodio: ae,
           titulo: 'Episodio ' + ae,
           url_video: null,
-          slug_media: foundSlug
+          slug_media: foundSlug,
+          back_img: animeAv1BackImg(found.id, ae)
         });
       }
       temporadas.push({
