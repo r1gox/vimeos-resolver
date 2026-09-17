@@ -24,7 +24,7 @@ var HEADERS = {
 var LAMOVIE_API = 'https://lamovie.org/wp-api/v1';
 var LAMOVIE_BASE = 'https://lamovie.org';
 var HACKSTORE_BASE = 'https://www.hackstore.fo';
-var PELISPLUS_BASE = 'https://www.pelisplushd.la';
+var PELISPLUS_BASE = 'https://www.pelisplushd.to';
 var PELISPLUS_BZ_BASE = 'https://pelisplushd.bz';
 // NO mezclar dominios PelisPlus: .la (fuente 3), .bz (fuente 9) y .to son catálogos distintos.
 var PELISPLUS_TO_BASE = 'https://pelisplushd.to'; // referencia; NO usar como espejo de .bz
