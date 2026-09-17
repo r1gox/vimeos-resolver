@@ -8289,14 +8289,34 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
       }
     }
     // Si el src no coincide con el slug, preferir convención /poster/{slug}.jpg
-    if (!portada || portada.indexOf('/poster/' + slug + '.') === -1) {
-      var bySlug = BASE + '/poster/' + slug + '.jpg';
-      // Solo forzar si no había imagen, o si la imagen es de otro slug
-      if (!portada) portada = bySlug;
-      else if (portada.indexOf('/poster/' + slug + '.') === -1) portada = bySlug;
+    var portada = '';
+    var imgM =
+      tag.match(/(?:src|data-src)=["'](https?:\/\/image\.tmdb\.org\/[^"'\s>]+)["']/i) ||
+      tag.match(/(?:src|data-src)=["'](https?:\/\/[^"']*\/t\/p\/[^"'\s>]+)["']/i) ||
+      tag.match(/(?:src|data-src)=["']([^"']*\/poster\/[^"'\s>]+)["']/i);
+    if (imgM) {
+      portada = imgM[1];
+      if (portada.indexOf('http') !== 0) {
+        portada = BASE + (portada.charAt(0) === '/' ? portada : '/' + portada);
+      }
     }
-    
-    portada = portadaPelisplusThumb(portada, slug);
+
+    // Solo en .to: forzar convención /poster/{slug}
+    // En .bz las portadas son TMDB: no pisarlas
+    var esBz = (BASE === PELISPLUS_BZ_BASE);
+    if (!esBz) {
+      if (!portada || portada.indexOf('/poster/' + slug + '.') === -1) {
+        var bySlug = BASE + '/poster/' + slug + '.jpg';
+        if (!portada) portada = bySlug;
+        else if (portada.indexOf('/poster/' + slug + '.') === -1) portada = bySlug;
+      }
+      portada = portadaPelisplusThumb(portada, slug);
+    } else {
+      // .bz: si no hubo img, último recurso (no preferir sobre TMDB)
+      if (!portada) {
+        portada = BASE + '/poster/' + slug + '-thumb.jpg';
+      }
+    }
 
     items.push({
       titulo: titulo,
