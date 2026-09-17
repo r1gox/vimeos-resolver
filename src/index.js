@@ -3793,6 +3793,7 @@ function claveDeduplicacion(item) {
  * Orden de fuentes (búsqueda / fusión / detalle):
  * 1 animeav1 → 2 doramasflix → 4 pelisplushd → 5 lamovie → 6 hackstore
  */
+/*
 function prioridadFuente(nombre) {
   var f = String(nombre || '').toLowerCase();
   if (f === 'animeav1' || f === '4') return 0;
@@ -3800,6 +3801,18 @@ function prioridadFuente(nombre) {
   if (f === 'pelisplushd' || f === 'pelisplus' || f === '3') return 3;
   if (f === 'lamovie' || f === '1') return 4;
   if (f === 'hackstore' || f === '2') return 5;
+  return 9;
+}*/
+
+function prioridadFuente(nombre) {
+  var f = String(nombre || '').toLowerCase();
+  if (f === 'animeav1' || f === '4') return 0;
+  if (f === 'doramasflix' || f === '6') return 2;
+  // 9 / .bz antes que 3 / .to
+  if (f === 'pelisplushd_bz' || f === '9' || f === 'ppbz' || f === 'bz') return 3;
+  if (f === 'pelisplushd' || f === 'pelisplus' || f === '3') return 4;
+  if (f === 'lamovie' || f === '1') return 5;
+  if (f === 'hackstore' || f === '2') return 6;
   return 9;
 }
 
@@ -3817,6 +3830,7 @@ function scoreItemBusqueda(item) {
   var f = String(item.fuente || '').toLowerCase();
   var t = normalizarTipoKey(item.tipo);
 
+  /*
   // Score por fuente SEGÚN tipo (no animeav1 siempre arriba)
   if (t === 'pelicula') {
     if (f === 'pelisplushd') s += 200; // estrenos cine más actualizados
@@ -3836,8 +3850,31 @@ function scoreItemBusqueda(item) {
     if (f === 'lamovie') s += 100;
     if (f === 'hackstore') s += 80;
     if (f === 'animeav1') s += 50;
-  }
+  }*/
 
+    
+  if (t === 'pelicula') {
+    if (f === 'pelisplushd_bz') s += 220; // .bz primero
+    else if (f === 'pelisplushd') s += 180; // .to después
+    else if (f === 'lamovie') s += 160;
+    else if (f === 'hackstore') s += 140;
+    else if (f === 'doramasflix') s += 80;
+    else if (f === 'animeav1') s += 5;
+  } else if (t === 'anime') {
+    if (f === 'animeav1') s += 200;
+    else if (f === 'pelisplushd_bz') s += 70;
+    else if (f === 'pelisplushd') s += 55;
+    else if (f === 'lamovie') s += 40;
+    else if (f === 'hackstore') s += 30;
+  } else {
+    // serie / dorama
+    if (f === 'doramasflix') s += 200;
+    if (f === 'pelisplushd_bz') s += 160;
+    if (f === 'pelisplushd') s += 130;
+    if (f === 'lamovie') s += 100;
+    if (f === 'hackstore') s += 80;
+    if (f === 'animeav1') s += 50;
+  }
   if (item.portada && !esPortadaSospechosa(item.portada)) s += 25;
   if (item.portada_imdb && esPortadaImdb(item.portada_imdb)) s += 12;
   if (item.portada_tmdb && !esPortadaSospechosa(item.portada_tmdb)) s += 8;
@@ -7092,11 +7129,21 @@ async function buscarUniversal(query, sourceFilter, limit) {
   // Anime en búsqueda global: SOLO AnimeAV1 (sin monopolio JKanime).
   // Fuente forzada /5/?q= sigue en ruta /5/buscar del router, no aquí.
   // 2) Fuentes en paralelo
+  /*
   var cadena = [
     { id: 'animeav1', aliases: ['animeav1', '4', 'av1'], fn: function () { return buscarAnimeAv1(q, limit); } },
     { id: 'doramasflix', aliases: ['doramasflix', '6', 'doramas', 'dfx'], fn: function () { return buscarDoramasflix(q, limit); } },
     { id: 'pelisplushd', aliases: ['pelisplushd', 'pelisplus', '3', 'pp'], fn: function () { return buscarPelisplus(q, limit); } },
     { id: 'pelisplushd_bz', aliases: ['pelisplushd_bz', '9', 'ppbz', 'bz'], fn: function () { return buscarPelisplusBz(q, limit); } },
+    { id: 'lamovie', aliases: ['lamovie', '1', 'lm'], fn: function () { return buscarLamovie(q, limit); } },
+    { id: 'hackstore', aliases: ['hackstore', '2', 'hs'], fn: function () { return buscarHackstore(q, limit); } }
+  ];*/
+    
+  var cadena = [
+    { id: 'animeav1', aliases: ['animeav1', '4', 'av1'], fn: function () { return buscarAnimeAv1(q, limit); } },
+    { id: 'doramasflix', aliases: ['doramasflix', '6', 'doramas', 'dfx'], fn: function () { return buscarDoramasflix(q, limit); } },
+    { id: 'pelisplushd_bz', aliases: ['pelisplushd_bz', '9', 'ppbz', 'bz'], fn: function () { return buscarPelisplusBz(q, limit); } },
+    { id: 'pelisplushd', aliases: ['pelisplushd', 'pelisplus', '3', 'pp'], fn: function () { return buscarPelisplus(q, limit); } },
     { id: 'lamovie', aliases: ['lamovie', '1', 'lm'], fn: function () { return buscarLamovie(q, limit); } },
     { id: 'hackstore', aliases: ['hackstore', '2', 'hs'], fn: function () { return buscarHackstore(q, limit); } }
   ];
