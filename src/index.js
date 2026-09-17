@@ -7589,11 +7589,21 @@ async function buscarPelisplusBz(query, limit) {
       var tipo = 'Pelicula';
       if (/\/serie\//i.test(full)) tipo = 'Serie';
       if (/\/anime\//i.test(full)) tipo = 'Anime';
-      var portada = BASE + '/poster/' + slug + '-thumb.jpg';
-      var chunk = html.slice(Math.max(0, m.index - 120), m.index + 400);
-      var pm = chunk.match(/(?:src|data-src)=["']([^"']*\/poster\/[^"']+)["']/i);
+      // .bz usa TMDB (image.tmdb.org), no /poster/slug-thumb.jpg
+      var portada = null;
+      var chunk = html.slice(Math.max(0, m.index - 400), m.index + 500);
+      var pm =
+        chunk.match(/(?:src|data-src)=["'](https?:\/\/image\.tmdb\.org\/[^"']+)["']/i) ||
+        chunk.match(/(?:src|data-src)=["'](https?:\/\/[^"']*\/t\/p\/[^"']+)["']/i) ||
+        chunk.match(/(?:src|data-src)=["']([^"']*\/poster\/[^"']+)["']/i);
       if (pm) {
-        portada = pm[1].indexOf('http') === 0 ? pm[1] : BASE + (pm[1].charAt(0) === '/' ? pm[1] : '/' + pm[1]);
+        portada = pm[1].indexOf('http') === 0
+          ? pm[1]
+          : BASE + (pm[1].charAt(0) === '/' ? pm[1] : '/' + pm[1]);
+      }
+      if (!portada) {
+        // fallback solo si no hay img en el HTML
+        portada = BASE + '/poster/' + slug + '-thumb.jpg';
       }
       var titulo = limpiarTitulo(slug.replace(/-[a-zA-Z0-9]{4,10}$/, '').replace(/-/g, ' '));
       var tm = chunk.match(/alt=["']([^"']+)["']/i) || chunk.match(/data-title=["']([^"']+)["']/i);
@@ -8226,7 +8236,7 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
     var slug = m[1];
     if (!slug || vistos[slug]) continue;
     if (PALABRAS_BLOQUEADAS_BUSQUEDA.some(function (w) { return slug.indexOf(w) !== -1; })) continue;
-    if (!/Posters-link|\/poster\//i.test(m[0])) continue;
+    if (!/Posters-link|\/poster\/|image\.tmdb\.org|\/t\/p\//i.test(m[0])) continue;
     vistos[slug] = true;
 
     var tag = m[0];
@@ -8237,9 +8247,11 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
 
     var portada = '';
     // Buscar src de poster DENTRO de esta tarjeta
-    var imgM = tag.match(/src=["']([^"']*\/poster\/[^"'\s>]+)["']/i)
-      || tag.match(/data-src=["']([^"']*\/poster\/[^"'\s>]+)["']/i)
-      || tag.match(/srcset=["']([^"'\s,>]*\/poster\/[^"'\s,>]+)/i);
+    var imgM =
+      tag.match(/(?:src|data-src)=["'](https?:\/\/image\.tmdb\.org\/[^"'\s>]+)["']/i) ||
+      tag.match(/(?:src|data-src)=["'](https?:\/\/[^"']*\/t\/p\/[^"'\s>]+)["']/i) ||
+      tag.match(/(?:src|data-src)=["']([^"']*\/poster\/[^"'\s>]+)["']/i);
+  //    || tag.match(/srcset=["']([^"'\s,>]*\/poster\/[^"'\s,>]+)/i);
     if (imgM) {
       portada = imgM[1];
       if (portada.indexOf('http') !== 0) {
