@@ -32,7 +32,8 @@ var PELISPLUS_BASE = 'https://pelisplushd.bz';
 var PELISPLUS_BZ_BASE = 'https://pelisplushd.to';
 
 // NO mezclar dominios PelisPlus: .la (fuente 3), .bz (fuente 9) y .to son catálogos distintos.
-var PELISPLUS_TO_BASE = 'https://pelisplushd.to'; // referencia; NO usar como espejo de .bz
+//var PELISPLUS_TO_BASE = 'https://pelisplushd.to'; // referencia; NO usar como espejo de .bz
+
 var ANIMEAV1_BASE = 'https://animeav1.com';
 var DORAMASFLIX_BASE = 'https://doramasflix.io';
 var DORAMASFLIX_GQL = 'https://user-api.fluxcedene.net/graphql';
