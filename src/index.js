@@ -3807,7 +3807,7 @@ function prioridadFuente(nombre) {
   if (f === 'doramasflix' || f === '6') return 2;
   // .bz antes que .to
   if (f === 'pelisplushd_bz' || f === '9' || f === 'ppbz' || f === 'bz') return 3;
-  if (f === 'pelisplushd' || f === 'pelisplus' || f === '3') return 4;
+ // if (f === 'pelisplushd' || f === 'pelisplus' || f === '3') return 4;
   if (f === 'lamovie' || f === '1') return 5;
   if (f === 'hackstore' || f === '2') return 6;
   return 9;
@@ -3830,7 +3830,7 @@ function scoreItemBusqueda(item) {
   // Score por fuente SEGÚN tipo (no animeav1 siempre arriba)
   if (t === 'pelicula') {
     if (f === 'pelisplushd_bz') s += 220; // .bz primero
-    else if (f === 'pelisplushd') s += 180; // .to sigue, pero debajo
+ //   else if (f === 'pelisplushd') s += 180; // .to sigue, pero debajo
     else if (f === 'lamovie') s += 160;
     else if (f === 'hackstore') s += 140;
     else if (f === 'doramasflix') s += 80;
