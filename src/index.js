@@ -7147,8 +7147,8 @@ async function buscarUniversal(query, sourceFilter, limit) {
     { id: 'doramasflix', aliases: ['doramasflix', '6', 'doramas', 'dfx'], fn: function () { return buscarDoramasflix(q, limit); } },
     { id: 'pelisplushd_bz', aliases: ['pelisplushd_bz', '9', 'ppbz', 'bz'], fn: function () { return buscarPelisplusBz(q, limit); } },
     { id: 'pelisplushd', aliases: ['pelisplushd', 'pelisplus', '3', 'pp'], fn: function () { return buscarPelisplus(q, limit); } },
-    { id: 'lamovie', aliases: ['lamovie', '1', 'lm'], fn: function () { return buscarLamovie(q, limit); } },
-    { id: 'hackstore', aliases: ['hackstore', '2', 'hs'], fn: function () { return buscarHackstore(q, limit); } }
+ //   { id: 'lamovie', aliases: ['lamovie', '1', 'lm'], fn: function () { return buscarLamovie(q, limit); } },
+//    { id: 'hackstore', aliases: ['hackstore', '2', 'hs'], fn: function () { return buscarHackstore(q, limit); } }
   ];
 
   
