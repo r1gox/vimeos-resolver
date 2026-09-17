@@ -7146,9 +7146,9 @@ async function buscarUniversal(query, sourceFilter, limit) {
     { id: 'animeav1', aliases: ['animeav1', '4', 'av1'], fn: function () { return buscarAnimeAv1(q, limit); } },
     { id: 'doramasflix', aliases: ['doramasflix', '6', 'doramas', 'dfx'], fn: function () { return buscarDoramasflix(q, limit); } },
     { id: 'pelisplushd_bz', aliases: ['pelisplushd_bz', '9', 'ppbz', 'bz'], fn: function () { return buscarPelisplusBz(q, limit); } },
-//    { id: 'pelisplushd', aliases: ['pelisplushd', 'pelisplus', '3', 'pp'], fn: function () { return buscarPelisplus(q, limit); } },
- //   { id: 'lamovie', aliases: ['lamovie', '1', 'lm'], fn: function () { return buscarLamovie(q, limit); } },
-//    { id: 'hackstore', aliases: ['hackstore', '2', 'hs'], fn: function () { return buscarHackstore(q, limit); } }
+    { id: 'pelisplushd', aliases: ['pelisplushd', 'pelisplus', '3', 'pp'], fn: function () { return buscarPelisplus(q, limit); } },
+    { id: 'lamovie', aliases: ['lamovie', '1', 'lm'], fn: function () { return buscarLamovie(q, limit); } },
+    { id: 'hackstore', aliases: ['hackstore', '2', 'hs'], fn: function () { return buscarHackstore(q, limit); } }
   ];
 
   
@@ -7160,14 +7160,23 @@ async function buscarUniversal(query, sourceFilter, limit) {
   }
 
   var jobs = [];
-  for (var i = 0; i < cadena.length; i++) {
+/*  for (var i = 0; i < cadena.length; i++) {
     var c = cadena[i];
     if (sourceFilter !== 'all' && c.aliases.indexOf(sourceFilter) === -1) continue;
     // animeav1 pagina varias veces: más tiempo
     var tms = (c.id === 'animeav1') ? 12000 : 5000;
     jobs.push({ id: c.id, p: withTimeout(c.fn(), tms) });
   }
-
+*/
+   
+  for (var i = 0; i < cadena.length; i++) {
+    var c = cadena[i];
+    if (sourceFilter !== 'all' && c.aliases.indexOf(sourceFilter) === -1) continue;
+    // Búsqueda universal: sin LaMovie ni Hackstore (siguen en /1/ y /2/)
+    if (sourceFilter === 'all' && (c.id === 'lamovie' || c.id === 'pelisplushd' || c.id === 'hackstore')) continue;
+    var tms = (c.id === 'animeav1') ? 12000 : 5000;
+    jobs.push({ id: c.id, p: withTimeout(c.fn(), tms) });
+  }
   var settled = await Promise.all(jobs.map(function (j) { return j.p; }));
   var todos = [];
 
