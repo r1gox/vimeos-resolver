@@ -3737,7 +3737,7 @@ function elegirFuentePrincipal(items, tipoFinal) {
     //order = ['animeav1', 'pelisplushd_bz', 'pelisplushd', 'lamovie', 'hackstore'];
   } else {
     // serie / dorama
-    order = ['doramasflix', 'pelisplushd_bz', 'lamovie', 'hackstore', 'animeav1'];
+    order = ['doramasflix', 'pelisplushd_bz', 'animeav1'];
  //   order = ['doramasflix', 'pelisplushd_bz', 'pelisplushd', 'lamovie', 'hackstore', 'animeav1'];
   }
   for (var i = 0; i < order.length; i++) {
