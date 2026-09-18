@@ -11279,14 +11279,16 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
     var list = [];
     for (var i = 0; i < rows.length; i++) {
       var row = rows[i] || {};
+      var thumb = row.image
+        ? ('https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/' + row.image)
+        : null;
       list.push({
         episodio: row.number,
         episode: row.number,
         titulo: row.title || ('Episodio ' + row.number),
         id: row.id,
-        image: row.image
-          ? ('https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/' + row.image)
-          : null
+        image: thumb,
+        back_img: thumb // mismo nombre de campo que usa animeav1 (fuente 4)
       });
     }
     return list;
