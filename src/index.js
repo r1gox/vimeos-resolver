@@ -47,6 +47,17 @@ var JKANIME_BASE = 'https://jkanime.net';
 var CINEMETA_BASE = 'https://v3-cinemeta.strem.io';
 var METAHUB_BASE = 'https://images.metahub.space';
 
+
+function metahubEpisodeStill(imdbId, season, episode) {
+  if (!imdbId || !episode) return null;
+  var tt = String(imdbId);
+  if (tt.indexOf('tt') !== 0) tt = 'tt' + tt.replace(/^tt/i, '');
+  var s = parseInt(season, 10) || 1;
+  var e = parseInt(episode, 10) || 0;
+  if (!e) return null;
+  return 'https://episodes.metahub.space/' + tt + '/' + s + '/' + e + '/w780.jpg';
+}
+
 function metahubPoster(imdbId, size) {
   size = size || 'medium';
   return METAHUB_BASE + '/poster/' + size + '/' + imdbId + '/img';
@@ -823,6 +834,23 @@ async function handleRequest(request, env) {
             detJk.portada = detJk.portada_imdb;
             detJk.poster_source = 'metahub';
           }
+          // back_img faltantes en episodios (One Piece 17+) → still Metahub
+          try {
+            if (detJk.temporadas && detJk.temporadas.length && typeof metahubEpisodeStill === 'function') {
+              detJk.temporadas.forEach(function (t) {
+                var lista = t.lista || t.episodios || [];
+                lista.forEach(function (ep) {
+                  if (!ep || ep.back_img || !ep.episodio) return;
+                  var still = metahubEpisodeStill(ttJk, t.temporada || 1, ep.episodio);
+                  if (still) {
+                    ep.back_img = still;
+                    ep.still = still;
+                    if (!ep.image) ep.image = still;
+                  }
+                });
+              });
+            }
+          } catch (eStill) {}
         }
 
         if (detJk) {
@@ -11166,6 +11194,27 @@ function limpiarDetalleJkanime(item) {
     if (out[k] == null || out[k] === '') delete out[k];
     if (Array.isArray(out[k]) && out[k].length === 0) delete out[k];
   });
+
+  // Rellenar back_img faltantes con still Metahub (series largas JK)
+  try {
+    var imdbFill = out.imdb_id || (out.imdb && out.imdb.id) || null;
+    if (imdbFill && out.temporadas && out.temporadas.length) {
+      out.temporadas.forEach(function (t) {
+        var lista = t.lista || t.episodios || [];
+        lista.forEach(function (ep) {
+          if (ep && !ep.back_img && ep.episodio && typeof metahubEpisodeStill === 'function') {
+            var still = metahubEpisodeStill(imdbFill, t.temporada || 1, ep.episodio);
+            if (still) {
+              ep.back_img = still;
+              ep.still = still;
+              if (!ep.image) ep.image = still;
+            }
+          }
+        });
+      });
+    }
+  } catch (eFill) {}
+
   return out;
 }
 
@@ -11235,41 +11284,8 @@ async function buscarJkanime(query) {
 
     var slug = hrefM[2];
     if (!slug || seen[slug]) continue;
-    if (/^(buscar|genero|studio|temporada|idioma|dash|usuario|img|salir|directorio)$/i.test(slug)) continue;
-    seen[slug] = 1;
-
-    var portadaM = block.match(/data-setbg="([^"]+)"/i);
-    var portada = portadaM ? portadaM[1].replace(/&quot;/g, '').trim() : null;
-
-    var titleM =
-      block.match(/anime__item__text[\s\S]{0,400}?href="[^"]+"[^>]*>\s*([^<]+)/i) ||
-      block.match(/<h5[^>]*>\s*<a[^>]*>\s*([^<]+)/i);
-    var titulo = titleM
-      ? titleM[1].replace(/\s+/g, ' ').trim()
-      : slug.replace(/-/g, ' ');
-
-    out.push({
-      title: titulo,
-      slug: slug,
-      url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug,
-      portada: portada,
-      source: 'jkanime',
-      type: 'Anime',
-      source_id: '5'
-    });
-  }
-
-  return {
-    query: q,
-    page: 1,
-    count: out.length,
-    results: out
-  };
-}
-
-async function fetchJkanimeEpisodes(animeId, refererUrl) {
-  // JK: GET /ajax/pagination_episodes/{id}/{pag}/
-  // Series largas (One Piece 1000+): seguir hasta respuesta vacía o alcanzar último cap
+    if (/^(buscar|genero|studio|temporada|idioma|dash|usuario|img|salir|directorio)$/i.test(slugasync function fetchJkanimeEpisodes(animeId, refererUrl) {
+  // GET /ajax/pagination_episodes/{id}/{pag}/ — barrer TODAS las páginas con thumbs
   var pageRes = await fetch(refererUrl || (JKANIME_BASE + '/'), { headers: jkanimeHeaders() });
   var pageHtml = await pageRes.text();
   var csrf = (pageHtml.match(/name="csrf-token"\s+content="([^"]+)"/i) || [])[1] || '';
@@ -11283,37 +11299,23 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
     }
   } catch (eC) {}
 
-  // Último episodio / total
   var lastEp = 0;
   var uep = pageHtml.match(/id=["']uep["'][^>]*>[\s\S]*?(\d+)\s*</i) ||
     pageHtml.match(/href=["'][^"']+\/(\d+)\/["'][^>]*id=["']uep["']/i) ||
     pageHtml.match(/id=["']uep["'][^>]*href=["'][^"']+\/(\d+)\//i);
   if (uep) lastEp = parseInt(uep[1], 10) || 0;
-  // href one-piece/1178/
   if (!lastEp) {
-    var allNums = [];
-    var reN = /\/([a-z0-9\-]+)\/(\d+)\/["']/gi;
+    var reN = /\/[a-z0-9\-]+\/(\d+)\/["']/gi;
     var nm;
     while ((nm = reN.exec(pageHtml)) !== null) {
-      var n = parseInt(nm[2], 10);
+      var n = parseInt(nm[1], 10);
       if (n > lastEp) lastEp = n;
     }
   }
   var tm = pageHtml.match(/Episodios:<\/span>\s*(\d+)/i) || pageHtml.match(/Episodios:\s*(\d+)/i);
   var totalMeta = tm ? (parseInt(tm[1], 10) || 0) : 0;
   if (totalMeta > lastEp) lastEp = totalMeta;
-  // Cap razonable (One Piece ~1200+, no infinito)
   if (lastEp > 2500) lastEp = 2500;
-
-  // Páginas explícitas en HTML (#pag1…)
-  var pageNums = [];
-  var rePag = /(?:href=["']#pag(\d+)["']|data-page=["'](\d+)["']|pagination_episodes\/\d+\/(\d+))/gi;
-  var pm;
-  while ((pm = rePag.exec(pageHtml)) !== null) {
-    var pn = parseInt(pm[1] || pm[2] || pm[3], 10);
-    if (pn && pageNums.indexOf(pn) === -1) pageNums.push(pn);
-  }
-  pageNums.sort(function (a, b) { return a - b; });
 
   function parseEpRows(data) {
     var rows = [];
@@ -11344,24 +11346,31 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
   }
 
   async function fetchPag(pagnum) {
-    var url = JKANIME_BASE + '/ajax/pagination_episodes/' + animeId + '/' + pagnum + '/';
-    try {
-      var epRes = await fetch(url, {
-        method: 'GET',
-        headers: jkanimeHeaders({
-          'X-Requested-With': 'XMLHttpRequest',
-          'X-CSRF-TOKEN': csrf,
-          'Accept': 'application/json, text/javascript, */*; q=0.01',
-          'Referer': refererUrl || (JKANIME_BASE + '/'),
-          'Cookie': cookieHdr
-        })
-      });
-      if (epRes.ok) {
-        var raw = await epRes.text();
-        try { return JSON.parse(raw); } catch (eJ) { return null; }
-      }
-    } catch (e1) {}
-    // fallback POST antiguo
+    var urls = [
+      JKANIME_BASE + '/ajax/pagination_episodes/' + animeId + '/' + pagnum + '/',
+      JKANIME_BASE + '/ajax/pagination_episodes/' + animeId + '/' + pagnum
+    ];
+    for (var ui = 0; ui < urls.length; ui++) {
+      try {
+        var epRes = await fetch(urls[ui], {
+          method: 'GET',
+          headers: jkanimeHeaders({
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRF-TOKEN': csrf,
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'Referer': refererUrl || (JKANIME_BASE + '/'),
+            'Cookie': cookieHdr
+          })
+        });
+        if (epRes.ok) {
+          var raw = await epRes.text();
+          try {
+            var parsed = JSON.parse(raw);
+            if (parsed) return parsed;
+          } catch (eJ) {}
+        }
+      } catch (e1) {}
+    }
     try {
       var epRes2 = await fetch(JKANIME_BASE + '/ajax/episodes/' + animeId + '/', {
         method: 'POST',
@@ -11385,85 +11394,89 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
 
   var all = [];
   var seenNums = {};
-  var perPage = 0;
+  var perPage = 12;
 
   function addRows(rows) {
     var added = 0;
     for (var ri = 0; ri < rows.length; ri++) {
       var num = rows[ri].episodio;
-      if (!num || seenNums[num]) continue;
-      seenNums[num] = true;
+      if (!num) continue;
+      // Preferir fila con back_img si ya existe sin imagen
+      if (seenNums[num]) {
+        if (!seenNums[num].back_img && rows[ri].back_img) {
+          seenNums[num].back_img = rows[ri].back_img;
+          seenNums[num].image = rows[ri].image || rows[ri].back_img;
+        }
+        continue;
+      }
+      seenNums[num] = rows[ri];
       all.push(rows[ri]);
       added++;
     }
     return added;
   }
 
-  // 1) Si hay #pagN, usar esos
-  if (pageNums.length) {
-    var CONC = 5;
-    for (var pi = 0; pi < pageNums.length; pi += CONC) {
-      var batch = [];
-      for (var bj = pi; bj < pi + CONC && bj < pageNums.length; bj++) {
-        batch.push(fetchPag(pageNums[bj]));
-      }
-      var results = await Promise.all(batch);
-      for (var r = 0; r < results.length; r++) {
-        if (!results[r]) continue;
-        var rows = parseEpRows(results[r]);
+  // Página 1: medir perPage
+  var data1 = await fetchPag(1);
+  var rows1 = data1 ? parseEpRows(data1) : [];
+  if (rows1.length) {
+    perPage = rows1.length;
+    addRows(rows1);
+  }
+
+  // Calcular total de páginas a pedir
+  var totalPages = 1;
+  if (lastEp > 0) {
+    totalPages = Math.ceil(lastEp / Math.max(perPage, 1));
+  } else {
+    totalPages = 80;
+  }
+  if (totalPages > 150) totalPages = 150;
+  if (totalPages < 1) totalPages = 1;
+
+  // Barrer 2..totalPages en lotes (todas las páginas, no parar al primer vacío suelto)
+  var CONC = 6;
+  for (var pag = 2; pag <= totalPages; pag += CONC) {
+    var batch = [];
+    var pages = [];
+    for (var b = pag; b < pag + CONC && b <= totalPages; b++) {
+      batch.push(fetchPag(b));
+      pages.push(b);
+    }
+    var results = await Promise.all(batch);
+    var anyData = false;
+    for (var r = 0; r < results.length; r++) {
+      if (!results[r]) continue;
+      var rows = parseEpRows(results[r]);
+      if (rows.length) {
+        anyData = true;
         if (rows.length > perPage) perPage = rows.length;
         addRows(rows);
       }
     }
-  }
-
-  // 2) Siempre barrer páginas 1,2,3… hasta vacío o llegar a lastEp
-  //    (One Piece no trae #pag en HTML estático)
-  var maxPages = 120; // 120 * ~12 = 1440 caps
-  if (lastEp > 0 && perPage > 0) {
-    maxPages = Math.min(120, Math.ceil(lastEp / Math.max(perPage, 8)) + 2);
-  } else if (lastEp > 0) {
-    maxPages = Math.min(120, Math.ceil(lastEp / 12) + 2);
-  }
-
-  var emptyStreak = 0;
-  for (var pag = 1; pag <= maxPages; pag++) {
-    if (lastEp > 0 && all.length >= lastEp) break;
-    var data = await fetchPag(pag);
-    if (!data) {
-      emptyStreak++;
-      if (emptyStreak >= 2) break;
-      continue;
-    }
-    var rows2 = parseEpRows(data);
-    if (!rows2.length) {
-      emptyStreak++;
-      if (emptyStreak >= 2) break;
-      continue;
-    }
-    emptyStreak = 0;
-    if (rows2.length > perPage) perPage = rows2.length;
-    var added = addRows(rows2);
-    // Si la página no aportó nada nuevo y ya tenemos varios → fin
-    if (added === 0 && all.length > 0) {
-      emptyStreak++;
-      if (emptyStreak >= 2) break;
+    // Si un lote completo no trajo nada y ya pasamos la mitad, cortar
+    if (!anyData && pag > Math.max(3, Math.floor(totalPages / 4))) {
+      // probar una página más adelante; si también vacía, salir
+      var probe = await fetchPag(pag + CONC);
+      if (!probe || !parseEpRows(probe).length) break;
+      addRows(parseEpRows(probe));
     }
   }
 
-  // 3) Completar huecos 1..lastEp (en emisión: thumb null en faltantes)
-  if (lastEp > all.length) {
+  // Completar números faltantes (sin inventar thumb falso)
+  if (lastEp > 0) {
     for (var fill = 1; fill <= lastEp; fill++) {
       if (seenNums[fill]) continue;
-      seenNums[fill] = true;
-      all.push({
+      var stub = {
         episodio: fill,
         episode: fill,
         titulo: 'Episodio ' + fill,
         id: null,
         image: null,
         back_img: null
-      });
+      };
+      seenNums[fill] = stub;
+      all.push(stub);
     }
   }
 
