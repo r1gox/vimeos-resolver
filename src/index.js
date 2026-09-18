@@ -11323,10 +11323,12 @@ async function buscarJkanime(query) {
   return out;
 }
 
-async function fetchJkanimeEpisodes(animeId, refererUrl) {
-  // Como AnimeAV1: total real del API + solo primer rango (~50) con thumbs.
-  // No barrer 74 páginas (Workers ~50 subrequests).
+async function fetchJkanimeEpisodes(animeId, refererUrl, opts) {
+  // Como AV1: total real + rango visible (ep_from/ep_to). Default 1–50 si total > 200.
+  opts = opts || {};
   var RANGO_DEFAULT = 50;
+  var epFrom = parseInt(opts.epFrom || opts.ep_from || 0, 10) || 0;
+  var epTo = parseInt(opts.epTo || opts.ep_to || 0, 10) || 0;
 
   var pageRes = await fetch(refererUrl || (JKANIME_BASE + '/'), { headers: jkanimeHeaders() });
   var pageHtml = await pageRes.text();
@@ -11408,23 +11410,39 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
     }
   }
 
-  // Página 1 → total real (One Piece 1178)
+  // Página 1 siempre: total real
   var data1 = await fetchPag(1);
   var parsed1 = parsePage(data1);
-  addRows(parsed1.rows);
   var apiTotal = parsed1.total || 0;
   var perPage = parsed1.perPage || 16;
-  if (apiTotal < 1) apiTotal = all.length;
+  if (apiTotal < 1) apiTotal = parsed1.rows.length || 0;
 
-  // Solo páginas necesarias para el primer rango (~50), como AV1
-  var epTo = apiTotal;
-  if (apiTotal > 200) {
-    epTo = Math.min(apiTotal, RANGO_DEFAULT);
+  // Rango pedido (MovieZone manda ep_from/ep_to al cambiar 51–100)
+  if (!epFrom || epFrom < 1) epFrom = 1;
+  if (!epTo || epTo < epFrom) {
+    if (apiTotal > 200) {
+      epTo = Math.min(apiTotal, RANGO_DEFAULT);
+    } else {
+      epTo = apiTotal || RANGO_DEFAULT;
+    }
   }
-  var pagesNeeded = Math.ceil(epTo / Math.max(perPage, 1));
-  if (pagesNeeded > 8) pagesNeeded = 8; // margen seguro de subrequests
+  if (epTo > apiTotal && apiTotal > 0) epTo = apiTotal;
+  if (epTo - epFrom > 99) epTo = epFrom + 99; // máx 100 por request
 
-  for (var pag = 2; pag <= pagesNeeded; pag++) {
+  // Páginas que cubren el rango (16 caps/página)
+  var pageStart = Math.floor((epFrom - 1) / perPage) + 1;
+  var pageEnd = Math.floor((epTo - 1) / perPage) + 1;
+  if (pageStart < 1) pageStart = 1;
+  if (pageEnd < pageStart) pageEnd = pageStart;
+  if (pageEnd - pageStart > 10) pageEnd = pageStart + 10; // límite subrequests
+
+  // Si el rango incluye la pág 1, usar data ya cargada
+  if (pageStart === 1) {
+    addRows(parsed1.rows);
+    pageStart = 2;
+  }
+
+  for (var pag = pageStart; pag <= pageEnd; pag++) {
     var dataP = await fetchPag(pag);
     if (!dataP) continue;
     var pr = parsePage(dataP);
@@ -11432,19 +11450,17 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
     addRows(pr.rows);
   }
 
-  // Si serie corta, dejar todos; si larga, solo 1..RANGO_DEFAULT
+  // Filtrar al rango pedido
+  all = all.filter(function (ep) {
+    var n = ep.episodio || 0;
+    return n >= epFrom && n <= epTo;
+  });
   all.sort(function (a, b) { return (a.episodio || 0) - (b.episodio || 0); });
-  if (apiTotal > 200 && all.length > RANGO_DEFAULT) {
-    all = all.filter(function (ep) {
-      return (ep.episodio || 0) <= RANGO_DEFAULT;
-    });
-  }
 
-  // Completar huecos del rango visible (1..epTo) si faltó alguna página
+  // Completar huecos del rango (sin thumb si no vino del API)
   var byNum = {};
   all.forEach(function (ep) { byNum[ep.episodio] = ep; });
-  var rangeMax = apiTotal > 200 ? Math.min(RANGO_DEFAULT, apiTotal) : apiTotal;
-  for (var fill = 1; fill <= rangeMax; fill++) {
+  for (var fill = epFrom; fill <= epTo; fill++) {
     if (byNum[fill]) continue;
     byNum[fill] = {
       episodio: fill,
@@ -11458,8 +11474,8 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
   all = Object.keys(byNum).map(Number).sort(function (a, b) { return a - b; }).map(function (n) { return byNum[n]; });
 
   all._jkTotal = apiTotal;
-  all._jkEpFrom = 1;
-  all._jkEpTo = rangeMax;
+  all._jkEpFrom = epFrom;
+  all._jkEpTo = epTo;
   return all;
 }
 
@@ -11745,7 +11761,7 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
   var episodios = [];
   if (animeId) {
     try {
-      episodios = await fetchJkanimeEpisodes(animeId, detailUrl);
+      episodios = await fetchJkanimeEpisodes(animeId, detailUrl, opts);
     } catch (eEp) {
       episodios = [];
     }
