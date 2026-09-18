@@ -11268,8 +11268,8 @@ async function buscarJkanime(query) {
 }
 
 async function fetchJkanimeEpisodes(animeId, refererUrl) {
-  // JK usa /ajax/pagination_episodes/{id}/{pag}/ (no /ajax/episodes/?page=)
-  // Cada página ~12–16 caps; a.numbers → #pag1, #pag2…
+  // JK: GET /ajax/pagination_episodes/{id}/{pag}/
+  // Series largas (One Piece 1000+): seguir hasta respuesta vacía o alcanzar último cap
   var pageRes = await fetch(refererUrl || (JKANIME_BASE + '/'), { headers: jkanimeHeaders() });
   var pageHtml = await pageRes.text();
   var csrf = (pageHtml.match(/name="csrf-token"\s+content="([^"]+)"/i) || [])[1] || '';
@@ -11283,27 +11283,37 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
     }
   } catch (eC) {}
 
-  // Páginas desde el HTML: <a class="numbers" href="#pag2"> o data-anime
+  // Último episodio / total
+  var lastEp = 0;
+  var uep = pageHtml.match(/id=["']uep["'][^>]*>[\s\S]*?(\d+)\s*</i) ||
+    pageHtml.match(/href=["'][^"']+\/(\d+)\/["'][^>]*id=["']uep["']/i) ||
+    pageHtml.match(/id=["']uep["'][^>]*href=["'][^"']+\/(\d+)\//i);
+  if (uep) lastEp = parseInt(uep[1], 10) || 0;
+  // href one-piece/1178/
+  if (!lastEp) {
+    var allNums = [];
+    var reN = /\/([a-z0-9\-]+)\/(\d+)\/["']/gi;
+    var nm;
+    while ((nm = reN.exec(pageHtml)) !== null) {
+      var n = parseInt(nm[2], 10);
+      if (n > lastEp) lastEp = n;
+    }
+  }
+  var tm = pageHtml.match(/Episodios:<\/span>\s*(\d+)/i) || pageHtml.match(/Episodios:\s*(\d+)/i);
+  var totalMeta = tm ? (parseInt(tm[1], 10) || 0) : 0;
+  if (totalMeta > lastEp) lastEp = totalMeta;
+  // Cap razonable (One Piece ~1200+, no infinito)
+  if (lastEp > 2500) lastEp = 2500;
+
+  // Páginas explícitas en HTML (#pag1…)
   var pageNums = [];
   var rePag = /(?:href=["']#pag(\d+)["']|data-page=["'](\d+)["']|pagination_episodes\/\d+\/(\d+))/gi;
   var pm;
   while ((pm = rePag.exec(pageHtml)) !== null) {
-    var n = parseInt(pm[1] || pm[2] || pm[3], 10);
-    if (n && pageNums.indexOf(n) === -1) pageNums.push(n);
+    var pn = parseInt(pm[1] || pm[2] || pm[3], 10);
+    if (pn && pageNums.indexOf(pn) === -1) pageNums.push(pn);
   }
-  // Total declarado (Episodios: 128) → estimar páginas si no hay links
-  var totalMeta = 0;
-  var tm = pageHtml.match(/Episodios:<\/span>\s*(\d+)/i) || pageHtml.match(/Episodios:\s*(\d+)/i);
-  if (tm) totalMeta = parseInt(tm[1], 10) || 0;
-
-  if (!pageNums.length) {
-    // fallback: al menos 1; si hay total, ~16 por página
-    var pagesGuess = totalMeta > 0 ? Math.ceil(totalMeta / 12) : 1;
-    if (pagesGuess > 40) pagesGuess = 40;
-    for (var g = 1; g <= pagesGuess; g++) pageNums.push(g);
-  } else {
-    pageNums.sort(function (a, b) { return a - b; });
-  }
+  pageNums.sort(function (a, b) { return a - b; });
 
   function parseEpRows(data) {
     var rows = [];
@@ -11334,70 +11344,116 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
   }
 
   async function fetchPag(pagnum) {
-    // Endpoint real de JK (Cloudstream / Storm-ext)
     var url = JKANIME_BASE + '/ajax/pagination_episodes/' + animeId + '/' + pagnum + '/';
-    var epRes = await fetch(url, {
-      method: 'GET',
-      headers: jkanimeHeaders({
-        'X-Requested-With': 'XMLHttpRequest',
-        'X-CSRF-TOKEN': csrf,
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'Referer': refererUrl || (JKANIME_BASE + '/'),
-        'Cookie': cookieHdr
-      })
-    });
-    if (!epRes.ok) {
-      // fallback viejo POST
-      try {
-        var epRes2 = await fetch(JKANIME_BASE + '/ajax/episodes/' + animeId + '/', {
-          method: 'POST',
-          headers: jkanimeHeaders({
-            'X-Requested-With': 'XMLHttpRequest',
-            'X-CSRF-TOKEN': csrf,
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Accept': 'application/json, text/javascript, */*; q=0.01',
-            'Referer': refererUrl || (JKANIME_BASE + '/'),
-            'Cookie': cookieHdr
-          }),
-          body: 'page=' + pagnum
-        });
-        if (!epRes2.ok) return null;
-        var raw2 = await epRes2.text();
-        try { return JSON.parse(raw2); } catch (e2) { return null; }
-      } catch (e3) { return null; }
-    }
-    var raw = await epRes.text();
     try {
-      return JSON.parse(raw);
-    } catch (eJ) {
+      var epRes = await fetch(url, {
+        method: 'GET',
+        headers: jkanimeHeaders({
+          'X-Requested-With': 'XMLHttpRequest',
+          'X-CSRF-TOKEN': csrf,
+          'Accept': 'application/json, text/javascript, */*; q=0.01',
+          'Referer': refererUrl || (JKANIME_BASE + '/'),
+          'Cookie': cookieHdr
+        })
+      });
+      if (epRes.ok) {
+        var raw = await epRes.text();
+        try { return JSON.parse(raw); } catch (eJ) { return null; }
+      }
+    } catch (e1) {}
+    // fallback POST antiguo
+    try {
+      var epRes2 = await fetch(JKANIME_BASE + '/ajax/episodes/' + animeId + '/', {
+        method: 'POST',
+        headers: jkanimeHeaders({
+          'X-Requested-With': 'XMLHttpRequest',
+          'X-CSRF-TOKEN': csrf,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json, text/javascript, */*; q=0.01',
+          'Referer': refererUrl || (JKANIME_BASE + '/'),
+          'Cookie': cookieHdr
+        }),
+        body: 'page=' + pagnum
+      });
+      if (!epRes2.ok) return null;
+      var raw2 = await epRes2.text();
+      try { return JSON.parse(raw2); } catch (e2) { return null; }
+    } catch (e3) {
       return null;
     }
   }
 
   var all = [];
   var seenNums = {};
-  var CONC = 4;
-  for (var pi = 0; pi < pageNums.length; pi += CONC) {
-    var batch = [];
-    for (var bj = pi; bj < pi + CONC && bj < pageNums.length; bj++) {
-      batch.push(fetchPag(pageNums[bj]));
+  var perPage = 0;
+
+  function addRows(rows) {
+    var added = 0;
+    for (var ri = 0; ri < rows.length; ri++) {
+      var num = rows[ri].episodio;
+      if (!num || seenNums[num]) continue;
+      seenNums[num] = true;
+      all.push(rows[ri]);
+      added++;
     }
-    var results = await Promise.all(batch);
-    for (var r = 0; r < results.length; r++) {
-      if (!results[r]) continue;
-      var rows = parseEpRows(results[r]);
-      for (var ri = 0; ri < rows.length; ri++) {
-        var num = rows[ri].episodio;
-        if (!num || seenNums[num]) continue;
-        seenNums[num] = true;
-        all.push(rows[ri]);
+    return added;
+  }
+
+  // 1) Si hay #pagN, usar esos
+  if (pageNums.length) {
+    var CONC = 5;
+    for (var pi = 0; pi < pageNums.length; pi += CONC) {
+      var batch = [];
+      for (var bj = pi; bj < pi + CONC && bj < pageNums.length; bj++) {
+        batch.push(fetchPag(pageNums[bj]));
+      }
+      var results = await Promise.all(batch);
+      for (var r = 0; r < results.length; r++) {
+        if (!results[r]) continue;
+        var rows = parseEpRows(results[r]);
+        if (rows.length > perPage) perPage = rows.length;
+        addRows(rows);
       }
     }
   }
 
-  // Si aún faltan muchos vs meta (128), rellenar stubs 1..totalMeta sin thumb
-  if (totalMeta > all.length) {
-    for (var fill = 1; fill <= totalMeta; fill++) {
+  // 2) Siempre barrer páginas 1,2,3… hasta vacío o llegar a lastEp
+  //    (One Piece no trae #pag en HTML estático)
+  var maxPages = 120; // 120 * ~12 = 1440 caps
+  if (lastEp > 0 && perPage > 0) {
+    maxPages = Math.min(120, Math.ceil(lastEp / Math.max(perPage, 8)) + 2);
+  } else if (lastEp > 0) {
+    maxPages = Math.min(120, Math.ceil(lastEp / 12) + 2);
+  }
+
+  var emptyStreak = 0;
+  for (var pag = 1; pag <= maxPages; pag++) {
+    if (lastEp > 0 && all.length >= lastEp) break;
+    var data = await fetchPag(pag);
+    if (!data) {
+      emptyStreak++;
+      if (emptyStreak >= 2) break;
+      continue;
+    }
+    var rows2 = parseEpRows(data);
+    if (!rows2.length) {
+      emptyStreak++;
+      if (emptyStreak >= 2) break;
+      continue;
+    }
+    emptyStreak = 0;
+    if (rows2.length > perPage) perPage = rows2.length;
+    var added = addRows(rows2);
+    // Si la página no aportó nada nuevo y ya tenemos varios → fin
+    if (added === 0 && all.length > 0) {
+      emptyStreak++;
+      if (emptyStreak >= 2) break;
+    }
+  }
+
+  // 3) Completar huecos 1..lastEp (en emisión: thumb null en faltantes)
+  if (lastEp > all.length) {
+    for (var fill = 1; fill <= lastEp; fill++) {
       if (seenNums[fill]) continue;
       seenNums[fill] = true;
       all.push({
