@@ -11279,9 +11279,14 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
     var list = [];
     for (var i = 0; i < rows.length; i++) {
       var row = rows[i] || {};
-      var thumb = row.image
-        ? ('https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/' + row.image)
-        : null;
+      var thumb = null;
+      if (row.image) {
+        var img = String(row.image);
+        if (/^https?:\/\//i.test(img)) thumb = img;
+        else thumb = 'https://cdn.jkdesu.com/assets/images/animes/video/image_thumb/' + img.replace(/^\/+/, '');
+        // unificar host jkdesa → jkdesu
+        thumb = thumb.replace(/cdn\.jkdesa\.com/i, 'cdn.jkdesu.com');
+      }
       list.push({
         episodio: row.number,
         episode: row.number,
@@ -11487,7 +11492,15 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
       var bj = (b.tipo === 'jkplayer' || /jkplayer/i.test(b.url || '')) ? 0 : 1;
       return aj - bj;
     });
-    return {
+    // Thumb del episodio si aparece en la página
+    var backEp = null;
+    var thM =
+      epHtml.match(/cdn\.jkdes[ua]\.com\/assets\/images\/animes\/video\/image_thumb\/(jkvideo_[a-f0-9]+\.(?:jpg|jpeg|png|webp))/i) ||
+      epHtml.match(/cdn\.jkdes[ua]\.com\/assets\/images\/animes\/video\/image_thumb\/([^"'\s>]+)/i);
+    if (thM) {
+      backEp = 'https://cdn.jkdesu.com/assets/images/animes/video/image_thumb/' + thM[1];
+    }
+    var outCap = {
       success: true,
       fuente: 'jkanime',
       source_id: '5',
@@ -11502,7 +11515,12 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
       reproductores: reps,
       descargas: parsed.descargas || [],
       url_extract: (opts.requestUrl ? (function () { try { return new URL(opts.requestUrl).origin; } catch (e) { return ''; } })() : '') + '/5/anime/' + slug + '/' + epNum
-    };/*
+    };
+    if (backEp) {
+      outCap.back_img = backEp;
+      outCap.still = backEp;
+    }
+    return outCap;/*
     return {
       success: true,
       fuente: 'jkanime',
@@ -11635,9 +11653,16 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
     });
   } else {
     episodios = episodios.map(function (ep) {
+      var back = ep.back_img || ep.image || null;
+      if (back && String(back).indexOf('http') !== 0) {
+        back = 'https://cdn.jkdesu.com/assets/images/animes/video/image_thumb/' + String(back).replace(/^\/+/, '');
+      }
       return Object.assign({}, ep, {
         link: JKANIME_BASE + '/' + slug + '/' + ep.episodio + '/',
-        url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug + '/' + ep.episodio
+        url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug + '/' + ep.episodio,
+        back_img: back || ep.back_img || null,
+        still: back || ep.still || null,
+        image: back || ep.image || null
       });
     });
   }
@@ -11678,13 +11703,24 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
       temporada: 1,
       total_episodios: episodios.length,
       episodios: episodios.map(function (ep) {
-        return {
+        var back = ep.back_img || ep.image || null;
+        // Asegurar URL completa del thumb JK
+        if (back && String(back).indexOf('http') !== 0) {
+          back = 'https://cdn.jkdesu.com/assets/images/animes/video/image_thumb/' + String(back).replace(/^\/+/, '');
+        }
+        var row = {
           temporada: 1,
           episodio: ep.episodio,
           titulo: ep.titulo || ('Episodio ' + ep.episodio),
           link: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug + '/' + ep.episodio,
           slug: slug + '-' + ep.episodio
         };
+        if (back) {
+          row.back_img = back;
+          row.still = back;
+          row.image = back;
+        }
+        return row;
       })
     }],
     url_extract: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug
