@@ -1510,13 +1510,23 @@ function slimCapituloJkanime(item, opts) {
   var reps = (item && item.reproductores) || [];
   var dls = (item && item.descargas) || [];
 
+  var rawTit = (item && item.titulo) || null;
+  if (rawTit && typeof limpiarTitulo === 'function') rawTit = limpiarTitulo(rawTit);
+  if (rawTit) {
+    rawTit = String(rawTit)
+      .replace(/\s*Online(\s+Gratis)?(\s+HD)?/ig, '')
+      .replace(/\s*Gratis(\s+HD)?/ig, '')
+      .replace(/\s*Sub\s*Español/ig, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
   var out = {
     success: true,
     tipo: 'Capitulo',
     fuente: 'jkanime',
     source_id: '5',
     slug: slug,
-    titulo: (item && item.titulo) || null,
+    titulo: rawTit || null,
     temporada: 1,
     episodio: ep != null ? Number(ep) : null,
     total: reps.length,
@@ -3270,6 +3280,9 @@ function limpiarTitulo(txt) {
   t = t.replace(/^Pel[ií]cula\s+/i, '');
   t = t.replace(/\s*Online(\s+Gratis)?(\s+HD)?.*$/i, '');
   t = t.replace(/\s*Gratis(\s+HD)?\s*$/i, '');
+  t = t.replace(/\s*Sub\s*Español\s*Online.*/i, '');
+  t = t.replace(/\s*Online\s+gratis.*/i, '');
+  t = t.replace(/\s+online\s+gratis.*/i, '');
   t = t.replace(/\s*Online Latino HD.*$/i, '');
   t = t.replace(/\s+HD\s*$/i, '');
   t = t.replace(/\s*:?\s*\d+x\d+(\s*[-–].*)?$/i, '');
@@ -11300,7 +11313,9 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
   }
 
   async function fetchEpPage(pageNum) {
-    var epRes = await fetch(JKANIME_BASE + '/ajax/episodes/' + animeId + '/', {
+    // Laravel: page en querystring; body page=N como respaldo
+    var url = JKANIME_BASE + '/ajax/episodes/' + animeId + '/?page=' + pageNum;
+    var epRes = await fetch(url, {
       method: 'POST',
       headers: jkanimeHeaders({
         'X-Requested-With': 'XMLHttpRequest',
@@ -11310,7 +11325,7 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
         'Referer': refererUrl || (JKANIME_BASE + '/'),
         'Cookie': cookieHdr
       }),
-      body: pageNum > 1 ? ('page=' + pageNum) : ''
+      body: 'page=' + pageNum
     });
     if (!epRes.ok) return null;
     var raw = await epRes.text();
@@ -11321,29 +11336,56 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
     }
   }
 
-  // 1) Primera página (aquí sale last_page)
+  // 1) Primera página
   var data1 = await fetchEpPage(1);
   if (!data1) return all;
   all = all.concat(parseEpRows(data1));
-  var lastPage = parseInt(data1.last_page || 1, 10) || 1;
+  var lastPage = parseInt(data1.last_page || data1.lastPage || 1, 10) || 1;
   if (lastPage > 80) lastPage = 80;
 
-  // 2) Resto en lotes de 5 (mismo resultado, más rápido)
+  // 2) Resto en lotes; si una página no aporta números nuevos → parar (evita 8× el mismo E1)
+  var seenNums = {};
+  all.forEach(function (ep) {
+    var n = parseInt(ep.episodio || ep.episode, 10);
+    if (n) seenNums[n] = true;
+  });
+
   var CONC = 5;
   for (var p = 2; p <= lastPage; p += CONC) {
     var batch = [];
+    var pages = [];
     for (var b = p; b < p + CONC && b <= lastPage; b++) {
       batch.push(fetchEpPage(b));
+      pages.push(b);
     }
     var results = await Promise.all(batch);
+    var anyNew = false;
     for (var r = 0; r < results.length; r++) {
-      if (results[r]) all = all.concat(parseEpRows(results[r]));
+      if (!results[r]) continue;
+      var rows = parseEpRows(results[r]);
+      for (var ri = 0; ri < rows.length; ri++) {
+        var num = parseInt(rows[ri].episodio || rows[ri].episode, 10) || 0;
+        if (!num || seenNums[num]) continue;
+        seenNums[num] = true;
+        all.push(rows[ri]);
+        anyNew = true;
+      }
     }
+    if (!anyNew && p > 2) break;
   }
 
-  all.sort(function (a, b) {
-    return (a.episodio || 0) - (b.episodio || 0);
-  });
+  // Dedupe final por número de episodio (1 entrada por cap)
+  var byNum = {};
+  for (var di = 0; di < all.length; di++) {
+    var en = parseInt(all[di].episodio || all[di].episode, 10) || 0;
+    if (!en) continue;
+    if (!byNum[en]) byNum[en] = all[di];
+  }
+  all = Object.keys(byNum)
+    .map(Number)
+    .sort(function (a, b) { return a - b; })
+    .map(function (n) { return byNum[n]; });
+
   return all;
 }
 
@@ -11389,9 +11431,9 @@ function parseJkanimeServers(html) {
       url: jkUrl,
       link: jkUrl,
       tipo: 'jkplayer',
-      idioma: 'Subtitulado',
-      language: 'SUBTITULADO',
-      lang_code: 'SUB',
+      idioma: 'Español',
+      language: 'ESPAÑOL',
+      lang_code: 'ES',
       no_ads: true,
       preferente: jkIdx === 0
     });
@@ -11411,9 +11453,9 @@ function parseJkanimeServers(html) {
       url: path,
       link: path,
       tipo: 'jkplayer',
-      idioma: 'Subtitulado',
-      language: 'SUBTITULADO',
-      lang_code: 'SUB',
+      idioma: 'Español',
+      language: 'ESPAÑOL',
+      lang_code: 'ES',
       no_ads: true
     });
   }
@@ -11665,6 +11707,13 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
         image: back || ep.image || null
       });
     });
+    // Dedupe por número (evita E1×8 si el ajax de paginación repite)
+    var _by = {};
+    episodios.forEach(function (ep) {
+      var n = parseInt(ep.episodio || ep.episode, 10) || 0;
+      if (n && !_by[n]) _by[n] = ep;
+    });
+    episodios = Object.keys(_by).map(Number).sort(function (a, b) { return a - b; }).map(function (n) { return _by[n]; });
   }
 
   var enEmision = /emisi[oó]n|airing|ongoing/i.test(String(estado || ''));
