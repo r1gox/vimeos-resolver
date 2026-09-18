@@ -11283,9 +11283,9 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
       if (row.image) {
         var img = String(row.image);
         if (/^https?:\/\//i.test(img)) thumb = img;
-        else thumb = 'https://cdn.jkdesu.com/assets/images/animes/video/image_thumb/' + img.replace(/^\/+/, '');
+        else thumb = 'https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/' + img.replace(/^\/+/, '');
         // unificar host jkdesa → jkdesu
-        thumb = thumb.replace(/cdn\.jkdesa\.com/i, 'cdn.jkdesu.com');
+        thumb = thumb.replace(/cdn\.jkdesa\.com/i, 'cdn.jkdesa.com');
       }
       list.push({
         episodio: row.number,
@@ -11498,7 +11498,7 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
       epHtml.match(/cdn\.jkdes[ua]\.com\/assets\/images\/animes\/video\/image_thumb\/(jkvideo_[a-f0-9]+\.(?:jpg|jpeg|png|webp))/i) ||
       epHtml.match(/cdn\.jkdes[ua]\.com\/assets\/images\/animes\/video\/image_thumb\/([^"'\s>]+)/i);
     if (thM) {
-      backEp = 'https://cdn.jkdesu.com/assets/images/animes/video/image_thumb/' + thM[1];
+      backEp = 'https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/' + thM[1];
     }
     var outCap = {
       success: true,
@@ -11655,7 +11655,7 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
     episodios = episodios.map(function (ep) {
       var back = ep.back_img || ep.image || null;
       if (back && String(back).indexOf('http') !== 0) {
-        back = 'https://cdn.jkdesu.com/assets/images/animes/video/image_thumb/' + String(back).replace(/^\/+/, '');
+        back = 'https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/' + String(back).replace(/^\/+/, '');
       }
       return Object.assign({}, ep, {
         link: JKANIME_BASE + '/' + slug + '/' + ep.episodio + '/',
@@ -11706,7 +11706,7 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
         var back = ep.back_img || ep.image || null;
         // Asegurar URL completa del thumb JK
         if (back && String(back).indexOf('http') !== 0) {
-          back = 'https://cdn.jkdesu.com/assets/images/animes/video/image_thumb/' + String(back).replace(/^\/+/, '');
+          back = 'https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/' + String(back).replace(/^\/+/, '');
         }
         var row = {
           temporada: 1,
