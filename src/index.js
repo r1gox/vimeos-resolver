@@ -11285,7 +11285,8 @@ async function buscarJkanime(query) {
     var slug = hrefM[2];
     if (!slug || seen[slug]) continue;
     if (/^(buscar|genero|studio|temporada|idioma|dash|usuario|img|salir|directorio)$/i.test(slugasync function fetchJkanimeEpisodes(animeId, refererUrl) {
-  // GET /ajax/pagination_episodes/{id}/{pag}/ — barrer TODAS las páginas con thumbs
+  // JK real: POST /ajax/episodes/{id}/{pag}  (Laravel paginator: last_page, total, data[].image)
+  // Igual que AV1: cada episodio trae su thumb; no inventar stubs sin imagen.
   var pageRes = await fetch(refererUrl || (JKANIME_BASE + '/'), { headers: jkanimeHeaders() });
   var pageHtml = await pageRes.text();
   var csrf = (pageHtml.match(/name="csrf-token"\s+content="([^"]+)"/i) || [])[1] || '';
@@ -11299,40 +11300,24 @@ async function buscarJkanime(query) {
     }
   } catch (eC) {}
 
-  var lastEp = 0;
-  var uep = pageHtml.match(/id=["']uep["'][^>]*>[\s\S]*?(\d+)\s*</i) ||
-    pageHtml.match(/href=["'][^"']+\/(\d+)\/["'][^>]*id=["']uep["']/i) ||
-    pageHtml.match(/id=["']uep["'][^>]*href=["'][^"']+\/(\d+)\//i);
-  if (uep) lastEp = parseInt(uep[1], 10) || 0;
-  if (!lastEp) {
-    var reN = /\/[a-z0-9\-]+\/(\d+)\/["']/gi;
-    var nm;
-    while ((nm = reN.exec(pageHtml)) !== null) {
-      var n = parseInt(nm[1], 10);
-      if (n > lastEp) lastEp = n;
-    }
+  function thumbFrom(row) {
+    if (!row || !row.image) return null;
+    var img = String(row.image);
+    if (/^https?:\/\//i.test(img)) return img;
+    return 'https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/' + img.replace(/^\/+/, '');
   }
-  var tm = pageHtml.match(/Episodios:<\/span>\s*(\d+)/i) || pageHtml.match(/Episodios:\s*(\d+)/i);
-  var totalMeta = tm ? (parseInt(tm[1], 10) || 0) : 0;
-  if (totalMeta > lastEp) lastEp = totalMeta;
-  if (lastEp > 2500) lastEp = 2500;
 
-  function parseEpRows(data) {
-    var rows = [];
-    if (Array.isArray(data)) rows = data;
-    else if (data && Array.isArray(data.data)) rows = data.data;
-    else if (data && Array.isArray(data.episodes)) rows = data.episodes;
+  function parsePage(data) {
+    if (!data) return { rows: [], lastPage: 1, total: 0 };
+    var rowsIn = [];
+    if (Array.isArray(data)) rowsIn = data;
+    else if (Array.isArray(data.data)) rowsIn = data.data;
     var list = [];
-    for (var i = 0; i < rows.length; i++) {
-      var row = rows[i] || {};
+    for (var i = 0; i < rowsIn.length; i++) {
+      var row = rowsIn[i] || {};
       var num = parseInt(row.number != null ? row.number : (row.episodio || row.episode), 10);
       if (!num) continue;
-      var thumb = null;
-      if (row.image) {
-        var img = String(row.image);
-        if (/^https?:\/\//i.test(img)) thumb = img;
-        else thumb = 'https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/' + img.replace(/^\/+/, '');
-      }
+      var thumb = thumbFrom(row);
       list.push({
         episodio: num,
         episode: num,
@@ -11342,37 +11327,16 @@ async function buscarJkanime(query) {
         back_img: thumb
       });
     }
-    return list;
+    var lastPage = parseInt(data.last_page || data.lastPage || 1, 10) || 1;
+    var total = parseInt(data.total || 0, 10) || 0;
+    return { rows: list, lastPage: lastPage, total: total };
   }
 
   async function fetchPag(pagnum) {
-    var urls = [
-      JKANIME_BASE + '/ajax/pagination_episodes/' + animeId + '/' + pagnum + '/',
-      JKANIME_BASE + '/ajax/pagination_episodes/' + animeId + '/' + pagnum
-    ];
-    for (var ui = 0; ui < urls.length; ui++) {
-      try {
-        var epRes = await fetch(urls[ui], {
-          method: 'GET',
-          headers: jkanimeHeaders({
-            'X-Requested-With': 'XMLHttpRequest',
-            'X-CSRF-TOKEN': csrf,
-            'Accept': 'application/json, text/javascript, */*; q=0.01',
-            'Referer': refererUrl || (JKANIME_BASE + '/'),
-            'Cookie': cookieHdr
-          })
-        });
-        if (epRes.ok) {
-          var raw = await epRes.text();
-          try {
-            var parsed = JSON.parse(raw);
-            if (parsed) return parsed;
-          } catch (eJ) {}
-        }
-      } catch (e1) {}
-    }
+    // Endpoint actual del sitio: POST /ajax/episodes/{id}/{pag}
+    var url = JKANIME_BASE + '/ajax/episodes/' + animeId + '/' + pagnum;
     try {
-      var epRes2 = await fetch(JKANIME_BASE + '/ajax/episodes/' + animeId + '/', {
+      var epRes = await fetch(url, {
         method: 'POST',
         headers: jkanimeHeaders({
           'X-Requested-With': 'XMLHttpRequest',
@@ -11382,7 +11346,26 @@ async function buscarJkanime(query) {
           'Referer': refererUrl || (JKANIME_BASE + '/'),
           'Cookie': cookieHdr
         }),
-        body: 'page=' + pagnum
+        body: ''
+      });
+      if (epRes.ok) {
+        var raw = await epRes.text();
+        try { return JSON.parse(raw); } catch (eJ) { return null; }
+      }
+    } catch (e1) {}
+    // variante con slash final
+    try {
+      var epRes2 = await fetch(url + '/', {
+        method: 'POST',
+        headers: jkanimeHeaders({
+          'X-Requested-With': 'XMLHttpRequest',
+          'X-CSRF-TOKEN': csrf,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json, text/javascript, */*; q=0.01',
+          'Referer': refererUrl || (JKANIME_BASE + '/'),
+          'Cookie': cookieHdr
+        }),
+        body: ''
       });
       if (!epRes2.ok) return null;
       var raw2 = await epRes2.text();
@@ -11394,15 +11377,13 @@ async function buscarJkanime(query) {
 
   var all = [];
   var seenNums = {};
-  var perPage = 12;
 
   function addRows(rows) {
-    var added = 0;
     for (var ri = 0; ri < rows.length; ri++) {
       var num = rows[ri].episodio;
       if (!num) continue;
-      // Preferir fila con back_img si ya existe sin imagen
       if (seenNums[num]) {
+        // upgrade thumb si faltaba
         if (!seenNums[num].back_img && rows[ri].back_img) {
           seenNums[num].back_img = rows[ri].back_img;
           seenNums[num].image = rows[ri].image || rows[ri].back_img;
@@ -11411,72 +11392,27 @@ async function buscarJkanime(query) {
       }
       seenNums[num] = rows[ri];
       all.push(rows[ri]);
-      added++;
     }
-    return added;
   }
 
-  // Página 1: medir perPage
+  // Página 1 → last_page + total (ej. One Piece: 74 páginas, 1178 caps, 16/página)
   var data1 = await fetchPag(1);
-  var rows1 = data1 ? parseEpRows(data1) : [];
-  if (rows1.length) {
-    perPage = rows1.length;
-    addRows(rows1);
-  }
+  var parsed1 = parsePage(data1);
+  addRows(parsed1.rows);
+  var lastPage = parsed1.lastPage || 1;
+  if (lastPage > 150) lastPage = 150;
 
-  // Calcular total de páginas a pedir
-  var totalPages = 1;
-  if (lastEp > 0) {
-    totalPages = Math.ceil(lastEp / Math.max(perPage, 1));
-  } else {
-    totalPages = 80;
-  }
-  if (totalPages > 150) totalPages = 150;
-  if (totalPages < 1) totalPages = 1;
-
-  // Barrer 2..totalPages en lotes (todas las páginas, no parar al primer vacío suelto)
-  var CONC = 6;
-  for (var pag = 2; pag <= totalPages; pag += CONC) {
+  // Resto de páginas en paralelo (como AV1: todas con imagen)
+  var CONC = 8;
+  for (var pag = 2; pag <= lastPage; pag += CONC) {
     var batch = [];
-    var pages = [];
-    for (var b = pag; b < pag + CONC && b <= totalPages; b++) {
+    for (var b = pag; b < pag + CONC && b <= lastPage; b++) {
       batch.push(fetchPag(b));
-      pages.push(b);
     }
     var results = await Promise.all(batch);
-    var anyData = false;
     for (var r = 0; r < results.length; r++) {
       if (!results[r]) continue;
-      var rows = parseEpRows(results[r]);
-      if (rows.length) {
-        anyData = true;
-        if (rows.length > perPage) perPage = rows.length;
-        addRows(rows);
-      }
-    }
-    // Si un lote completo no trajo nada y ya pasamos la mitad, cortar
-    if (!anyData && pag > Math.max(3, Math.floor(totalPages / 4))) {
-      // probar una página más adelante; si también vacía, salir
-      var probe = await fetchPag(pag + CONC);
-      if (!probe || !parseEpRows(probe).length) break;
-      addRows(parseEpRows(probe));
-    }
-  }
-
-  // Completar números faltantes (sin inventar thumb falso)
-  if (lastEp > 0) {
-    for (var fill = 1; fill <= lastEp; fill++) {
-      if (seenNums[fill]) continue;
-      var stub = {
-        episodio: fill,
-        episode: fill,
-        titulo: 'Episodio ' + fill,
-        id: null,
-        image: null,
-        back_img: null
-      };
-      seenNums[fill] = stub;
-      all.push(stub);
+      addRows(parsePage(results[r]).rows);
     }
   }
 
