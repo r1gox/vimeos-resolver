@@ -11284,7 +11284,45 @@ async function buscarJkanime(query) {
 
     var slug = hrefM[2];
     if (!slug || seen[slug]) continue;
-    if (/^(buscar|genero|studio|temporada|idioma|dash|usuario|img|salir|directorio)$/i.test(slugasync function fetchJkanimeEpisodes(animeId, refererUrl) {
+    if (/^(buscar|genero|studio|temporada|idioma|dash|usuario|img|salir|directorio)$/i.test(slug)) continue;
+    seen[slug] = true;
+
+    var titleM = block.match(/class="title"[^>]*>([^<]+)/i) ||
+      block.match(/<h5[^>]*>([^<]+)/i) ||
+      block.match(/title="([^"]+)"/i);
+    var titulo = titleM ? String(titleM[1]).replace(/\s+/g, ' ').trim() : slug.replace(/-/g, ' ');
+
+    var imgM = block.match(/data-setbg="([^"]+)"/i) ||
+      block.match(/src="(https:\/\/cdn\.jk[^"]+)"/i) ||
+      block.match(/src="([^"]*animes\/image[^"]+)"/i);
+    var portada = imgM ? imgM[1] : null;
+    if (portada && portada.indexOf('http') !== 0) {
+      portada = 'https://cdn.jkdesa.com/' + portada.replace(/^\/+/, '');
+    }
+
+    var typeM = block.match(/class="anime__item__text"[^>]*>[\s\S]*?<li[^>]*>([^<]+)/i) ||
+      block.match(/(Serie|Pel[ií]cula|OVA|ONA|Especial)/i);
+    var tipo = typeM ? String(typeM[1]).trim() : 'Anime';
+    if (/pel[ií]cula|movie/i.test(tipo)) tipo = 'Pelicula';
+    else tipo = 'Anime';
+
+    out.push({
+      title: titulo,
+      titulo: titulo,
+      slug: slug,
+      url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug,
+      link: JKANIME_BASE + '/' + slug + '/',
+      portada: portada,
+      source: 'jkanime',
+      type: tipo,
+      source_id: '5'
+    });
+  }
+
+  return out;
+}
+
+async function fetchJkanimeEpisodes(animeId, refererUrl) {
   // JK real: POST /ajax/episodes/{id}/{pag}  (Laravel paginator: last_page, total, data[].image)
   // Igual que AV1: cada episodio trae su thumb; no inventar stubs sin imagen.
   var pageRes = await fetch(refererUrl || (JKANIME_BASE + '/'), { headers: jkanimeHeaders() });
