@@ -11268,16 +11268,14 @@ async function buscarJkanime(query) {
 }
 
 async function fetchJkanimeEpisodes(animeId, refererUrl) {
-  // 1) página para CSRF + cookies (en Workers fetch no guarda cookies solo;
-  //    mandamos CSRF del HTML; si falla, devolvemos [])
+  // JK usa /ajax/pagination_episodes/{id}/{pag}/ (no /ajax/episodes/?page=)
+  // Cada página ~12–16 caps; a.numbers → #pag1, #pag2…
   var pageRes = await fetch(refererUrl || (JKANIME_BASE + '/'), { headers: jkanimeHeaders() });
   var pageHtml = await pageRes.text();
   var csrf = (pageHtml.match(/name="csrf-token"\s+content="([^"]+)"/i) || [])[1] || '';
   var cookie = pageRes.headers.get('set-cookie') || '';
-  // Cloudflare Workers: Set-Cookie puede venir concatenado
   var cookieHdr = '';
   try {
-    // algunos runtimes exponen getSetCookie()
     if (typeof pageRes.headers.getSetCookie === 'function') {
       cookieHdr = pageRes.headers.getSetCookie().map(function (c) { return c.split(';')[0]; }).join('; ');
     } else if (cookie) {
@@ -11285,49 +11283,89 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
     }
   } catch (eC) {}
 
-  var all = [];
+  // Páginas desde el HTML: <a class="numbers" href="#pag2"> o data-anime
+  var pageNums = [];
+  var rePag = /(?:href=["']#pag(\d+)["']|data-page=["'](\d+)["']|pagination_episodes\/\d+\/(\d+))/gi;
+  var pm;
+  while ((pm = rePag.exec(pageHtml)) !== null) {
+    var n = parseInt(pm[1] || pm[2] || pm[3], 10);
+    if (n && pageNums.indexOf(n) === -1) pageNums.push(n);
+  }
+  // Total declarado (Episodios: 128) → estimar páginas si no hay links
+  var totalMeta = 0;
+  var tm = pageHtml.match(/Episodios:<\/span>\s*(\d+)/i) || pageHtml.match(/Episodios:\s*(\d+)/i);
+  if (tm) totalMeta = parseInt(tm[1], 10) || 0;
+
+  if (!pageNums.length) {
+    // fallback: al menos 1; si hay total, ~16 por página
+    var pagesGuess = totalMeta > 0 ? Math.ceil(totalMeta / 12) : 1;
+    if (pagesGuess > 40) pagesGuess = 40;
+    for (var g = 1; g <= pagesGuess; g++) pageNums.push(g);
+  } else {
+    pageNums.sort(function (a, b) { return a - b; });
+  }
 
   function parseEpRows(data) {
-    var rows = (data && data.data) || [];
+    var rows = [];
+    if (Array.isArray(data)) rows = data;
+    else if (data && Array.isArray(data.data)) rows = data.data;
+    else if (data && Array.isArray(data.episodes)) rows = data.episodes;
     var list = [];
     for (var i = 0; i < rows.length; i++) {
       var row = rows[i] || {};
+      var num = parseInt(row.number != null ? row.number : (row.episodio || row.episode), 10);
+      if (!num) continue;
       var thumb = null;
       if (row.image) {
         var img = String(row.image);
         if (/^https?:\/\//i.test(img)) thumb = img;
         else thumb = 'https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/' + img.replace(/^\/+/, '');
-        // unificar host jkdesa → jkdesu
-        thumb = thumb.replace(/cdn\.jkdesa\.com/i, 'cdn.jkdesa.com');
       }
       list.push({
-        episodio: row.number,
-        episode: row.number,
-        titulo: row.title || ('Episodio ' + row.number),
+        episodio: num,
+        episode: num,
+        titulo: row.title || ('Episodio ' + num),
         id: row.id,
         image: thumb,
-        back_img: thumb // mismo nombre de campo que usa animeav1 (fuente 4)
+        back_img: thumb
       });
     }
     return list;
   }
 
-  async function fetchEpPage(pageNum) {
-    // Laravel: page en querystring; body page=N como respaldo
-    var url = JKANIME_BASE + '/ajax/episodes/' + animeId + '/?page=' + pageNum;
+  async function fetchPag(pagnum) {
+    // Endpoint real de JK (Cloudstream / Storm-ext)
+    var url = JKANIME_BASE + '/ajax/pagination_episodes/' + animeId + '/' + pagnum + '/';
     var epRes = await fetch(url, {
-      method: 'POST',
+      method: 'GET',
       headers: jkanimeHeaders({
         'X-Requested-With': 'XMLHttpRequest',
         'X-CSRF-TOKEN': csrf,
-        'Content-Type': 'application/x-www-form-urlencoded',
         'Accept': 'application/json, text/javascript, */*; q=0.01',
         'Referer': refererUrl || (JKANIME_BASE + '/'),
         'Cookie': cookieHdr
-      }),
-      body: 'page=' + pageNum
+      })
     });
-    if (!epRes.ok) return null;
+    if (!epRes.ok) {
+      // fallback viejo POST
+      try {
+        var epRes2 = await fetch(JKANIME_BASE + '/ajax/episodes/' + animeId + '/', {
+          method: 'POST',
+          headers: jkanimeHeaders({
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRF-TOKEN': csrf,
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'Referer': refererUrl || (JKANIME_BASE + '/'),
+            'Cookie': cookieHdr
+          }),
+          body: 'page=' + pagnum
+        });
+        if (!epRes2.ok) return null;
+        var raw2 = await epRes2.text();
+        try { return JSON.parse(raw2); } catch (e2) { return null; }
+      } catch (e3) { return null; }
+    }
     var raw = await epRes.text();
     try {
       return JSON.parse(raw);
@@ -11336,56 +11374,46 @@ async function fetchJkanimeEpisodes(animeId, refererUrl) {
     }
   }
 
-  // 1) Primera página
-  var data1 = await fetchEpPage(1);
-  if (!data1) return all;
-  all = all.concat(parseEpRows(data1));
-  var lastPage = parseInt(data1.last_page || data1.lastPage || 1, 10) || 1;
-  if (lastPage > 80) lastPage = 80;
-
-  // 2) Resto en lotes; si una página no aporta números nuevos → parar (evita 8× el mismo E1)
+  var all = [];
   var seenNums = {};
-  all.forEach(function (ep) {
-    var n = parseInt(ep.episodio || ep.episode, 10);
-    if (n) seenNums[n] = true;
-  });
-
-  var CONC = 5;
-  for (var p = 2; p <= lastPage; p += CONC) {
+  var CONC = 4;
+  for (var pi = 0; pi < pageNums.length; pi += CONC) {
     var batch = [];
-    var pages = [];
-    for (var b = p; b < p + CONC && b <= lastPage; b++) {
-      batch.push(fetchEpPage(b));
-      pages.push(b);
+    for (var bj = pi; bj < pi + CONC && bj < pageNums.length; bj++) {
+      batch.push(fetchPag(pageNums[bj]));
     }
     var results = await Promise.all(batch);
-    var anyNew = false;
     for (var r = 0; r < results.length; r++) {
       if (!results[r]) continue;
       var rows = parseEpRows(results[r]);
       for (var ri = 0; ri < rows.length; ri++) {
-        var num = parseInt(rows[ri].episodio || rows[ri].episode, 10) || 0;
+        var num = rows[ri].episodio;
         if (!num || seenNums[num]) continue;
         seenNums[num] = true;
         all.push(rows[ri]);
-        anyNew = true;
       }
     }
-    if (!anyNew && p > 2) break;
   }
 
-  // Dedupe final por número de episodio (1 entrada por cap)
-  var byNum = {};
-  for (var di = 0; di < all.length; di++) {
-    var en = parseInt(all[di].episodio || all[di].episode, 10) || 0;
-    if (!en) continue;
-    if (!byNum[en]) byNum[en] = all[di];
+  // Si aún faltan muchos vs meta (128), rellenar stubs 1..totalMeta sin thumb
+  if (totalMeta > all.length) {
+    for (var fill = 1; fill <= totalMeta; fill++) {
+      if (seenNums[fill]) continue;
+      seenNums[fill] = true;
+      all.push({
+        episodio: fill,
+        episode: fill,
+        titulo: 'Episodio ' + fill,
+        id: null,
+        image: null,
+        back_img: null
+      });
+    }
   }
-  all = Object.keys(byNum)
-    .map(Number)
-    .sort(function (a, b) { return a - b; })
-    .map(function (n) { return byNum[n]; });
 
+  all.sort(function (a, b) {
+    return (a.episodio || 0) - (b.episodio || 0);
+  });
   return all;
 }
 
