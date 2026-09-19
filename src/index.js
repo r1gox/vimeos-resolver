@@ -871,48 +871,6 @@ async function handleRequest(request, env) {
         }
 
 
-        // Validar que el IMDb no sea otra obra (ej. The Furious en un Jujutsu Kaisen)
-        try {
-          var descFuenteJk = detJk.descripcion_fuente || null;
-          // Si la descripción parece de Cinemeta y el imdb no cuadra con slug/título → descartar meta
-          if (detJk.imdb_id && typeof metaNombreCoincideObra === 'function') {
-            var okMeta = metaNombreCoincideObra(
-              detJk.titulo_cinemeta || detJk.titulo_imdb || detJk.titulo_meta || '',
-              slugJk,
-              tituloPagina || detJk.titulo
-            );
-            // También probar contra nombre en backdrop path no; usar tokens del slug siempre
-            if (!okMeta) {
-              okMeta = metaNombreCoincideObra(
-                String(detJk.titulo || ''),
-                slugJk,
-                tituloPagina
-              );
-            }
-            // Si el slug tiene jujutsu/kaisen y la desc habla de kidnappers → invalidar
-            var slugTok = tokensTituloAscii(slugJk + ' ' + (tituloPagina || ''));
-            var descN = String(detJk.descripcion || '').toLowerCase();
-            var sospechosa =
-              /kidnap|father fights|abducted daughter|the furious/i.test(descN) &&
-              (slugTok.indexOf('jujutsu') !== -1 || slugTok.indexOf('kaisen') !== -1 ||
-               slugTok.indexOf('piece') !== -1 || slugTok.indexOf('anime') !== -1);
-            if (sospechosa || !metaNombreCoincideObra(detJk.titulo, slugJk, tituloPagina)) {
-              // Restaurar datos de la fuente JK; quitar imdb erróneo
-              detJk.imdb_id = null;
-              detJk.portada_imdb = null;
-              detJk.logo = null;
-              detJk.logo_imdb = null;
-              detJk.backdrop = null;
-              if (detJk.portada_fuente_raw) {
-                detJk.portada = detJk.portada_fuente_raw;
-                detJk.poster_source = 'jkanime';
-              }
-              if (descFuenteJk) detJk.descripcion = descFuenteJk;
-              detJk.rating_source = detJk.rating_source === 'imdb' ? 'fuente' : detJk.rating_source;
-            }
-          }
-        } catch (eVal) {}
-
         detJk.titulo = tituloPagina;
         if ((detJk.rating == null || detJk.rating === '') && ratingFuenteJk != null) {
           detJk.rating = ratingFuenteJk;
