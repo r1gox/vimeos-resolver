@@ -58,6 +58,10 @@ function metahubEpisodeStill(imdbId, season, episode) {
   return 'https://episodes.metahub.space/' + tt + '/' + s + '/' + e + '/w780.jpg';
 }
 
+function esPortadaMetahub(u) {
+  return /images\.metahub\.space|metahub\.space\/poster/i.test(String(u || ''));
+}
+
 function metahubPoster(imdbId, size) {
   size = size || 'medium';
   return METAHUB_BASE + '/poster/' + size + '/' + imdbId + '/img';
@@ -184,23 +188,29 @@ async function enriquecerSoloCinemeta(detalle, typeHint) {
   }
   if (meta.estado && !detalle.estado) detalle.estado = meta.estado;
 
+  // Conservar portada de la fuente (animeav1, jk, pelisplus, etc.)
+  var portadaFuente =
+    detalle.portada_fuente_raw ||
+    (detalle.portada && !esPortadaMetahub(detalle.portada) ? detalle.portada : null) ||
+    null;
+  if (portadaFuente) detalle.portada_fuente_raw = portadaFuente;
+
   detalle.imdb_id = meta.imdb_id;
-  detalle.portada_imdb = meta.portada_imdb;
-  detalle.logo_imdb = meta.logo_imdb;
-  detalle.backdrop = meta.backdrop || detalle.backdrop;
-  detalle.portada = meta.portada || detalle.portada;
-  detalle.poster_source = 'metahub';
+  detalle.portada_imdb = meta.portada_imdb || metahubPoster(imdbId, 'medium');
+  detalle.logo_imdb = meta.logo_imdb || metahubLogo(imdbId, 'medium');
+  detalle.logo = detalle.logo_imdb;
+  detalle.backdrop = meta.backdrop || detalle.backdrop || metahubBackground(imdbId, 'medium');
+  // portada = fuente; portada_imdb = metahub (no duplicar)
+  detalle.portada = portadaFuente || detalle.portada || detalle.portada_imdb;
+  detalle.poster_source = portadaFuente ? String(detalle.fuente || 'fuente') : 'metahub';
   detalle.imdb = meta.imdb;
-    // Logo Metahub siempre que haya tt…
   if (imdbId) {
-    detalle.logo_imdb = metahubLogo(imdbId, 'medium');
-    detalle.logo = detalle.logo_imdb;
-    if (!detalle.portada_imdb) {
-      detalle.portada_imdb = metahubPoster(imdbId, 'medium');
+    if (!detalle.portada_imdb) detalle.portada_imdb = metahubPoster(imdbId, 'medium');
+    if (!detalle.logo_imdb) {
+      detalle.logo_imdb = metahubLogo(imdbId, 'medium');
+      detalle.logo = detalle.logo_imdb;
     }
-    if (!detalle.backdrop) {
-      detalle.backdrop = metahubBackground(imdbId, 'medium');
-    }
+    if (!detalle.backdrop) detalle.backdrop = metahubBackground(imdbId, 'medium');
   }
 
   var desc = detalle.descripcion || '';
@@ -828,9 +838,14 @@ async function handleRequest(request, env) {
           var ttJk = String(detJk.imdb_id);
           detJk.logo_imdb = (typeof metahubLogo === 'function') ? metahubLogo(ttJk, 'medium') : detJk.logo_imdb;
           detJk.logo = detJk.logo_imdb || detJk.logo;
+          detJk.portada_fuente_raw = detJk.portada_fuente_raw || (detJk.portada && !esPortadaMetahub(detJk.portada) ? detJk.portada : null);
           detJk.portada_imdb = detJk.portada_imdb || ((typeof metahubPoster === 'function') ? metahubPoster(ttJk, 'medium') : null);
           detJk.backdrop = detJk.backdrop || ((typeof metahubBackground === 'function') ? metahubBackground(ttJk, 'medium') : null);
-          if (detJk.portada_imdb) {
+          // portada = fuente JK; metahub solo en portada_imdb
+          if (detJk.portada_fuente_raw) {
+            detJk.portada = detJk.portada_fuente_raw;
+            detJk.poster_source = 'jkanime';
+          } else if (!detJk.portada && detJk.portada_imdb) {
             detJk.portada = detJk.portada_imdb;
             detJk.poster_source = 'metahub';
           }
@@ -4658,10 +4673,18 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
       }
       if (meta.imdb_id && !item.imdb_id) item.imdb_id = meta.imdb_id;
       if (meta.votos && !item.votos) item.votos = meta.votos;
-      if (meta.portada_imdb && (!item.portada || esPortadaSospechosa(item.portada))) {
-        item.portada = meta.portada_imdb;
+      if (meta.portada_imdb) {
         item.portada_imdb = meta.portada_imdb;
-        item.poster_source = 'imdb';
+        if (!item.portada_fuente_raw && item.portada && !esPortadaMetahub(item.portada)) {
+          item.portada_fuente_raw = item.portada;
+        }
+        if ((!item.portada || esPortadaSospechosa(item.portada) || esPortadaMetahub(item.portada)) && !item.portada_fuente_raw) {
+          item.portada = meta.portada_imdb;
+          item.poster_source = 'imdb';
+        } else if (item.portada_fuente_raw) {
+          item.portada = item.portada_fuente_raw;
+          item.poster_source = String(item.fuente || 'fuente');
+        }
       }
       return item;
     }
@@ -4677,13 +4700,25 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
       var tB = normalizarTituloKey(meta.titulo_tmdb || meta.titulo_original || '');
       if (tA && tB && (tA === tB || tA.indexOf(tB) === 0 || tB.indexOf(tA) === 0)) {
         if (meta.portada_imdb && esPortadaUrlValida(meta.portada_imdb)) {
-          item.portada = meta.portada_imdb;
           item.portada_imdb = meta.portada_imdb;
-          item.poster_source = 'imdb';
+          if (!item.portada_fuente_raw && item.portada && !esPortadaMetahub(item.portada)) {
+            item.portada_fuente_raw = item.portada;
+          }
+          if (!item.portada || esPortadaMetahub(item.portada) || esPortadaSospechosa(item.portada)) {
+            // sin portada de fuente → metahub
+            if (!item.portada_fuente_raw) {
+              item.portada = meta.portada_imdb;
+              item.poster_source = 'imdb';
+            }
+          }
         } else if (meta.portada_tmdb && esPortadaUrlValida(meta.portada_tmdb)) {
-          item.portada = meta.portada_tmdb;
           item.portada_tmdb = meta.portada_tmdb;
-          item.poster_source = 'tmdb';
+          if (!item.portada || esPortadaMetahub(item.portada)) {
+            if (!item.portada_fuente_raw) {
+              item.portada = meta.portada_tmdb;
+              item.poster_source = 'tmdb';
+            }
+          }
         }
       }
     }
@@ -6795,7 +6830,21 @@ function formatearDetalleRespuesta(item, origin) {
     urlExtract = origin + '/' + sid + '/' + tipoPath + '/' + slug;
   }
 
-  var portada = item.portada || item.portada_imdb || item.portada_tmdb || null;
+  // Preferir portada de la fuente; metahub solo en portada_imdb
+  var portadaFuente =
+    item.portada_fuente_raw ||
+    (item.portada && !esPortadaMetahub(item.portada) ? item.portada : null) ||
+    null;
+  var portada =
+    portadaFuente ||
+    (item.portada && !esPortadaMetahub(item.portada) ? item.portada : null) ||
+    item.portada_imdb ||
+    item.portada_tmdb ||
+    item.portada ||
+    null;
+  if (portadaFuente && esPortadaMetahub(portada) && portadaFuente) {
+    portada = portadaFuente;
+  }
   var titulo = limpiarTitulo(item.titulo || '') || null;
   var tituloOrig = item.titulo_original || null;
   var tituloOrig = item.titulo_original || null;
@@ -6835,7 +6884,7 @@ function formatearDetalleRespuesta(item, origin) {
     titulo: titulo,
     titulo_original: tituloOrig,
     portada: portada,
-    portada_fuente_raw: item.portada_fuente_raw || null,
+    portada_fuente_raw: portadaFuente || item.portada_fuente_raw || null,
     portada_imdb: item.portada_imdb || null,
     portada_tmdb: item.portada_tmdb || null,
     logo: item.logo || item.logo_imdb || null,
@@ -6857,7 +6906,7 @@ function formatearDetalleRespuesta(item, origin) {
     tmdb_id: tmdbId,
     imdb: imdbObj,
     tmdb: tmdbObj,
-    poster_source: item.poster_source || null,
+    poster_source: (portadaFuente ? String(item.fuente || item.poster_source || 'fuente') : (item.poster_source || null)),
     url_extract: urlExtract
   };
 
@@ -9917,6 +9966,7 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     titulo: titulo,
     titulo_original: (typeof tituloOriginalAv1 !== 'undefined' && tituloOriginalAv1) ? tituloOriginalAv1 : null,
     portada: portada,
+    portada_fuente_raw: portada,
     descripcion: sinopsis,
     calificacion: score,
     year: yearAv1,
