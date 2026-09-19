@@ -795,6 +795,7 @@ async function handleRequest(request, env) {
           null;
         detJk.slug = detJk.slug || slugJk;
         detJk.portada_fuente_raw = detJk.portada_fuente_raw || detJk.portada || null;
+        if (detJk.descripcion && !detJk.descripcion_fuente) detJk.descripcion_fuente = detJk.descripcion;
         detJk.tipo = detJk.tipo || 'Anime';
         if (ratingFuenteJk != null) {
           detJk.calificacion = detJk.calificacion != null ? detJk.calificacion : ratingFuenteJk;
@@ -823,10 +824,7 @@ async function handleRequest(request, env) {
                   break;
                 }
               }
-              if (!detJk.imdb_id && metasF[0]) {
-                var id0 = metasF[0].imdb_id || metasF[0].id;
-                if (id0 && /^tt\d+$/i.test(String(id0))) detJk.imdb_id = String(id0);
-              }
+              // No tomar metas[0] a ciegas (pegaba películas ajenas)
             }
             if (detJk.imdb_id) {
               detJk = await enriquecerSoloCinemeta(detJk, 'anime');
@@ -871,6 +869,49 @@ async function handleRequest(request, env) {
         if (detJk) {
           try { normalizarCamposResultado(detJk); } catch (eN) {}
         }
+
+
+        // Validar que el IMDb no sea otra obra (ej. The Furious en un Jujutsu Kaisen)
+        try {
+          var descFuenteJk = detJk.descripcion_fuente || null;
+          // Si la descripción parece de Cinemeta y el imdb no cuadra con slug/título → descartar meta
+          if (detJk.imdb_id && typeof metaNombreCoincideObra === 'function') {
+            var okMeta = metaNombreCoincideObra(
+              detJk.titulo_cinemeta || detJk.titulo_imdb || detJk.titulo_meta || '',
+              slugJk,
+              tituloPagina || detJk.titulo
+            );
+            // También probar contra nombre en backdrop path no; usar tokens del slug siempre
+            if (!okMeta) {
+              okMeta = metaNombreCoincideObra(
+                String(detJk.titulo || ''),
+                slugJk,
+                tituloPagina
+              );
+            }
+            // Si el slug tiene jujutsu/kaisen y la desc habla de kidnappers → invalidar
+            var slugTok = tokensTituloAscii(slugJk + ' ' + (tituloPagina || ''));
+            var descN = String(detJk.descripcion || '').toLowerCase();
+            var sospechosa =
+              /kidnap|father fights|abducted daughter|the furious/i.test(descN) &&
+              (slugTok.indexOf('jujutsu') !== -1 || slugTok.indexOf('kaisen') !== -1 ||
+               slugTok.indexOf('piece') !== -1 || slugTok.indexOf('anime') !== -1);
+            if (sospechosa || !metaNombreCoincideObra(detJk.titulo, slugJk, tituloPagina)) {
+              // Restaurar datos de la fuente JK; quitar imdb erróneo
+              detJk.imdb_id = null;
+              detJk.portada_imdb = null;
+              detJk.logo = null;
+              detJk.logo_imdb = null;
+              detJk.backdrop = null;
+              if (detJk.portada_fuente_raw) {
+                detJk.portada = detJk.portada_fuente_raw;
+                detJk.poster_source = 'jkanime';
+              }
+              if (descFuenteJk) detJk.descripcion = descFuenteJk;
+              detJk.rating_source = detJk.rating_source === 'imdb' ? 'fuente' : detJk.rating_source;
+            }
+          }
+        } catch (eVal) {}
 
         detJk.titulo = tituloPagina;
         if ((detJk.rating == null || detJk.rating === '') && ratingFuenteJk != null) {
@@ -7089,6 +7130,34 @@ async function enriquecerListaConTmdb(lista, query, opts) {
   return lista;
 }
 
+
+/** Tokens ASCII de un título/slug para validar match IMDb */
+function tokensTituloAscii(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(function (t) { return t.length > 2; });
+}
+
+/** true si el nombre meta comparte tokens con slug o título local (evita The Furious en JJK) */
+function metaNombreCoincideObra(metaName, slug, tituloLocal) {
+  var mt = tokensTituloAscii(metaName);
+  if (!mt.length) return false;
+  var ref = tokensTituloAscii(slug).concat(tokensTituloAscii(tituloLocal));
+  if (!ref.length) return false;
+  var hit = 0;
+  for (var i = 0; i < mt.length; i++) {
+    if (ref.indexOf(mt[i]) !== -1) hit++;
+  }
+  // Al menos 1 token fuerte, o 2 si el meta tiene varios
+  if (mt.length === 1) return hit >= 1;
+  return hit >= Math.min(2, mt.length);
+}
+
 async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
   if (!detalle || detalle.success === false) return detalle;
   try {
@@ -7115,6 +7184,9 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
       function pushTit(t) {
         t = String(t || '').replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').trim();
         if (!t || t.length < 2) return;
+        // Sin tokens ASCII no sirve para Cinemeta/OMDb (japonés puro → matches basura)
+        var ascii = normTitleKey(t);
+        if (!ascii || ascii.length < 3) return;
         if (candidatosTitulo.indexOf(t) === -1) candidatosTitulo.push(t);
       }
       pushTit(alts.ingles);
@@ -7160,18 +7232,31 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
         if (!meta) return -1;
         var id = meta.imdb_id || meta.id;
         if (!id || !/^tt\d+$/i.test(String(id))) return -1;
+        // qNorm vacío (título solo japonés) → NO puntuar: antes nameN.indexOf('')===0
+        // hacía que cualquier película (ej. The Furious) ganara el match.
+        if (!qNorm || String(qNorm).trim().length < 3) return -1;
         var nameN = normTitleKey(meta.name || meta.title || '');
-        if (!nameN) return 0;
+        if (!nameN || nameN.length < 2) return -1;
         var sc = 0;
         if (nameN === qNorm) sc += 100;
         else if (nameN.indexOf(qNorm) === 0 || qNorm.indexOf(nameN) === 0) sc += 70;
         else if (nameN.indexOf(qNorm) !== -1 || qNorm.indexOf(nameN) !== -1) sc += 40;
         else return -1; // no parece la misma obra
+        // Tokens en común (evita matches basura)
+        var tq = qNorm.split(' ').filter(function (t) { return t.length > 2; });
+        var tn = nameN.split(' ').filter(function (t) { return t.length > 2; });
+        if (tq.length && tn.length) {
+          var hit = 0;
+          for (var ti = 0; ti < tq.length; ti++) {
+            if (tn.indexOf(tq[ti]) !== -1) hit++;
+          }
+          if (hit === 0 && nameN !== qNorm) return -1;
+          sc += Math.min(30, hit * 10);
+        }
         if (yearPref) {
           var ri = String(meta.releaseInfo || meta.year || '');
           if (ri.indexOf(String(yearPref)) !== -1) sc += 25;
         }
-        // preferir serie larga anime (1999) vs live-action 2023 si el query es genérico
         if (meta.type === 'series') sc += 5;
         return sc;
       }
