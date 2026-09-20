@@ -7127,7 +7127,8 @@ function formatearDetalleRespuesta(item, origin) {
     out = ordered;
   }
 
-  if (esSerieAnime) {
+  // OVA/ONA/Especial: conservar temporadas aunque haya reproductores en la raíz
+  if (esSerieAnime || /^(ova|ona|especial)$/i.test(String(tipo || ''))) {
     var totalEps = item.total_episodios != null ? parseInt(item.total_episodios, 10) : null;
     var totalTemps = item.total_temporadas != null ? parseInt(item.total_temporadas, 10) : null;
     if (Array.isArray(item.temporadas) && item.temporadas.length) {
@@ -10338,7 +10339,10 @@ async function scrapearAnimeAv1(pageUrl, opts) {
         total: repsMovie.length,
         embeds: repsMovie.map(function (r) { return r.url; }),
         reproductores: repsMovie,
-        descargas: descargasMovie
+        descargas: descargasMovie,
+        total_temporadas: 0,
+        total_episodios: 1,
+        temporadas: []
       };
     } catch (eMovie) {
       // si falla, seguir con listado stubs
@@ -12787,14 +12791,11 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
       }
       return rangos;
     })(),
-    temporadas: (esPeliculaJk ? [] : [{
+    // 1 ep + concluido (esUnicoCapJk) o Película → SIN temporadas, solo reproductores
+    temporadas: (esUnicoCapJk || esPeliculaJk) ? [] : [{
       temporada: 1,
       episodios: (function () {
         var listaEps = (episodios && episodios.length) ? episodios.slice() : [];
-        // OVA/ONA/Especial sin lista AJAX → al menos ep 1
-        if (!listaEps.length && esUnicoCapJk && !esPeliculaJk) {
-          listaEps = [{ episodio: 1, titulo: (titulo || 'Episodio 1') }];
-        }
         return listaEps.map(function (ep) {
           var back = ep.back_img || ep.image || null;
           if (back && String(back).indexOf('http') !== 0) {
