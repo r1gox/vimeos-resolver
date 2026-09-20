@@ -6871,7 +6871,7 @@ function formatearDetalleRespuesta(item, origin) {
   // En ficha de serie no tiene sentido lista vacía de players (van por capítulo)
   var incluirPlayers = !esSerieAnime || reps.length > 0 || embeds.length > 0;
 
-  // Orden lógico de campos
+  // Orden lógico: portada → portada_imdb → logo → backdrop → portada_fuente_raw (como JK)
   var out = {
     success: item.success !== false,
     fuente: item.fuente || null,
@@ -6882,6 +6882,9 @@ function formatearDetalleRespuesta(item, origin) {
     titulo: titulo,
     titulo_original: tituloOrig,
     portada: portada,
+    portada_imdb: item.portada_imdb || null,
+    logo: item.logo || item.logo_imdb || null,
+    backdrop: item.backdrop || null,
     portada_fuente_raw: portadaFuente || item.portada_fuente_raw || null,
     descripcion: desc,
     year: item.year || null,
@@ -6903,12 +6906,8 @@ function formatearDetalleRespuesta(item, origin) {
     url_extract: urlExtract
   };
 
-  if (item.portada_imdb) out.portada_imdb = item.portada_imdb;
   if (item.portada_tmdb) out.portada_tmdb = item.portada_tmdb;
-  if (item.logo || item.logo_imdb) {
-    out.logo = item.logo || item.logo_imdb;
-  }
-  if (item.backdrop) out.backdrop = item.backdrop;
+  if (item.logo_imdb && !out.logo) out.logo = item.logo_imdb;
 
   // Campos extra anime/JK (no tocar el resto de fuentes si vienen vacíos)
   if (item.studios) out.studios = item.studios;
@@ -9887,12 +9886,31 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   var totalEpsEarly = parseInt(epsCount, 10) || 0;
   if ((tipo === 'Pelicula' || formato === 'Pelicula' || formato === 'Movie' || totalEpsEarly === 1) && !epNum) {
     try {
-      var epMovie = 1;
-      var erMovie = await fetchAnimeAv1Data('/media/' + encodeURIComponent(slug) + '/' + epMovie + '/__data.json');
-      var edMovie = decodeSvelteKitData(erMovie);
-      var mpMovie = mapAnimeAv1Embeds(edMovie && edMovie.embeds);
-      var repsMovie = (mpMovie && mpMovie.reproductores) ? mpMovie.reproductores : [];
+      var epNumsTry = [];
+      try {
+        var epsListM = (media && media.episodes) || [];
+        for (var ex = 0; ex < epsListM.length; ex++) {
+          var nEp = parseInt(epsListM[ex] && epsListM[ex].number, 10);
+          if (!isNaN(nEp) && nEp >= 0 && epNumsTry.indexOf(nEp) === -1) epNumsTry.push(nEp);
+        }
+      } catch (_) {}
+      if (!epNumsTry.length) epNumsTry = [1];
+      else if (epNumsTry.indexOf(1) === -1) epNumsTry.push(1);
+
+      var repsMovie = [];
       var descargasMovie = [];
+      var edMovie = null;
+      for (var eti = 0; eti < epNumsTry.length && !repsMovie.length; eti++) {
+        try {
+          var erMovie = await fetchAnimeAv1Data('/media/' + encodeURIComponent(slug) + '/' + epNumsTry[eti] + '/__data.json');
+          edMovie = decodeSvelteKitData(erMovie);
+          var mpMovie = mapAnimeAv1Embeds(edMovie && edMovie.embeds);
+          repsMovie = (mpMovie && mpMovie.reproductores) ? mpMovie.reproductores : [];
+        } catch (eTryEp) {
+          repsMovie = [];
+          edMovie = null;
+        }
+      }
       if (edMovie && edMovie.downloads && typeof edMovie.downloads === 'object') {
         var dlangsM = Object.keys(edMovie.downloads);
         for (var dmi = 0; dmi < dlangsM.length; dmi++) {
