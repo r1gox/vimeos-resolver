@@ -819,6 +819,36 @@ async function handleRequest(request, env) {
         return json(await buscarJkanime(decodeURIComponent(qJkRoot)));
       }
 
+      // Home JK: Programación → solo tab Animes (recientes) + Animes recientes (agregados)
+      // /5/home | /5/recientes | /5/agregados | /5/animes/recientes | /5/animes/agregados
+      if (
+        parts[1] === 'home' ||
+        parts[1] === 'recientes' ||
+        parts[1] === 'agregados' ||
+        (parts[1] === 'animes' && (parts[2] === 'recientes' || parts[2] === 'agregados' || parts[2] === 'home'))
+      ) {
+        var homeJk = await scrapearJkanimeHome();
+        if (parts[1] === 'recientes' || (parts[1] === 'animes' && parts[2] === 'recientes')) {
+          return json({
+            success: true,
+            fuente: 'jkanime',
+            source_id: '5',
+            recientes: homeJk.recientes || [],
+            total_recientes: (homeJk.recientes || []).length
+          });
+        }
+        if (parts[1] === 'agregados' || (parts[1] === 'animes' && parts[2] === 'agregados')) {
+          return json({
+            success: true,
+            fuente: 'jkanime',
+            source_id: '5',
+            agregados: homeJk.agregados || [],
+            total_agregados: (homeJk.agregados || []).length
+          });
+        }
+        return json(homeJk);
+      }
+
       if ((parts[1] === 'anime' || parts[1] === 'pelicula') && parts[2]) {
         var slugJk = parts[2];
         var epJk = null;
@@ -1006,8 +1036,11 @@ async function handleRequest(request, env) {
 
       return json({
         success: false,
-        error: 'Uso: /5/buscar?q=... | /5/anime/{slug} | /5/anime/{slug}/{episodio}',
+        error: 'Uso: /5/home | /5/recientes | /5/agregados | /5/buscar?q=... | /5/anime/{slug} | /5/anime/{slug}/{episodio}',
         ejemplos: [
+          origin + '/5/home',
+          origin + '/5/recientes',
+          origin + '/5/agregados',
           origin + '/5/buscar?q=one+piece',
           origin + '/5/anime/one-piece',
           origin + '/5/anime/one-piece/1'
@@ -12461,6 +12494,139 @@ async function resolverImdbJkanime(det, slug) {
     if (!y || !releaseInfo) return false;
     return String(releaseInfo).indexOf(String(y).slice(0, 4)) !== -1;
   }
+}
+
+
+/**
+ * Home JKanime — solo pestaña Animes de Programación + "Animes recientes"
+ * recientes = episodios nuevos (Programación > Animes) — back_img still
+ * agregados = títulos recién listados en "Animes recientes" — portada
+ */
+async function scrapearJkanimeHome() {
+  var res = await fetch(JKANIME_BASE + '/', { headers: jkanimeHeaders() });
+  var html = await res.text();
+
+  // —— Programación → tab #animes (NO donghuas / ovas) ——
+  var animesBlock = '';
+  var mTab = html.match(/id="animes"[^>]*>([\s\S]*?)(?:id="donghuas"|id="ovas")/i);
+  if (mTab) animesBlock = mTab[1];
+  else {
+    // fallback: primer bloque trending
+    var mTr = html.match(/trending__anime[\s\S]*?id="animes"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<div class="tab-pane/i);
+    if (mTr) animesBlock = mTr[1];
+  }
+
+  var recientes = [];
+  var seenEp = Object.create(null);
+  var cardRe = /href="(https:\/\/jkanime\.net\/([a-z0-9\-]+)\/(\d+)\/?)"[\s\S]*?src="([^"]+)"[\s\S]*?data-animepic="([^"]*)"[\s\S]*?alt="([^"]*)"[\s\S]*?badge-primary">([^<]*)/gi;
+  var cm;
+  while ((cm = cardRe.exec(animesBlock)) !== null) {
+    var slug = cm[2];
+    var epNum = parseInt(cm[3], 10) || 0;
+    var key = slug + '/' + epNum;
+    if (seenEp[key]) continue;
+    seenEp[key] = true;
+    var back = cm[4] || null;
+    var portada = cm[5] || null;
+    var alt = String(cm[6] || '').replace(/\s*-\s*\d+\s*$/, '').trim();
+    var epBadge = String(cm[7] || '').replace(/\s+/g, ' ').trim();
+    var tituloAnime = alt || slug;
+    recientes.push({
+      title: tituloAnime + (epNum ? (' — Episodio ' + epNum) : ''),
+      titulo: tituloAnime + (epNum ? (' — Episodio ' + epNum) : ''),
+      titulo_anime: tituloAnime,
+      slug: slug,
+      episodio: epNum || null,
+      number: epNum || null,
+      url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug + (epNum ? ('/' + epNum) : ''),
+      link: 'https://jkanime.net/' + slug + (epNum ? ('/' + epNum) : '') + '/',
+      portada: portada,
+      back_img: back,
+      still: back,
+      source: 'jkanime',
+      type: 'Anime',
+      tipo: 'Anime',
+      source_id: '5',
+      ep_badge: epBadge || (epNum ? ('Ep ' + epNum) : null)
+    });
+  }
+
+  // —— Animes recientes (títulos agregados al catálogo) ——
+  var agregados = [];
+  var seenSlug = Object.create(null);
+  var idxRec = html.search(/Animes\s+recientes/i);
+  var chunkRec = idxRec >= 0 ? html.slice(idxRec, idxRec + 40000) : '';
+  // cortar antes de siguiente bloque grande si existe
+  var cut = chunkRec.search(/<\/section>|<footer|Programaci[oó]n|trending__/i);
+  if (cut > 500) chunkRec = chunkRec.slice(0, cut);
+
+  var itemRe = /custom_thumb_home"><a href="https:\/\/jkanime\.net\/([a-z0-9\-]+)\/?"><img src="([^"]+)"[^>]*alt="([^"]*)"[\s\S]*?badge[^>]*>([^<]*)<\/p>\s*<p class="badge[^>]*>([^<]*)<\/p>/gi;
+  var im;
+  while ((im = itemRe.exec(chunkRec)) !== null) {
+    var slugA = im[1];
+    if (seenSlug[slugA]) continue;
+    seenSlug[slugA] = true;
+    var portA = im[2];
+    var tituloA = String(im[3] || slugA).trim();
+    var estadoA = String(im[4] || '').replace(/\s+/g, ' ').trim();
+    var formatoA = String(im[5] || '').replace(/\s+/g, ' ').trim();
+    var tipoA = 'Anime';
+    var fLow = formatoA.toLowerCase();
+    if (/ova/i.test(fLow)) tipoA = 'OVA';
+    else if (/ona/i.test(fLow)) tipoA = 'ONA';
+    else if (/especial|special/i.test(fLow)) tipoA = 'Especial';
+    else if (/pel[ií]cula|movie|film/i.test(fLow)) tipoA = 'Pelicula';
+    var enEm = /emisi|airing|ongoing/i.test(estadoA);
+    var fin = /conclu|finaliz|ended|finished/i.test(estadoA);
+    agregados.push({
+      title: tituloA,
+      titulo: tituloA,
+      slug: slugA,
+      url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slugA,
+      link: 'https://jkanime.net/' + slugA + '/',
+      portada: portA,
+      estado: estadoA || null,
+      en_emision: enEm,
+      finalizado: fin,
+      formato: formatoA || null,
+      type: tipoA,
+      tipo: tipoA,
+      source: 'jkanime',
+      source_id: '5'
+    });
+  }
+
+  // Fallback agregados si regex falló
+  if (!agregados.length && chunkRec) {
+    var simpleRe = /custom_thumb_home"><a href="https:\/\/jkanime\.net\/([a-z0-9\-]+)\/?"><img src="([^"]+)"[^>]*alt="([^"]*)"/gi;
+    var sm;
+    while ((sm = simpleRe.exec(chunkRec)) !== null) {
+      if (seenSlug[sm[1]]) continue;
+      seenSlug[sm[1]] = true;
+      agregados.push({
+        title: String(sm[3] || sm[1]).trim(),
+        titulo: String(sm[3] || sm[1]).trim(),
+        slug: sm[1],
+        url: 'https://moviezone.tvjz.workers.dev/5/anime/' + sm[1],
+        link: 'https://jkanime.net/' + sm[1] + '/',
+        portada: sm[2],
+        type: 'Anime',
+        tipo: 'Anime',
+        source: 'jkanime',
+        source_id: '5'
+      });
+    }
+  }
+
+  return {
+    success: true,
+    fuente: 'jkanime',
+    source_id: '5',
+    recientes: recientes,
+    agregados: agregados,
+    total_recientes: recientes.length,
+    total_agregados: agregados.length
+  };
 }
 
 async function scrapearJkanime(pageUrlOrSlug, opts) {
