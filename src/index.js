@@ -848,9 +848,9 @@ async function handleRequest(request, env) {
             detJk.poster_source = 'jkanime';
           }
           detJk.portada_imdb = (typeof metahubPoster === 'function') ? metahubPoster(ttJk, 'medium') : detJk.portada_imdb;
-          detJk.logo_imdb = (typeof metahubLogo === 'function') ? metahubLogo(ttJk, 'medium') : detJk.logo_imdb;
-          detJk.logo = detJk.logo_imdb || detJk.logo;
+          detJk.logo = (typeof metahubLogo === 'function') ? metahubLogo(ttJk, 'medium') : (detJk.logo || detJk.logo_imdb);
           detJk.backdrop = detJk.backdrop || ((typeof metahubBackground === 'function') ? metahubBackground(ttJk, 'medium') : null);
+          delete detJk.logo_imdb;
           // back_img faltantes en episodios (One Piece 17+) → still Metahub
           try {
             if (detJk.temporadas && detJk.temporadas.length && typeof metahubEpisodeStill === 'function') {
@@ -891,11 +891,13 @@ async function handleRequest(request, env) {
         }
         detJk.fuente = 'jkanime';
         detJk.source_id = '5';
-        // portada JK; conservar portada_imdb, logo, backdrop
+        // portada JK; portada_imdb + logo + backdrop Metahub (sin logo_imdb)
         if (detJk.portada_fuente_raw) {
           detJk.portada = detJk.portada_fuente_raw;
           detJk.poster_source = 'jkanime';
         }
+        if (detJk.logo_imdb && !detJk.logo) detJk.logo = detJk.logo_imdb;
+        delete detJk.logo_imdb;
         return json(detJk);
       }
 
@@ -6915,7 +6917,6 @@ function formatearDetalleRespuesta(item, origin) {
   if (item.portada_tmdb) out.portada_tmdb = item.portada_tmdb;
   if (item.logo || item.logo_imdb) {
     out.logo = item.logo || item.logo_imdb;
-    out.logo_imdb = item.logo_imdb || item.logo;
   }
   if (item.backdrop) out.backdrop = item.backdrop;
 
@@ -6934,18 +6935,36 @@ function formatearDetalleRespuesta(item, origin) {
   if (item.fecha_estreno_texto) out.fecha_estreno_texto = item.fecha_estreno_texto;
   if (item.calidad) out.calidad = item.calidad;
 
-  // Fuente 5: portada = JK; portada_imdb + logo + backdrop = Metahub si existen
+  // Fuente 5: orden portada → portada_imdb → logo → backdrop (sin logo_imdb)
   if (String(sid) === '5' || String(item.fuente || '').toLowerCase() === 'jkanime') {
     if (out.portada_fuente_raw) {
       out.portada = out.portada_fuente_raw;
       out.poster_source = 'jkanime';
     }
-    if (item.portada_imdb) out.portada_imdb = item.portada_imdb;
-    if (item.logo || item.logo_imdb) {
-      out.logo = item.logo || item.logo_imdb;
-      out.logo_imdb = item.logo_imdb || item.logo;
+    var logoJk = item.logo || item.logo_imdb || out.logo || null;
+    var backdropJk = item.backdrop || out.backdrop || null;
+    var portadaImdbJk = item.portada_imdb || out.portada_imdb || null;
+    // Reordenar claves: portada, portada_imdb, logo, backdrop
+    var ordered = {};
+    var keys = Object.keys(out);
+    var inserted = false;
+    for (var ki = 0; ki < keys.length; ki++) {
+      var k = keys[ki];
+      if (k === 'portada_imdb' || k === 'logo' || k === 'logo_imdb' || k === 'backdrop' || k === 'portada_tmdb') continue;
+      ordered[k] = out[k];
+      if (k === 'portada') {
+        if (portadaImdbJk) ordered.portada_imdb = portadaImdbJk;
+        if (logoJk) ordered.logo = logoJk;
+        if (backdropJk) ordered.backdrop = backdropJk;
+        inserted = true;
+      }
     }
-    if (item.backdrop) out.backdrop = item.backdrop;
+    if (!inserted) {
+      if (portadaImdbJk) ordered.portada_imdb = portadaImdbJk;
+      if (logoJk) ordered.logo = logoJk;
+      if (backdropJk) ordered.backdrop = backdropJk;
+    }
+    out = ordered;
   }
 
   if (esSerieAnime) {
