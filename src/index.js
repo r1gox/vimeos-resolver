@@ -194,17 +194,19 @@ async function enriquecerSoloCinemeta(detalle, typeHint) {
 
   if (meta.rating != null) {
     var esAv1 = String(detalle.fuente || '') === 'animeav1' || String(detalle.source_id || '') === '4';
-    if (esAv1) {
+    var esJk = String(detalle.fuente || '') === 'jkanime' || String(detalle.source_id || '') === '5' ||
+      /jkanime|^jk$/i.test(String(detalle.fuente || ''));
+    if (esAv1 || esJk) {
+      // Guardar IMDb aparte; el rating principal sigue siendo de la página
       detalle.rating_imdb = meta.rating;
       if (detalle.imdb && typeof detalle.imdb === 'object') detalle.imdb.rating = meta.rating;
       else detalle.imdb = Object.assign({}, detalle.imdb || {}, { id: meta.imdb_id || detalle.imdb_id, rating: meta.rating });
       if (detalle.rating_fuente != null) {
         detalle.rating = detalle.rating_fuente;
         detalle.calificacion = detalle.rating_fuente;
-      } else if (detalle.calificacion != null && detalle.rating_source === 'fuente') {
+      } else if (detalle.calificacion != null) {
         detalle.rating = detalle.calificacion;
       }
-      // si rating ya era de fuente y coincide numéricamente con imdb, igual mantener source fuente
       detalle.rating_source = 'fuente';
     } else {
       detalle.rating = meta.rating;
@@ -950,11 +952,23 @@ async function handleRequest(request, env) {
 
         // NO usar limpiarDetalleJkanime aquí: igual que AV1, solo formatearDetalleRespuesta
         if (!detJk.url_extract && slugJk) {
-          var kpJk = /pel[ií]cula|movie/i.test(String(detJk.tipo || '')) ? 'pelicula' : 'anime';
+          var kpJk = /pel[ií]cula|movie|film/i.test(String(detJk.tipo || '')) ? 'pelicula' : 'anime';
           detJk.url_extract = origin + '/5/' + kpJk + '/' + slugJk;
         }
         detJk.fuente = 'jkanime';
         detJk.source_id = '5';
+        // tipo + type (Pelicula|OVA|ONA|Especial|Anime)
+        if (!detJk.tipo) detJk.tipo = 'Anime';
+        detJk.type = detJk.tipo;
+        // rating SIEMPRE fuente JK (después de formatear/Cinemeta)
+        if (ratingFuenteJk != null) {
+          detJk.rating = ratingFuenteJk;
+          detJk.calificacion = ratingFuenteJk;
+          detJk.rating_fuente = ratingFuenteJk;
+          detJk.rating_source = 'fuente';
+        } else {
+          detJk.rating_source = 'fuente';
+        }
         // portada JK; portada_imdb + logo + backdrop Metahub (sin logo_imdb)
         if (detJk.portada_fuente_raw) {
           detJk.portada = detJk.portada_fuente_raw;
@@ -6888,13 +6902,17 @@ function formatearDetalleRespuesta(item, origin) {
   var esAnimeAv1Fmt =
     String(item.fuente || '') === 'animeav1' ||
     String(item.source_id || '') === '4';
-  // AnimeAV1 (4): rating = media.score; IMDb solo en rating_imdb
-  if (esAnimeAv1Fmt) {
+  var esJkFmt =
+    String(item.fuente || '') === 'jkanime' ||
+    String(item.source_id || '') === '5' ||
+    /jkanime|^jk$/i.test(String(item.fuente || item.source_id || ''));
+  // AnimeAV1 (4) y JK (5): rating SIEMPRE de la página (fuente); IMDb solo en rating_imdb
+  if (esAnimeAv1Fmt || esJkFmt) {
     if (ratingFuente != null) {
       rating = ratingFuente; // puede ser 0
       rating_source = 'fuente';
     } else {
-      rating = 0;
+      rating = esJkFmt ? null : 0;
       rating_source = 'fuente';
     }
     if (ratingImdb == null && item.rating_imdb != null) {
@@ -7004,6 +7022,7 @@ function formatearDetalleRespuesta(item, origin) {
     fuente: item.fuente || null,
     source_id: sid,
     tipo: tipo,
+    type: tipo,
     link: item.link || null,
     slug: slug,
     titulo: titulo,
@@ -11618,12 +11637,12 @@ async function buscarJkanime(query) {
 
     var typeM = block.match(/class="anime__item__text"[^>]*>[\s\S]*?<li[^>]*>([^<]+)/i) ||
       block.match(/(Serie|Pel[ií]cula|OVA|ONA|Especial|Movie)/i);
-    var tipo = typeM ? String(typeM[1]).trim() : 'Anime';
-    // film/movie en slug o título → Película (como AV1)
-    if (/pel[ií]cula|movie/i.test(tipo) || /\bfilm\b|movie|pelicula/i.test(slug) || /\bfilm\b|movie/i.test(titulo)) {
+    var tipoRaw = typeM ? String(typeM[1]).trim() : 'Anime';
+    var formatoJk = detectarFormatoAnime(titulo, tipoRaw, slug);
+    var tipo = tipoDesdeFormatoAnime(formatoJk);
+    // refuerzo film/movie
+    if (/pel[ií]cula|movie|film/i.test(tipoRaw) || /\bfilm\b|movie|pelicula/i.test(slug) || /\bfilm\b|movie/i.test(titulo)) {
       tipo = 'Pelicula';
-    } else {
-      tipo = 'Anime';
     }
     var kindPath = tipo === 'Pelicula' ? 'pelicula' : 'anime';
 
