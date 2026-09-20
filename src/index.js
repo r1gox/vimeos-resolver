@@ -957,9 +957,9 @@ async function handleRequest(request, env) {
         }
         detJk.fuente = 'jkanime';
         detJk.source_id = '5';
-        // tipo + type (Pelicula|OVA|ONA|Especial|Anime)
+        // tipo solo en detalle (Pelicula|OVA|ONA|Especial|Anime) — sin "type"
         if (!detJk.tipo) detJk.tipo = 'Anime';
-        detJk.type = detJk.tipo;
+        try { delete detJk.type; } catch (eT) {}
         // rating SIEMPRE fuente JK (después de formatear/Cinemeta)
         if (ratingFuenteJk != null) {
           detJk.rating = ratingFuenteJk;
@@ -7022,7 +7022,6 @@ function formatearDetalleRespuesta(item, origin) {
     fuente: item.fuente || null,
     source_id: sid,
     tipo: tipo,
-    type: tipo,
     link: item.link || null,
     slug: slug,
     titulo: titulo,
@@ -9561,11 +9560,14 @@ function extraerNumeroTemporada(titulo, slug) {
  */
 function detectarFormatoAnime(titulo, category, slug) {
   var blob = [titulo, category, slug].map(function (x) { return String(x || ''); }).join(' ');
-  if (/ova\b/i.test(blob)) return 'OVA';
-  if (/\bona\b/i.test(blob)) return 'ONA';
-  if (/specials?|especiales?/i.test(blob)) return 'Especial';
-  if (/movie|pel[ií]cula|film/i.test(blob)) return 'Pelicula';
-  if (/tv\s*special/i.test(blob)) return 'Especial';
+  // OVA / ONA primero (más específicos)
+  if (/\bovas?\b|\bova\b/i.test(blob)) return 'OVA';
+  if (/\bonas?\b|\bona\b/i.test(blob)) return 'ONA';
+  // Especiales: special, especial, episode 0, ep 0
+  if (/specials?|especiales?|tv\s*special/i.test(blob)) return 'Especial';
+  if (/episode[\s_-]*0\b|episodio[\s_-]*0\b|\bep[\s_-]*0\b/i.test(blob)) return 'Especial';
+  // Película / film
+  if (/movie|pel[ií]cula|\bfilm\b/i.test(blob)) return 'Pelicula';
   return 'TV';
 }
 
@@ -11637,13 +11639,16 @@ async function buscarJkanime(query) {
 
     var typeM = block.match(/class="anime__item__text"[^>]*>[\s\S]*?<li[^>]*>([^<]+)/i) ||
       block.match(/(Serie|Pel[ií]cula|OVA|ONA|Especial|Movie)/i);
-    var tipoRaw = typeM ? String(typeM[1]).trim() : 'Anime';
+    var tipoRaw = typeM ? String(typeM[1]).trim() : '';
     var formatoJk = detectarFormatoAnime(titulo, tipoRaw, slug);
     var tipo = tipoDesdeFormatoAnime(formatoJk);
-    // refuerzo film/movie
-    if (/pel[ií]cula|movie|film/i.test(tipoRaw) || /\bfilm\b|movie|pelicula/i.test(slug) || /\bfilm\b|movie/i.test(titulo)) {
-      tipo = 'Pelicula';
-    }
+    // prioridad explícita del label de la lista JK
+    if (/^ova$/i.test(tipoRaw)) tipo = 'OVA';
+    else if (/^ona$/i.test(tipoRaw)) tipo = 'ONA';
+    else if (/especial|special/i.test(tipoRaw)) tipo = 'Especial';
+    else if (/pel[ií]cula|movie|film/i.test(tipoRaw) || /\bfilm\b|movie|pelicula/i.test(slug) || /\bfilm\b|movie/i.test(titulo)) tipo = 'Pelicula';
+    else if (/serie|tv/i.test(tipoRaw) && tipo === 'Anime') tipo = 'Anime';
+
     var kindPath = tipo === 'Pelicula' ? 'pelicula' : 'anime';
 
     out.push({
