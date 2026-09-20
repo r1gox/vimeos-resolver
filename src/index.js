@@ -213,14 +213,13 @@ async function enriquecerSoloCinemeta(detalle, typeHint) {
     if (!detalle.backdrop) detalle.backdrop = metahubBackground(imdbId, 'medium');
   }
 
-  // Descripción: siempre fuente; meta solo si la fuente no trae
-  if (detalle.descripcion_fuente) {
-    detalle.descripcion = detalle.descripcion_fuente;
-  } else {
-    var desc = String(detalle.descripcion || '').trim();
-    if (!desc && meta.descripcion) {
-      detalle.descripcion = meta.descripcion;
-    }
+  // Descripción: siempre fuente; meta solo si no hay ninguna
+  var descSrc = String(detalle.descripcion_fuente || detalle.descripcion || '').trim();
+  if (descSrc) {
+    detalle.descripcion = descSrc;
+    if (!detalle.descripcion_fuente) detalle.descripcion_fuente = descSrc;
+  } else if (meta.descripcion) {
+    detalle.descripcion = meta.descripcion;
   }
 
   return detalle;
@@ -6741,14 +6740,17 @@ function formatearCapituloRespuesta(item, origin, ctx) {
 function formatearDetalleRespuesta(item, origin) {
   if (!item || typeof item !== 'object') return item;
 
-  // Descripción: priorizar fuente; meta solo si falta
-  var desc = item.descripcion_fuente || item.descripcion || null;
-  if (desc && typeof esDescripcionBasura === 'function' && esDescripcionBasura(desc)) {
-    // basura → intentar fuente limpia ya vacía, luego meta
-    desc = null;
-  }
-  if (!desc || !String(desc).trim()) {
+  // Descripción: siempre la de la fuente si existe (aunque sea corta).
+  // Meta solo si no hay texto de fuente. esDescripcionBasura no aplica a la fuente.
+  var descFuente = String(item.descripcion_fuente || item.descripcion || '').trim();
+  var desc = null;
+  if (descFuente) {
+    desc = descFuente;
+  } else {
     desc = (item.imdb && item.imdb.descripcion) || item.descripcion_imdb || item.descripcion_tmdb || null;
+    if (desc && typeof esDescripcionBasura === 'function' && esDescripcionBasura(desc)) {
+      desc = null;
+    }
   }
 
   var ratingImdb = null;
