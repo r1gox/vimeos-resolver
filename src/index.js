@@ -830,25 +830,30 @@ async function handleRequest(request, env) {
             }
             if (detJk.imdb_id) {
               detJk = await enriquecerSoloCinemeta(detJk, 'anime');
+              // Mantener portada JK; logo/backdrop de Cinemeta OK; no exponer portada_imdb
+              if (detJk.portada_fuente_raw) {
+                detJk.portada = detJk.portada_fuente_raw;
+                detJk.poster_source = 'jkanime';
+              }
+              delete detJk.portada_imdb;
+              delete detJk.portada_tmdb;
             }
           } catch (eFast2) {}
         }
 
         if (detJk && detJk.imdb_id && /^tt\d+$/i.test(String(detJk.imdb_id))) {
           var ttJk = String(detJk.imdb_id);
+          // logo + backdrop Metahub/Cinemeta; portada solo JK (sin portada_imdb)
           detJk.logo_imdb = (typeof metahubLogo === 'function') ? metahubLogo(ttJk, 'medium') : detJk.logo_imdb;
           detJk.logo = detJk.logo_imdb || detJk.logo;
-          detJk.portada_fuente_raw = detJk.portada_fuente_raw || (detJk.portada && !esPortadaMetahub(detJk.portada) ? detJk.portada : null);
-          detJk.portada_imdb = detJk.portada_imdb || ((typeof metahubPoster === 'function') ? metahubPoster(ttJk, 'medium') : null);
           detJk.backdrop = detJk.backdrop || ((typeof metahubBackground === 'function') ? metahubBackground(ttJk, 'medium') : null);
-          // portada = fuente JK; metahub solo en portada_imdb
+          detJk.portada_fuente_raw = detJk.portada_fuente_raw || (detJk.portada && !esPortadaMetahub(detJk.portada) ? detJk.portada : null);
           if (detJk.portada_fuente_raw) {
             detJk.portada = detJk.portada_fuente_raw;
             detJk.poster_source = 'jkanime';
-          } else if (!detJk.portada && detJk.portada_imdb) {
-            detJk.portada = detJk.portada_imdb;
-            detJk.poster_source = 'metahub';
           }
+          delete detJk.portada_imdb;
+          delete detJk.portada_tmdb;
           // back_img faltantes en episodios (One Piece 17+) → still Metahub
           try {
             if (detJk.temporadas && detJk.temporadas.length && typeof metahubEpisodeStill === 'function') {
@@ -889,16 +894,13 @@ async function handleRequest(request, env) {
         }
         detJk.fuente = 'jkanime';
         detJk.source_id = '5';
-        // Solo portada JK — sin Metahub
+        // Portada JK; logo/backdrop se conservan si vinieron de Cinemeta/Metahub
         if (detJk.portada_fuente_raw) {
           detJk.portada = detJk.portada_fuente_raw;
           detJk.poster_source = 'jkanime';
         }
-        detJk.portada_imdb = null;
-        detJk.portada_tmdb = null;
-        detJk.logo = null;
-        detJk.logo_imdb = null;
-        detJk.backdrop = null;
+        delete detJk.portada_imdb;
+        delete detJk.portada_tmdb;
         return json(detJk);
       }
 
@@ -6894,11 +6896,6 @@ function formatearDetalleRespuesta(item, origin) {
     titulo_original: tituloOrig,
     portada: portada,
     portada_fuente_raw: portadaFuente || item.portada_fuente_raw || null,
-    portada_imdb: item.portada_imdb || null,
-    portada_tmdb: item.portada_tmdb || null,
-    logo: item.logo || item.logo_imdb || null,
-    logo_imdb: item.logo_imdb || item.logo || null,
-    backdrop: item.backdrop || null,    
     descripcion: desc,
     year: item.year || null,
     fecha_estreno: item.fecha_estreno || null,
@@ -6919,6 +6916,14 @@ function formatearDetalleRespuesta(item, origin) {
     url_extract: urlExtract
   };
 
+  if (item.portada_imdb) out.portada_imdb = item.portada_imdb;
+  if (item.portada_tmdb) out.portada_tmdb = item.portada_tmdb;
+  if (item.logo || item.logo_imdb) {
+    out.logo = item.logo || item.logo_imdb;
+    out.logo_imdb = item.logo_imdb || item.logo;
+  }
+  if (item.backdrop) out.backdrop = item.backdrop;
+
   // Campos extra anime/JK (no tocar el resto de fuentes si vienen vacíos)
   if (item.studios) out.studios = item.studios;
   if (item.temporada_anime || item.temporada) {
@@ -6934,17 +6939,17 @@ function formatearDetalleRespuesta(item, origin) {
   if (item.fecha_estreno_texto) out.fecha_estreno_texto = item.fecha_estreno_texto;
   if (item.calidad) out.calidad = item.calidad;
 
-  // Fuente 5 JKanime: quitar decoración Metahub
+  // Fuente 5 JKanime: portada = JK; logo/backdrop de Cinemeta si existen; sin portada_imdb vacía
   if (String(sid) === '5' || String(item.fuente || '').toLowerCase() === 'jkanime') {
     if (out.portada_fuente_raw) {
       out.portada = out.portada_fuente_raw;
       out.poster_source = 'jkanime';
     }
-    out.portada_imdb = null;
-    out.portada_tmdb = null;
-    out.logo = null;
-    out.logo_imdb = null;
-    out.backdrop = null;
+    delete out.portada_imdb;
+    delete out.portada_tmdb;
+    if (!out.logo) delete out.logo;
+    if (!out.logo_imdb) delete out.logo_imdb;
+    if (!out.backdrop) delete out.backdrop;
   }
 
   if (esSerieAnime) {
