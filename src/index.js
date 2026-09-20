@@ -11637,17 +11637,33 @@ async function buscarJkanime(query) {
       portada = 'https://cdn.jkdesa.com/' + portada.replace(/^\/+/, '');
     }
 
-    var typeM = block.match(/class="anime__item__text"[^>]*>[\s\S]*?<li[^>]*>([^<]+)/i) ||
-      block.match(/(Serie|Pel[ií]cula|OVA|ONA|Especial|Movie)/i);
-    var tipoRaw = typeM ? String(typeM[1]).trim() : '';
+    // HTML real: <ul><li>Concluido</li><li class="anime">Pelicula</li></ul>
+    // El 1.er <li> es estado; el 2.º (o li.anime) es el tipo
+    var tipoRaw = '';
+    var typeM =
+      block.match(/<li\s+class=["'][^"']*anime[^"']*["'][^>]*>\s*([^<]+)/i) ||
+      block.match(/anime__item__text[\s\S]*?<ul>[\s\S]*?<li>[^<]*<\/li>\s*<li[^>]*>\s*([^<]+)/i) ||
+      block.match(/<ul>\s*<li>[^<]*<\/li>\s*<li[^>]*>\s*([^<]+)/i);
+    if (typeM) tipoRaw = String(typeM[1]).replace(/\s+/g, ' ').trim();
+    // Si solo hay un li y es tipo conocido
+    if (!tipoRaw) {
+      var allLi = block.match(/<li[^>]*>\s*([^<]+)/gi) || [];
+      for (var li = 0; li < allLi.length; li++) {
+        var txt = String(allLi[li]).replace(/<[^>]+>/g, '').trim();
+        if (/^(Serie|Pel[ií]cula|OVA|ONA|Especial|Movie|TV)$/i.test(txt)) {
+          tipoRaw = txt;
+          break;
+        }
+      }
+    }
     var formatoJk = detectarFormatoAnime(titulo, tipoRaw, slug);
     var tipo = tipoDesdeFormatoAnime(formatoJk);
-    // prioridad explícita del label de la lista JK
     if (/^ova$/i.test(tipoRaw)) tipo = 'OVA';
     else if (/^ona$/i.test(tipoRaw)) tipo = 'ONA';
     else if (/especial|special/i.test(tipoRaw)) tipo = 'Especial';
-    else if (/pel[ií]cula|movie|film/i.test(tipoRaw) || /\bfilm\b|movie|pelicula/i.test(slug) || /\bfilm\b|movie/i.test(titulo)) tipo = 'Pelicula';
-    else if (/serie|tv/i.test(tipoRaw) && tipo === 'Anime') tipo = 'Anime';
+    else if (/pel[ií]cula|movie|film/i.test(tipoRaw)) tipo = 'Pelicula';
+    else if (/serie|tv/i.test(tipoRaw)) tipo = 'Anime';
+    else if (/\bfilm\b|movie|pelicula/i.test(slug) || /\bfilm\b|movie/i.test(titulo)) tipo = 'Pelicula';
 
     var kindPath = tipo === 'Pelicula' ? 'pelicula' : 'anime';
 
@@ -11664,7 +11680,53 @@ async function buscarJkanime(query) {
     });
   }
 
+  // Tipo ya viene del 2.º <li> (Serie/OVA/Pelicula…). Solo completar si quedó vacío.
+  var needTipo = false;
+  for (var ni = 0; ni < out.length; ni++) {
+    if (!out[ni].type || out[ni].type === 'Anime') { /* puede ser serie real; no forzar ficha */ }
+  }
+  // No hacer N requests extra: el listado ya trae el tipo
   return out;
+}
+
+/** Lee Tipo: de cada ficha JK (paralelo, máx 12) para type correcto en search */
+async function enriquecerTiposBusquedaJkanime(lista) {
+  if (!lista || !lista.length) return lista || [];
+  var max = Math.min(lista.length, 12);
+  var jobs = [];
+  for (var i = 0; i < max; i++) {
+    (function (item) {
+      jobs.push((async function () {
+        try {
+          var res = await fetch(JKANIME_BASE + '/' + encodeURIComponent(item.slug) + '/', {
+            headers: jkanimeHeaders()
+          });
+          if (!res.ok) return;
+          var html = await res.text();
+          var m =
+            html.match(/<li\s+rel=["']tipo["'][^>]*>\s*<span>\s*Tipo:\s*<\/span>\s*([^<]+)/i) ||
+            html.match(/<li\s+rel=["']tipo["'][^>]*>[\s\S]*?<span>\s*Tipo:\s*<\/span>\s*([^<]+)/i) ||
+            html.match(/Tipo:<\/span>\s*([^<]+)/i);
+          if (!m) return;
+          var raw = String(m[1]).replace(/\s+/g, ' ').trim();
+          var fmt = detectarFormatoAnime(item.title || item.titulo, raw, item.slug);
+          var t = tipoDesdeFormatoAnime(fmt);
+          if (/^ova$/i.test(raw)) t = 'OVA';
+          else if (/^ona$/i.test(raw)) t = 'ONA';
+          else if (/especial|special/i.test(raw)) t = 'Especial';
+          else if (/pel[ií]cula|movie|film/i.test(raw)) t = 'Pelicula';
+          else if (/serie|tv/i.test(raw)) t = 'Anime';
+          item.type = t;
+          // URL path: película → /pelicula/
+          if (t === 'Pelicula') {
+            item.url = 'https://moviezone.tvjz.workers.dev/5/pelicula/' + item.slug;
+          }
+        } catch (e) { /* ignore */ }
+      })());
+    })(lista[i]);
+  }
+  try { await Promise.all(jobs); } catch (eAll) {}
+  return lista;
 }
 
 async function fetchJkanimeEpisodes(animeId, refererUrl, opts) {
