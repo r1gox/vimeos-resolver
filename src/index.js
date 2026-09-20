@@ -7127,10 +7127,42 @@ function formatearDetalleRespuesta(item, origin) {
     out = ordered;
   }
 
-  // OVA/ONA/Especial: conservar temporadas aunque haya reproductores en la raíz
-  if (esSerieAnime || /^(ova|ona|especial)$/i.test(String(tipo || ''))) {
-    var totalEps = item.total_episodios != null ? parseInt(item.total_episodios, 10) : null;
-    var totalTemps = item.total_temporadas != null ? parseInt(item.total_temporadas, 10) : null;
+  // Episodios / temporadas (AV1 + JK)
+  // OVA/ONA/Especial con ≤1 ep + concluido (o players en raíz) → como película: sin lista de caps
+  var totalEps = item.total_episodios != null ? parseInt(item.total_episodios, 10) : null;
+  var totalTemps = item.total_temporadas != null ? parseInt(item.total_temporadas, 10) : null;
+  var tipoLowFmt = String(tipo || '').toLowerCase();
+  var esCortoFmt = /^(ova|ona|especial)$/i.test(tipoLowFmt);
+  var repsRoot = (item.reproductores && item.reproductores.length) || (item.embeds && item.embeds.length) || item.reproductor;
+  var finalizadoFmt = item.finalizado === true || /conclu|finaliz|ended|finished|complete/i.test(String(item.estado || ''));
+  var enEmisionFmt = item.en_emision === true || /emisi|airing|ongoing/i.test(String(item.estado || ''));
+  // Contar eps reales en temps si total no viene
+  if ((!totalEps || !isFinite(totalEps)) && Array.isArray(item.temporadas) && item.temporadas.length) {
+    totalEps = 0;
+    for (var ti0 = 0; ti0 < item.temporadas.length; ti0++) {
+      var te0 = item.temporadas[ti0];
+      if (!te0) continue;
+      if (typeof te0.episodios === 'number') totalEps += te0.episodios;
+      else if (Array.isArray(te0.lista)) totalEps += te0.lista.length;
+      else if (Array.isArray(te0.episodios)) totalEps += te0.episodios.length;
+    }
+  }
+  if ((!totalEps || !isFinite(totalEps)) && Array.isArray(item.episodios)) {
+    totalEps = item.episodios.length;
+  }
+  var tratarCortoComoPeli =
+    esCortoFmt &&
+    (totalEps == null || totalEps <= 1) &&
+    !enEmisionFmt &&
+    (finalizadoFmt || !!repsRoot || totalEps === 1);
+
+  if (tratarCortoComoPeli) {
+    // Igual que fuente 4: players en raíz, sin temporadas/episodios
+    out.temporadas = [];
+    out.episodios = [];
+    out.total_episodios = totalEps && totalEps > 0 ? totalEps : 1;
+    out.total_temporadas = 0;
+  } else if (esSerieAnime || esCortoFmt) {
     if (Array.isArray(item.temporadas) && item.temporadas.length) {
       out.temporadas = item.temporadas.map(slimTemporada);
       if (!totalTemps) totalTemps = out.temporadas.length;
@@ -7148,7 +7180,6 @@ function formatearDetalleRespuesta(item, origin) {
       out.episodios = item.episodios.map(slimEpisodio);
       if (!totalEps) totalEps = out.episodios.length;
     }
-    // Totales junto a temporadas (solo detalle)
     if (totalTemps && isFinite(totalTemps)) out.total_temporadas = totalTemps;
     if (totalEps && isFinite(totalEps) && totalEps > 0) out.total_episodios = totalEps;
   }
