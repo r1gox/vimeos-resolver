@@ -877,9 +877,15 @@ async function handleRequest(request, env) {
           // Restaurar texto/rating de la fuente JK (no la sinopsis de otra peli)
           if (descJkKeep) detJk.descripcion = descJkKeep;
           if (generosJkKeep && generosJkKeep.length) detJk.generos = generosJkKeep;
-          if (ratingJkKeep != null && ratingFuenteJk != null) {
+          // Siempre rating de JKanime, no de Cinemeta
+          if (ratingFuenteJk != null) {
             detJk.rating = ratingFuenteJk;
             detJk.calificacion = ratingFuenteJk;
+            detJk.rating_source = 'fuente';
+            detJk.rating_fuente = ratingFuenteJk;
+          } else if (ratingJkKeep != null) {
+            detJk.rating = ratingJkKeep;
+            detJk.calificacion = ratingJkKeep;
             detJk.rating_source = 'fuente';
           }
           if (estadoJkKeep) detJk.estado = estadoJkKeep;
@@ -925,11 +931,18 @@ async function handleRequest(request, env) {
         }
 
         detJk.titulo = tituloPagina;
-        if ((detJk.rating == null || detJk.rating === '') && ratingFuenteJk != null) {
+        // JK: rating SIEMPRE de la página (fuente), nunca IMDb/Cinemeta
+        if (ratingFuenteJk != null) {
           detJk.rating = ratingFuenteJk;
           detJk.calificacion = ratingFuenteJk;
-          if (!detJk.rating_source) detJk.rating_source = 'fuente';
+          detJk.rating_source = 'fuente';
+          detJk.rating_fuente = ratingFuenteJk;
+        } else if (detJk.rating != null || detJk.calificacion != null) {
+          detJk.rating_source = 'fuente';
         }
+        // tipo ya viene de scrapearJkanime (Pelicula/OVA/ONA/Especial/Anime)
+        if (!detJk.tipo) detJk.tipo = 'Anime';
+
 
         try {
           detJk = formatearDetalleRespuesta(detJk, origin);
@@ -9537,6 +9550,17 @@ function detectarFormatoAnime(titulo, category, slug) {
   return 'TV';
 }
 
+/** tipo API: Pelicula | Anime | OVA | ONA | Especial (no dejar OVA como "Anime") */
+function tipoDesdeFormatoAnime(formato) {
+  var f = String(formato || 'TV').trim();
+  if (/^pel[ií]cula$/i.test(f) || /^movie$/i.test(f) || /^film$/i.test(f)) return 'Pelicula';
+  if (/^ova$/i.test(f)) return 'OVA';
+  if (/^ona$/i.test(f)) return 'ONA';
+  if (/especial|special/i.test(f)) return 'Especial';
+  if (/^tv$/i.test(f) || /^anime$/i.test(f)) return 'Anime';
+  return 'Anime';
+}
+
 /** ¿Texto parece español? */
 function pareceEspanol(txt) {
   var s = String(txt || '');
@@ -9651,7 +9675,7 @@ async function listarAnimeAv1Catalogo(filtro, page, origin) {
     var catName = (it.category && it.category.name) || '';
     var tit = it.title || it.slug;
     var formato = detectarFormatoAnime(tit, catName, it.slug);
-    var tipo = formato === 'Pelicula' ? 'Pelicula' : 'Anime';
+    var tipo = tipoDesdeFormatoAnime(formato);
     var portada = it.poster || it.image || it.cover || it.thumbnail || null;
     if (!portada && it.id != null && String(it.id).match(/^\d+$/)) {
       portada = 'https://cdn.animeav1.com/covers/' + it.id + '.jpg';
@@ -9713,7 +9737,7 @@ async function buscarAnimeAv1(query, limit) {
       var catName = (it.category && it.category.name) || '';
       var titAv1 = it.title || it.slug;
       var formatoAv1 = detectarFormatoAnime(titAv1, catName, it.slug);
-      var tipo = formatoAv1 === 'Pelicula' ? 'Pelicula' : 'Anime';
+      var tipo = tipoDesdeFormatoAnime(formatoAv1);
       var portadaAv1 = it.poster || it.image || it.cover || it.thumbnail || it.coverImage || null;
       if (!portadaAv1 && it.id != null && String(it.id).match(/^\d+$/)) {
         portadaAv1 = 'https://cdn.animeav1.com/covers/' + it.id + '.jpg';
@@ -9921,7 +9945,7 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   }
   var catName = (media.category && media.category.name) || 'TV Anime';
   var formato = detectarFormatoAnime(titulo, catName, slug);
-  var tipo = formato === 'Pelicula' ? 'Pelicula' : 'Anime';
+  var tipo = tipoDesdeFormatoAnime(formato);
   // Año: startDate → título/slug
   var yearAv1 = extraerYearFlexible(titulo, slug, media.startDate || media.year);
   // Temporada real del título/slug (One Punch Man 3 → 3, 2nd Season → 2)
@@ -12222,7 +12246,7 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
     html.match(/Puntuaci[oó]n:\s*([0-9]+(?:\.[0-9]+)?)/i);
   if (puntM) {
     var nP = parseFloat(String(puntM[1]).replace(',', '.').trim());
-    if (!isNaN(nP) && nP > 0 && nP <= 10) calificacionFuente = Math.round(nP * 100) / 100;
+    if (!isNaN(nP) && nP >= 0 && nP <= 10) calificacionFuente = Math.round(nP * 100) / 100;
   }
 
   // títulos alternativos
@@ -12308,12 +12332,23 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
     proximo_episodio = String(pxM[1]).replace(/\s+/g, ' ').trim();
   }
 
-  // Tipo Película: slug/título film|movie o meta Tipo
-  var esPeliculaJk =
-    /pel[ií]cula|movie/i.test(String(tipo || '')) ||
+  // Tipo: Pelicula | OVA | ONA | Especial | Anime (meta Tipo + slug/título)
+  var tipoMetaJk = parseMetaListaJk(html, 'Tipo') || parseMetaListaJk(html, 'Type') || null;
+  if (Array.isArray(tipoMetaJk)) tipoMetaJk = tipoMetaJk[0];
+  var blobTipoJk = [tipoMetaJk, tipo, slug, titulo].map(function (x) { return String(x || ''); }).join(' ');
+  var formatoJk = detectarFormatoAnime(titulo, tipoMetaJk || '', slug);
+  // Si meta dice TV / Serie → Anime; si OVA/ONA/Pelicula → eso
+  if (/ova\b/i.test(blobTipoJk) || formatoJk === 'OVA') tipo = 'OVA';
+  else if (/\bona\b/i.test(blobTipoJk) || formatoJk === 'ONA') tipo = 'ONA';
+  else if (/especial|special/i.test(blobTipoJk) || formatoJk === 'Especial') tipo = 'Especial';
+  else if (
+    /pel[ií]cula|movie|film/i.test(blobTipoJk) ||
+    formatoJk === 'Pelicula' ||
     /\bfilm\b|movie|pelicula/i.test(String(slug || '')) ||
-    /\bfilm\b|\bmovie\b/i.test(String(titulo || ''));
-  if (esPeliculaJk) tipo = 'Pelicula';
+    /\bfilm\b|\bmovie\b/i.test(String(titulo || ''))
+  ) tipo = 'Pelicula';
+  else tipo = 'Anime';
+  var esPeliculaJk = (tipo === 'Pelicula');
 
   // Año / fecha desde "Emitido: Sabado, 15 de Diciembre de 2012"
   var yearJk = null;
@@ -12352,15 +12387,17 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
     success: true,
     fuente: 'jkanime',
     source_id: '5',
-    tipo: esPeliculaJk ? 'Pelicula' : (/pel[ií]cula|movie/i.test(String(tipo)) ? 'Pelicula' : 'Anime'),
+    tipo: tipo || 'Anime',
     link: detailUrl,
     slug: slug,
     titulo: titulo,
     titulo_original: (titulos_alt.japones || titulos_alt.ingles || null),
     titulos_alternativos: titulos_alt,
+    calificacion: calificacionFuente,
     rating: calificacionFuente,
     rating_fuente: calificacionFuente,
-    rating_source: calificacionFuente != null ? 'fuente' : null,
+    rating_source: 'fuente',
+    formato: formatoJk || (tipo === 'Pelicula' ? 'Pelicula' : (tipo === 'OVA' ? 'OVA' : (tipo === 'ONA' ? 'ONA' : (tipo === 'Especial' ? 'Especial' : 'TV')))),
     year: yearJk,
     fecha_estreno: fechaEstrenoJk,
     portada: portada,
