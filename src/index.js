@@ -6765,7 +6765,24 @@ function formatearDetalleRespuesta(item, origin) {
 
   var rating = null;
   var rating_source = null;
-  if (ratingImdb != null) {
+  var esAnimeAv1Fmt =
+    String(item.fuente || '') === 'animeav1' ||
+    String(item.source_id || '') === '4';
+  // AnimeAV1 (4): rating SIEMPRE de la fuente; IMDb en rating_imdb
+  if (esAnimeAv1Fmt) {
+    if (ratingFuente != null) {
+      rating = ratingFuente;
+      rating_source = 'fuente';
+    } else if (item.mal_id && ratingFuente != null) {
+      rating = ratingFuente;
+      rating_source = 'fuente';
+    }
+    if (ratingImdb != null) {
+      /* se expone abajo como rating_imdb */
+    } else if (item.rating_imdb != null) {
+      ratingImdb = normalizarCalificacion(item.rating_imdb);
+    }
+  } else if (ratingImdb != null) {
     rating = ratingImdb;
     rating_source = 'imdb';
   } else if (item.mal_id && ratingFuente != null) {
@@ -6883,6 +6900,7 @@ function formatearDetalleRespuesta(item, origin) {
     fecha_estreno: item.fecha_estreno || null,
     rating: rating,
     rating_source: rating_source,
+    rating_imdb: (typeof ratingImdb !== 'undefined' && ratingImdb != null) ? ratingImdb : (item.rating_imdb != null ? normalizarCalificacion(item.rating_imdb) : null),
     votos: votos,
     generos: generos,
     duracion: duracion,
@@ -10073,6 +10091,9 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     portada_fuente_raw: portada,
     descripcion: sinopsis,
     calificacion: score,
+    rating: score,
+    rating_source: score != null ? 'fuente' : null,
+    mal_id: malId || null,
     year: yearAv1,
     fecha_estreno: media.startDate || media.airedFrom || media.premiereDate || null,
     estado: estadoInfo.estado,
