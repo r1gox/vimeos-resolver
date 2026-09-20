@@ -640,6 +640,9 @@ async function handleRequest(request, env) {
         doramas_3: origin + '/3/doramas?page=1',
         doramas_9: origin + '/9/doramas?page=1',
         estrenos_animeav1: origin + '/4/animes/estrenos',
+        recientes_animeav1: origin + '/4/animes/recientes',
+        agregados_animeav1: origin + '/4/animes/agregados',
+        home_animeav1: origin + '/4/home',
         emision_animeav1: origin + '/4/animes/emision',
         proximamente_animeav1: origin + '/4/animes/proximamente',
         populares_peliculas: origin + '/3/peliculas/populares',
@@ -717,8 +720,8 @@ async function handleRequest(request, env) {
   var catSeccion = (parts[catTipoIdx] || '').toLowerCase(); // peliculas|series|animes|doramas|dorama|doramas
   var catFiltro = (parts[catTipoIdx + 1] || '').toLowerCase(); // estrenos|populares|''
 
-  if ((catSeccion === 'peliculas' || catSeccion === 'series' || catSeccion === 'animes' || catSeccion === 'doramas' || catSeccion === 'dorama') &&
-      (catFiltro === 'estrenos' || catFiltro === 'populares' || catFiltro === 'emision' || catFiltro === 'proximo' || catFiltro === 'proximamente' || catFiltro === '' || catFiltro === 'page')) {
+  if ((catSeccion === 'peliculas' || catSeccion === 'series' || catSeccion === 'animes' || catSeccion === 'doramas' || catSeccion === 'dorama' || catSeccion === 'episodios' || catSeccion === 'home') &&
+      (catFiltro === 'estrenos' || catFiltro === 'populares' || catFiltro === 'emision' || catFiltro === 'proximo' || catFiltro === 'proximamente' || catFiltro === 'recientes' || catFiltro === 'agregados' || catFiltro === 'recien' || catFiltro === 'recien-agregados' || catFiltro === 'nuevos' || catFiltro === '' || catFiltro === 'page' || catSeccion === 'home' || catSeccion === 'episodios')) {
     var pageNum = parseInt(url.searchParams.get('page') || '1', 10);
     if (catFiltro === 'page' && parts[catTipoIdx + 2]) {
       pageNum = parseInt(parts[catTipoIdx + 2], 10) || 1;
@@ -736,12 +739,30 @@ async function handleRequest(request, env) {
 
     try {
       var catalogo = null;
-      if (esAnimeAv1Cat && catSeccion === 'animes') {
-        var filtroAv1 = 'emision';
-        if (catFiltro === 'populares') filtroAv1 = 'populares';
-        else if (catFiltro === 'proximo' || catFiltro === 'proximamente') filtroAv1 = 'proximo';
-        else if (catFiltro === 'estrenos' || catFiltro === 'emision' || !catFiltro) filtroAv1 = 'emision';
-        catalogo = await listarAnimeAv1Catalogo(filtroAv1, pageNum, origin);
+      if (esAnimeAv1Cat && (catSeccion === 'animes' || catSeccion === 'episodios' || catSeccion === 'home')) {
+        // Home: recientes (eps) / agregados (animes nuevos)
+        if (
+          catSeccion === 'home' ||
+          catFiltro === 'recientes' ||
+          catFiltro === 'agregados' ||
+          catFiltro === 'recien' ||
+          catFiltro === 'recien-agregados' ||
+          catFiltro === 'nuevos' ||
+          catSeccion === 'episodios'
+        ) {
+          var secHome = 'recientes';
+          if (catSeccion === 'home') secHome = 'home';
+          else if (catFiltro === 'agregados' || catFiltro === 'recien' || catFiltro === 'recien-agregados' || catFiltro === 'nuevos')
+            secHome = 'agregados';
+          else if (catSeccion === 'episodios' || catFiltro === 'recientes') secHome = 'recientes';
+          catalogo = await listarAnimeAv1Home(secHome, origin);
+        } else {
+          var filtroAv1 = 'emision';
+          if (catFiltro === 'populares') filtroAv1 = 'populares';
+          else if (catFiltro === 'proximo' || catFiltro === 'proximamente') filtroAv1 = 'proximo';
+          else if (catFiltro === 'estrenos' || catFiltro === 'emision' || !catFiltro) filtroAv1 = 'emision';
+          catalogo = await listarAnimeAv1Catalogo(filtroAv1, pageNum, origin);
+        }
       } else {
         // PelisPlus (flujo original)
         if (srcCat !== 'pelisplushd' && srcCat !== '3' && srcCat !== 'pelisplushd_bz' && srcCat !== '9' && srcCat !== 'ppbz') {
@@ -762,6 +783,10 @@ async function handleRequest(request, env) {
           catBase = PELISPLUS_BZ_BASE;
         }
         catalogo = await listarPelisplusCatalogo(catSeccion, catFiltro || null, pageNum, origin, catBase);
+      }
+      // Home AV1: recientes + agregados (estructura propia)
+      if (catalogo && catalogo.success && (catalogo.recientes || catalogo.agregados || catalogo.seccion === 'recientes' || catalogo.seccion === 'agregados')) {
+        return json(catalogo);
       }
       if (catalogo && catalogo.resultados && catalogo.resultados.length) {
         try {
@@ -9729,6 +9754,140 @@ async function listarAnimeAv1Catalogo(filtro, page, origin) {
     page: page,
     total: out.length,
     resultados: out
+  };
+}
+
+
+/**
+ * Home AnimeAV1: episodios recién actualizados + animes recién agregados
+ * Rutas: /4/animes/recientes | /4/animes/agregados | /4/home
+ */
+async function listarAnimeAv1Home(seccion, origin) {
+  seccion = String(seccion || 'recientes').toLowerCase();
+  origin = origin || '';
+  var raw = await fetchAnimeAv1Data('/__data.json');
+  var data = decodeSvelteKitData(raw);
+  if (!data || typeof data !== 'object') {
+    return { success: false, error: 'AnimeAV1 home vacío', resultados: [] };
+  }
+  var latestEpisodes = data.latestEpisodes || [];
+  var latestMedia = data.latestMedia || [];
+
+  function mapEp(ep) {
+    if (!ep || typeof ep !== 'object') return null;
+    var media = ep.media || {};
+    var slug = media.slug || null;
+    if (!slug) return null;
+    var num = ep.number != null ? Number(ep.number) : null;
+    var mid = media.id != null ? media.id : null;
+    var portada = null;
+    if (mid != null && String(mid).match(/^\d+$/)) {
+      portada = 'https://cdn.animeav1.com/covers/' + mid + '.jpg';
+    }
+    var back = null;
+    if (mid != null && num != null) {
+      back = 'https://cdn.animeav1.com/screenshots/' + mid + '/' + num + '.jpg';
+    }
+    var tituloMedia = media.title || slug;
+    var titulo = num != null ? (tituloMedia + ' — Episodio ' + num) : tituloMedia;
+    var formato = detectarFormatoAnime(tituloMedia, (media.category && media.category.name) || '', slug);
+    var tipo = tipoDesdeFormatoAnime(formato);
+    return {
+      title: titulo,
+      titulo: titulo,
+      titulo_anime: tituloMedia,
+      slug: slug,
+      episodio: num,
+      number: num,
+      url: origin + '/4/anime/' + slug + (num != null ? '/' + num : ''),
+      link: ANIMEAV1_BASE + '/media/' + slug + (num != null ? '/' + num : ''),
+      portada: portada,
+      back_img: back,
+      still: back,
+      publishedAt: ep.publishedAt || ep.createdAt || null,
+      commentsCount: ep.commentsCount != null ? ep.commentsCount : null,
+      media_id: mid,
+      source: 'animeav1',
+      type: tipo,
+      tipo: tipo,
+      formato: formato,
+      source_id: '4'
+    };
+  }
+
+  function mapMedia(it) {
+    if (!it || !it.slug) return null;
+    var catName = (it.category && it.category.name) || '';
+    var tit = it.title || it.slug;
+    var formato = detectarFormatoAnime(tit, catName, it.slug);
+    var tipo = tipoDesdeFormatoAnime(formato);
+    var portada = it.poster || null;
+    if (!portada && it.id != null && String(it.id).match(/^\d+$/)) {
+      portada = 'https://cdn.animeav1.com/covers/' + it.id + '.jpg';
+    }
+    if (portada && String(portada).indexOf('http') !== 0) {
+      portada = 'https://cdn.animeav1.com/covers/' + String(portada).replace(/^.*\//, '');
+    }
+    return {
+      title: tit,
+      titulo: tit,
+      slug: it.slug,
+      url: origin + '/4/anime/' + it.slug,
+      link: ANIMEAV1_BASE + '/media/' + it.slug,
+      portada: portada,
+      descripcion: it.synopsis ? String(it.synopsis).slice(0, 400) : null,
+      createdAt: it.createdAt || null,
+      category: catName || null,
+      source: 'animeav1',
+      type: tipo,
+      tipo: tipo,
+      formato: formato,
+      source_id: '4'
+    };
+  }
+
+  var eps = [];
+  for (var e = 0; e < latestEpisodes.length; e++) {
+    var me = mapEp(latestEpisodes[e]);
+    if (me) eps.push(me);
+  }
+  var medias = [];
+  for (var m = 0; m < latestMedia.length; m++) {
+    var mm = mapMedia(latestMedia[m]);
+    if (mm) medias.push(mm);
+  }
+
+  if (seccion === 'home' || seccion === 'inicio' || seccion === 'all') {
+    return {
+      success: true,
+      fuente: 'animeav1',
+      source_id: '4',
+      recientes: eps,
+      agregados: medias,
+      total_recientes: eps.length,
+      total_agregados: medias.length
+    };
+  }
+  if (seccion === 'agregados' || seccion === 'recien' || seccion === 'recien-agregados' || seccion === 'nuevos') {
+    return {
+      success: true,
+      fuente: 'animeav1',
+      source_id: '4',
+      seccion: 'agregados',
+      titulo: 'Animes recientemente agregados',
+      total: medias.length,
+      resultados: medias
+    };
+  }
+  // recientes / episodios (default)
+  return {
+    success: true,
+    fuente: 'animeav1',
+    source_id: '4',
+    seccion: 'recientes',
+    titulo: 'Episodios recientemente actualizados',
+    total: eps.length,
+    resultados: eps
   };
 }
 
