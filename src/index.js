@@ -792,7 +792,7 @@ async function handleRequest(request, env) {
         return json(await buscarJkanime(decodeURIComponent(qJkRoot)));
       }
 
-      if (parts[1] === 'anime' && parts[2]) {
+      if ((parts[1] === 'anime' || parts[1] === 'pelicula') && parts[2]) {
         var slugJk = parts[2];
         var epJk = null;
         if (parts[4]) epJk = parseInt(parts[4], 10);
@@ -937,7 +937,8 @@ async function handleRequest(request, env) {
 
         // NO usar limpiarDetalleJkanime aquí: igual que AV1, solo formatearDetalleRespuesta
         if (!detJk.url_extract && slugJk) {
-          detJk.url_extract = origin + '/5/anime/' + slugJk;
+          var kpJk = /pel[ií]cula|movie/i.test(String(detJk.tipo || '')) ? 'pelicula' : 'anime';
+          detJk.url_extract = origin + '/5/' + kpJk + '/' + slugJk;
         }
         detJk.fuente = 'jkanime';
         detJk.source_id = '5';
@@ -11592,16 +11593,21 @@ async function buscarJkanime(query) {
     }
 
     var typeM = block.match(/class="anime__item__text"[^>]*>[\s\S]*?<li[^>]*>([^<]+)/i) ||
-      block.match(/(Serie|Pel[ií]cula|OVA|ONA|Especial)/i);
+      block.match(/(Serie|Pel[ií]cula|OVA|ONA|Especial|Movie)/i);
     var tipo = typeM ? String(typeM[1]).trim() : 'Anime';
-    if (/pel[ií]cula|movie/i.test(tipo)) tipo = 'Pelicula';
-    else tipo = 'Anime';
+    // film/movie en slug o título → Película (como AV1)
+    if (/pel[ií]cula|movie/i.test(tipo) || /\bfilm\b|movie|pelicula/i.test(slug) || /\bfilm\b|movie/i.test(titulo)) {
+      tipo = 'Pelicula';
+    } else {
+      tipo = 'Anime';
+    }
+    var kindPath = tipo === 'Pelicula' ? 'pelicula' : 'anime';
 
     out.push({
       title: titulo,
       titulo: titulo,
       slug: slug,
-      url: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug,
+      url: 'https://moviezone.tvjz.workers.dev/5/' + kindPath + '/' + slug,
       link: JKANIME_BASE + '/' + slug + '/',
       portada: portada,
       source: 'jkanime',
@@ -12244,20 +12250,67 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
     proximo_episodio = String(pxM[1]).replace(/\s+/g, ' ').trim();
   }
 
+  // Tipo Película: slug/título film|movie o meta Tipo
+  var esPeliculaJk =
+    /pel[ií]cula|movie/i.test(String(tipo || '')) ||
+    /\bfilm\b|movie|pelicula/i.test(String(slug || '')) ||
+    /\bfilm\b|\bmovie\b/i.test(String(titulo || ''));
+  if (esPeliculaJk) tipo = 'Pelicula';
+
+  // Año / fecha desde "Emitido: Sabado, 15 de Diciembre de 2012"
+  var yearJk = null;
+  var fechaEstrenoJk = null;
+  if (emitido) {
+    var ymJk = String(emitido).match(/(19|20)\d{2}/);
+    if (ymJk) yearJk = ymJk[0];
+  }
+
+  // Película JK: players en /slug/1/ (un solo "episodio")
+  var reproductoresJk = [];
+  var embedsJk = [];
+  var descargasJk = [];
+  if (esPeliculaJk) {
+    try {
+      var ep1Url = JKANIME_BASE + '/' + slug + '/1/';
+      var ep1Res = await fetch(ep1Url, { headers: jkanimeHeaders() });
+      if (ep1Res.ok) {
+        var ep1Html = await ep1Res.text();
+        var parsedJk = parseJkanimeServers(ep1Html);
+        reproductoresJk = parsedJk.reproductores || [];
+        descargasJk = parsedJk.descargas || [];
+        embedsJk = reproductoresJk.map(function (r) { return r.url; });
+        reproductoresJk.sort(function (a, b) {
+          var aj = (a.tipo === 'jkplayer' || /jkplayer/i.test(a.url || '')) ? 0 : 1;
+          var bj = (b.tipo === 'jkplayer' || /jkplayer/i.test(b.url || '')) ? 0 : 1;
+          return aj - bj;
+        });
+      }
+    } catch (eJkPlay) {}
+  }
+
+  var kindPathDet = esPeliculaJk ? 'pelicula' : 'anime';
+
   return {
     success: true,
     fuente: 'jkanime',
     source_id: '5',
-    tipo: /pel[ií]cula|movie/i.test(String(tipo)) ? 'Pelicula' : 'Anime',
+    tipo: esPeliculaJk ? 'Pelicula' : (/pel[ií]cula|movie/i.test(String(tipo)) ? 'Pelicula' : 'Anime'),
     link: detailUrl,
     slug: slug,
     titulo: titulo,
     titulo_original: (titulos_alt.japones || titulos_alt.ingles || null),
     titulos_alternativos: titulos_alt,
     rating: calificacionFuente,
+    rating_fuente: calificacionFuente,
     rating_source: calificacionFuente != null ? 'fuente' : null,
+    year: yearJk,
+    fecha_estreno: fechaEstrenoJk,
     portada: portada,
     descripcion: descripcion,
+    total: reproductoresJk.length,
+    embeds: embedsJk,
+    reproductores: reproductoresJk,
+    descargas: descargasJk,
     generos: generos,
     genero: Array.isArray(generos) ? generos.join(', ') : generos,
     studios: Array.isArray(studios) ? studios : (studios ? [studios] : []),
@@ -12291,7 +12344,7 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
       }
       return rangos;
     })(),
-    temporadas: [{
+    temporadas: (esPeliculaJk ? [] : [{
       temporada: 1,
       // NO poner total_episodios aquí: slim usa lista.length (como AV1 muestra 50)
       episodios: episodios.map(function (ep) {
@@ -12314,7 +12367,7 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
         }
         return row;
       })
-    }],
-    url_extract: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug
+    }]),
+    url_extract: 'https://moviezone.tvjz.workers.dev/5/' + kindPathDet + '/' + slug
   };
 }
