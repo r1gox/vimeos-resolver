@@ -170,6 +170,28 @@ async function enriquecerSoloCinemeta(detalle, typeHint) {
   var meta = await fetchCinemetaByImdbId(imdbId, typeHint || detalle.tipo);
   if (!meta) return detalle;
 
+  // Si el year de la fuente no cuadra con Cinemeta → ese imdb_id NO es de esta obra
+  var yFuente = detalle.year ? String(detalle.year).match(/(19|20)\d{2}/) : null;
+  var yMeta = null;
+  if (meta.year) {
+    var ym1 = String(meta.year).match(/(19|20)\d{2}/);
+    if (ym1) yMeta = ym1[0];
+  }
+  if (!yMeta && meta.fecha_estreno) {
+    var ym2 = String(meta.fecha_estreno).match(/(19|20)\d{2}/);
+    if (ym2) yMeta = ym2[0];
+  }
+  if (yFuente && yMeta && yFuente[0] !== yMeta) {
+    // Descartar meta (logo/backdrop/rating_imdb de otra obra)
+    detalle.fecha_estreno = detalle.fecha_estreno || null;
+    // no aplicar imdb de otra serie/peli
+    if (detalle.imdb_id && String(detalle.imdb_id) === String(imdbId)) {
+      // dejar imdb_id solo si vino de fuente confiable; si solo era match débil, quitar
+      // Conservamos imdb_id pero NO pintamos meta de Cinemeta
+    }
+    return detalle;
+  }
+
   if (meta.rating != null) {
     var esAv1 = String(detalle.fuente || '') === 'animeav1' || String(detalle.source_id || '') === '4';
     if (esAv1) {
@@ -206,11 +228,12 @@ async function enriquecerSoloCinemeta(detalle, typeHint) {
       if (alC.year) detalle.year = alC.year;
     }
   }
-  // Si ya hay ambos y chocan, alinear
+  // Si year y fecha chocan → fecha no es de esta obra
   if (detalle.year && detalle.fecha_estreno) {
     var alD = alinearFechaConYear(detalle.year, detalle.fecha_estreno);
     detalle.year = alD.year || detalle.year;
-    detalle.fecha_estreno = alD.fecha_estreno;
+    if (alD.meta_invalida) detalle.fecha_estreno = null;
+    else detalle.fecha_estreno = alD.fecha_estreno;
   }
   if (meta.generos && meta.generos.length) {
     if (!detalle.generos || !detalle.generos.length) detalle.generos = meta.generos;
@@ -6428,6 +6451,19 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
  * year de la fuente manda. Si fecha_estreno es de otro año (Cinemeta mal),
  * se descarta o se ajusta a YYYY-01-01 del year correcto.
  */
+
+/** Quita sufijos tipo "(Fuente: Sitio oficial)" de sinopsis */
+function limpiarDescripcionFuente(texto) {
+  if (!texto || typeof texto !== 'string') return texto || null;
+  var t = texto.trim();
+  t = t.replace(/\s*\n*\s*\(Fuente:\s*[^)]*\)\s*$/gi, '');
+  t = t.replace(/\s*\n*\s*\[Fuente:\s*[^\]]*\]\s*$/gi, '');
+  t = t.replace(/\s*\n*\s*Fuente:\s*Sitio oficial\s*$/gi, '');
+  t = t.replace(/\s*\n*\s*\(Source:\s*[^)]*\)\s*$/gi, '');
+  t = t.replace(/\s*\n*\s*Source:\s*Official site\s*$/gi, '');
+  return t.trim() || null;
+}
+
 function alinearFechaConYear(year, fechaEstreno) {
   var y = null;
   if (year != null && year !== "") {
@@ -6435,21 +6471,22 @@ function alinearFechaConYear(year, fechaEstreno) {
     if (ym) y = ym[0];
   }
   if (!fechaEstreno) {
-    return { year: y || null, fecha_estreno: null };
+    return { year: y || null, fecha_estreno: null, meta_invalida: false };
   }
   var fe = String(fechaEstreno).trim();
   var fy = fe.match(/(19|20)\d{2}/);
   fy = fy ? fy[0] : null;
   if (y && fy && y !== fy) {
-    // Cinemeta/meta con año distinto → no confiar en esa fecha
-    return { year: y, fecha_estreno: y + "-01-01" };
+    // Año distinto → meta incorrecta (mal imdb_id); no usar esa fecha
+    return { year: y, fecha_estreno: null, meta_invalida: true };
   }
   if (!y && fy) {
     return { year: fy, fecha_estreno: fe.length >= 10 ? fe.slice(0, 10) : (fy + "-01-01") };
   }
   return {
     year: y || fy || null,
-    fecha_estreno: fe.length >= 10 ? fe.slice(0, 10) : (fe || null)
+    fecha_estreno: fe.length >= 10 ? fe.slice(0, 10) : (fe || null),
+    meta_invalida: false
   };
 }
 
@@ -6811,12 +6848,13 @@ function formatearDetalleRespuesta(item, origin) {
   var descFuente = String(item.descripcion_fuente || item.descripcion || '').trim();
   var desc = null;
   if (descFuente) {
-    desc = descFuente;
+    desc = typeof limpiarDescripcionFuente === 'function' ? limpiarDescripcionFuente(descFuente) : descFuente;
   } else {
     desc = (item.imdb && item.imdb.descripcion) || item.descripcion_imdb || item.descripcion_tmdb || null;
     if (desc && typeof esDescripcionBasura === 'function' && esDescripcionBasura(desc)) {
       desc = null;
     }
+    if (desc && typeof limpiarDescripcionFuente === 'function') desc = limpiarDescripcionFuente(desc);
   }
 
   var ratingImdb = null;
@@ -9855,7 +9893,7 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     // igual al título mostrado: si hay otro aka, usarlo
     if (Array.isArray(media.aka) && media.aka.length > 1) tituloOriginalAv1 = media.aka[1];
   }
-  var sinopsis = media.synopsis || null;
+  var sinopsis = media.synopsis ? limpiarDescripcionFuente(String(media.synopsis)) : null;
   var epsCount = media.episodesCount || 0;
   // 0 es válido (anime nuevo sin score aún)
   var score = (media.score != null && media.score !== '') ? Number(media.score) : null;
