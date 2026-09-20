@@ -801,43 +801,33 @@ async function handleRequest(request, env) {
           detJk.rating = detJk.rating != null ? detJk.rating : ratingFuenteJk;
         }
 
+        // IMDb JK: Jikan+ani.zip (no enriquecerDetalleConTmdb — evita pelis random)
         try {
-          detJk = await enriquecerDetalleConTmdb(detJk, 'anime');
-        } catch (eDetJk) { /* silencioso, igual que AV1 */ }
-
-        // Fallback rápido si Cinemeta multi-título no pegó: 1 sola búsqueda por slug
-        if (!detJk.imdb_id && slugJk) {
-          try {
-            var qSlug = String(slugJk).replace(/-/g, ' ').replace(/\s+/g, ' ').trim();
-            var urlFast = 'https://v3-cinemeta.strem.io/catalog/series/top/search=' + encodeURIComponent(qSlug) + '.json';
-            var resFast = await fetch(urlFast, { headers: { Accept: 'application/json', 'User-Agent': 'MovieZoneMeta/1.0' } });
-            if (resFast.ok) {
-              var dataFast = await resFast.json();
-              var metasF = (dataFast && dataFast.metas) || [];
-              var qn = qSlug.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-              for (var fi = 0; fi < metasF.length; fi++) {
-                var nm = String(metasF[fi].name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-                var idF = metasF[fi].imdb_id || metasF[fi].id;
-                if (idF && /^tt\d+$/i.test(String(idF)) && (nm === qn || nm === 'one piece' && qn.indexOf('one piece') === 0 || nm.indexOf(qn) === 0)) {
-                  detJk.imdb_id = String(idF);
-                  break;
-                }
-              }
-              if (!detJk.imdb_id && metasF[0]) {
-                var id0 = metasF[0].imdb_id || metasF[0].id;
-                if (id0 && /^tt\d+$/i.test(String(id0))) detJk.imdb_id = String(id0);
-              }
-            }
-            if (detJk.imdb_id) {
-              detJk = await enriquecerSoloCinemeta(detJk, 'anime');
-              // portada JK; portada_imdb/logo/backdrop Metahub (Cinemeta)
-              if (detJk.portada_fuente_raw) {
-                detJk.portada = detJk.portada_fuente_raw;
-                detJk.poster_source = 'jkanime';
-              }
-            }
-          } catch (eFast2) {}
-        }
+          var descJkKeep = detJk.descripcion;
+          var generosJkKeep = detJk.generos;
+          var ratingJkKeep = detJk.rating != null ? detJk.rating : detJk.calificacion;
+          var estadoJkKeep = detJk.estado;
+          var imdbJk = await resolverImdbJkanime(detJk, slugJk);
+          if (imdbJk.mal_id) detJk.mal_id = imdbJk.mal_id;
+          if (imdbJk.imdb_season != null) detJk.imdb_season = imdbJk.imdb_season;
+          if (imdbJk.imdb_id) {
+            detJk.imdb_id = imdbJk.imdb_id;
+            detJk = await enriquecerSoloCinemeta(detJk, 'anime');
+          }
+          // Restaurar texto/rating de la fuente JK (no la sinopsis de otra peli)
+          if (descJkKeep) detJk.descripcion = descJkKeep;
+          if (generosJkKeep && generosJkKeep.length) detJk.generos = generosJkKeep;
+          if (ratingJkKeep != null && ratingFuenteJk != null) {
+            detJk.rating = ratingFuenteJk;
+            detJk.calificacion = ratingFuenteJk;
+            detJk.rating_source = 'fuente';
+          }
+          if (estadoJkKeep) detJk.estado = estadoJkKeep;
+          if (detJk.portada_fuente_raw) {
+            detJk.portada = detJk.portada_fuente_raw;
+            detJk.poster_source = 'jkanime';
+          }
+        } catch (eDetJk) { /* silencioso */ }
 
         if (detJk && detJk.imdb_id && /^tt\d+$/i.test(String(detJk.imdb_id))) {
           var ttJk = String(detJk.imdb_id);
@@ -11699,6 +11689,131 @@ function parseJkanimeServers(html) {
 
 
 /** Detalle anime o capítulo */
+
+/** IMDb para JKanime: Jikan→ani.zip; Cinemeta solo match estricto (evita pelis random) */
+async function resolverImdbJkanime(det, slug) {
+  if (!det) return {};
+  var out = { imdb_id: null, mal_id: null, imdb_season: null };
+  var queries = [];
+  function addq(t) {
+    t = String(t || '').replace(/\(\d{4}\)/g, '').trim();
+    if (t.length >= 2 && queries.indexOf(t) === -1) queries.push(t);
+  }
+  addq(det.titulo);
+  var alts = det.titulos_alternativos || {};
+  addq(alts.ingles);
+  addq(alts.sinonimos);
+  addq(String(slug || '').replace(/-/g, ' '));
+
+  var blob = (queries.join(' ') + ' ' + String(slug || '')).toLowerCase();
+
+  // Temporadas conocidas de la misma serie IMDb (evita confusiones con pelis)
+  if (/jujutsu|kaisen/.test(blob)) {
+    out.imdb_id = 'tt12343534';
+    if (/shimetsu|kaiyuu|culling|zenpen|3rd|season.?3|tercer/.test(blob)) out.imdb_season = 3;
+    else if (/2nd|shibuya|kaigyoku|gyokusetsu|season.?2|segunda/.test(blob)) out.imdb_season = 2;
+    else out.imdb_season = 1;
+    return out;
+  }
+
+  function norm(s) {
+    return String(s || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  // 1) Jikan → mal_id
+  var malId = null;
+  for (var qi = 0; qi < Math.min(4, queries.length) && !malId; qi++) {
+    try {
+      var jurl = 'https://api.jikan.moe/v4/anime?q=' + encodeURIComponent(queries[qi]) + '&limit=8';
+      var jr = await fetch(jurl, { headers: { Accept: 'application/json', 'User-Agent': 'MovieZoneMeta/1.0' } });
+      if (!jr.ok) continue;
+      var jd = await jr.json();
+      var list = (jd && jd.data) || [];
+      var qn = norm(queries[qi]);
+      var best = null;
+      var bestSc = -1;
+      for (var i = 0; i < list.length; i++) {
+        var a = list[i];
+        var names = [a.title, a.title_english, a.title_japanese].filter(Boolean).map(norm);
+        var sc = 0;
+        for (var j = 0; j < names.length; j++) {
+          if (names[j] === qn) sc = Math.max(sc, 100);
+          else if (names[j].indexOf(qn) !== -1 || qn.indexOf(names[j]) !== -1) sc = Math.max(sc, 60);
+        }
+        if (sc > bestSc) { bestSc = sc; best = a; }
+      }
+      if (best && bestSc >= 55) malId = best.mal_id;
+    } catch (eJ) {}
+  }
+  out.mal_id = malId || null;
+
+  // 2) ani.zip
+  if (malId) {
+    try {
+      var az = await fetch('https://api.ani.zip/mappings?mal_id=' + encodeURIComponent(malId), {
+        headers: { Accept: 'application/json' }
+      });
+      if (az.ok) {
+        var azd = await az.json();
+        var m = (azd && azd.mappings) ? azd.mappings : azd;
+        if (m && m.imdb_id && /^tt\d+$/i.test(String(m.imdb_id))) {
+          out.imdb_id = String(m.imdb_id);
+          var eps = azd.episodes;
+          if (eps && typeof eps === 'object') {
+            for (var ek in eps) {
+              if (eps[ek] && eps[ek].seasonNumber != null) {
+                out.imdb_season = Number(eps[ek].seasonNumber);
+                break;
+              }
+            }
+          }
+          return out;
+        }
+      }
+    } catch (eAz) {}
+  }
+
+  // 3) Cinemeta series — solo si el nombre encaja (NUNCA el primer resultado a ciegas)
+  for (var ci = 0; ci < Math.min(3, queries.length); ci++) {
+    try {
+      var curl =
+        'https://v3-cinemeta.strem.io/catalog/series/top/search=' +
+        encodeURIComponent(queries[ci]) + '.json';
+      var cr = await fetch(curl, { headers: { Accept: 'application/json', 'User-Agent': 'MovieZoneMeta/1.0' } });
+      if (!cr.ok) continue;
+      var cd = await cr.json();
+      var metas = (cd && cd.metas) || [];
+      var qn2 = norm(queries[ci]);
+      var bestId = null;
+      var bestSc2 = -1;
+      for (var mi = 0; mi < metas.length; mi++) {
+        var meta = metas[mi];
+        if (!meta || meta.type === 'movie') continue;
+        var id = meta.imdb_id || meta.id;
+        if (!id || !/^tt\d+$/i.test(String(id))) continue;
+        var nm = norm(meta.name || meta.title || '');
+        var sc2 = 0;
+        if (nm === qn2) sc2 = 100;
+        else if (nm.indexOf(qn2) === 0 || qn2.indexOf(nm) === 0) sc2 = 70;
+        else if (nm.indexOf(qn2) !== -1 || qn2.indexOf(nm) !== -1) sc2 = 50;
+        else continue;
+        if (sc2 > bestSc2) { bestSc2 = sc2; bestId = String(id); }
+      }
+      if (bestId && bestSc2 >= 70) {
+        out.imdb_id = bestId;
+        return out;
+      }
+    } catch (eC) {}
+  }
+  return out;
+}
+
 async function scrapearJkanime(pageUrlOrSlug, opts) {
   opts = opts || {};
   var slug = String(pageUrlOrSlug || '').trim();
