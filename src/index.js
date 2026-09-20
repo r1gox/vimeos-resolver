@@ -1059,9 +1059,7 @@ async function handleRequest(request, env) {
       if (resultados.resultados) {
         for (var ri = 0; ri < resultados.resultados.length; ri++) {
           var r = resultados.resultados[ri];
-          var tipoPath = (r.tipo === 'Serie' || r.tipo === 'Anime')
-            ? (r.tipo === 'Anime' ? 'anime' : 'serie')
-            : 'pelicula';
+          var tipoPath = tipoPathDesdeTipo(r.tipo);
           var sid = sourceIdFromName(r.fuente);
           r.titulo = limpiarTitulo(r.titulo || '');
           // Título basura de la fuente (encoding / slug numérico)
@@ -6585,9 +6583,7 @@ function slimResultadoLista(item, origin) {
   var sid = item.source_id != null ? String(item.source_id) : sourceIdFromName(fuente);
   var slug = item.slug || null;
   var tipo = item.tipo || 'Pelicula';
-  var tipoPath = (tipo === 'Serie' || tipo === 'Anime')
-    ? (tipo === 'Anime' ? 'anime' : 'serie')
-    : 'pelicula';
+  var tipoPath = tipoPathDesdeTipo(tipo);
   var url = item.url_extract || item.url || item.link || null;
   if (!url && slug && sid) {
     url = (origin || '') + '/' + sid + '/' + tipoPath + '/' + slug;
@@ -6990,9 +6986,7 @@ function formatearDetalleRespuesta(item, origin) {
   var tipo = item.tipo || 'Pelicula';
   var sid = item.source_id != null ? String(item.source_id) : sourceIdFromName(item.fuente);
   var slug = item.slug || null;
-  var tipoPath = (tipo === 'Serie' || tipo === 'Anime')
-    ? (tipo === 'Anime' ? 'anime' : 'serie')
-    : 'pelicula';
+  var tipoPath = tipoPathDesdeTipo(tipo);
   var urlExtract = item.url_extract || null;
   if (!urlExtract && slug && sid && origin) {
     urlExtract = origin + '/' + sid + '/' + tipoPath + '/' + slug;
@@ -7034,7 +7028,7 @@ function formatearDetalleRespuesta(item, origin) {
     else if (item.en_emision === true) estado = 'En emisión';
   }
 
-  var esSerieAnime = (tipo === 'Serie' || tipo === 'Anime');
+  var esSerieAnime = esTipoConEpisodios(tipo);
   var reps = item.reproductores || [];
   var embeds = item.embeds || [];
   var descargas = item.descargas || item.downloads || [];
@@ -9607,6 +9601,29 @@ function tipoDesdeFormatoAnime(formato) {
   return 'Anime';
 }
 
+/** Serie/Anime/OVA/ONA/Especial → listado de caps; solo Pelicula es cine */
+function esTipoConEpisodios(tipo) {
+  var t = String(tipo || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return (
+    t === 'serie' ||
+    t === 'anime' ||
+    t === 'ova' ||
+    t === 'ona' ||
+    t === 'especial' ||
+    t === 'tv'
+  );
+}
+
+/** Path URL: pelicula | serie | anime */
+function tipoPathDesdeTipo(tipo) {
+  var t = String(tipo || '');
+  if (/pel[ií]cula|movie|film/i.test(t)) return 'pelicula';
+  if (/^serie$/i.test(t) || /^dorama$/i.test(t)) return 'serie';
+  return 'anime'; // Anime, OVA, ONA, Especial
+}
+
+
+
 /** ¿Texto parece español? */
 function pareceEspanol(txt) {
   var s = String(txt || '');
@@ -10305,14 +10322,38 @@ async function scrapearAnimeAv1(pageUrl, opts) {
 
   var tempPrincipal = temporadaBase || 1;
   var episodiosRango = [];
-  for (var e = epFrom; e <= epTo; e++) {
-    episodiosRango.push({
-      temporada: tempPrincipal,
-      episodio: e,
-      titulo: 'Episodio ' + e,
-      url_video: null,
-      back_img: animeAv1BackImg(media.id, e)
-    });
+  var numsFromMedia = [];
+  try {
+    var epsMedia = (media && media.episodes) || [];
+    for (var emi = 0; emi < epsMedia.length; emi++) {
+      var nM = parseInt(epsMedia[emi] && epsMedia[emi].number, 10);
+      if (!isNaN(nM) && nM >= 0) numsFromMedia.push(nM);
+    }
+    numsFromMedia.sort(function (a, b) { return a - b; });
+  } catch (_) {}
+  if (numsFromMedia.length && totalEps <= 200) {
+    for (var ei = 0; ei < numsFromMedia.length; ei++) {
+      var eNum = numsFromMedia[ei];
+      if (eNum < epFrom || eNum > epTo) continue;
+      episodiosRango.push({
+        temporada: tempPrincipal,
+        episodio: eNum,
+        titulo: 'Episodio ' + eNum,
+        url_video: null,
+        back_img: animeAv1BackImg(media.id, eNum)
+      });
+    }
+  }
+  if (!episodiosRango.length) {
+    for (var e = epFrom; e <= epTo; e++) {
+      episodiosRango.push({
+        temporada: tempPrincipal,
+        episodio: e,
+        titulo: 'Episodio ' + e,
+        url_video: null,
+        back_img: animeAv1BackImg(media.id, e)
+      });
+    }
   }
 
   var rangos = [];
