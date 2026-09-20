@@ -10228,9 +10228,53 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     };
   }
 
-  // Película / OVA de 1 ep: cargar reproductores en la raíz (no dejar total:0)
+  // Regla OVA/ONA/Especial/Película:
+  // - 1 episodio y concluido → como Película (reproductores en la raíz)
+  // - más de 1 episodio, o en emisión con >2 eps → listado de episodios
   var totalEpsEarly = parseInt(epsCount, 10) || 0;
-  if ((tipo === 'Pelicula' || formato === 'Pelicula' || formato === 'Movie' || totalEpsEarly === 1) && !epNum) {
+  try {
+    var epsListEarly = (media && media.episodes) || [];
+    if (epsListEarly.length > totalEpsEarly) totalEpsEarly = epsListEarly.length;
+  } catch (_) {}
+  var stEarly = typeof estadoDesdeAnimeAv1Media === 'function' ? estadoDesdeAnimeAv1Media(media) : {};
+  var enEmisionEarly = !!(stEarly && stEarly.en_emision);
+  var finalizadoEarly = !!(stEarly && stEarly.finalizado);
+  if (!finalizadoEarly && !enEmisionEarly) {
+    // status texto
+    var stTxt = String((media && media.status) || '').toLowerCase();
+    if (/final|conclu|ended|finished|complete/i.test(stTxt)) finalizadoEarly = true;
+    if (/emisi|airing|ongoing|current/i.test(stTxt)) enEmisionEarly = true;
+  }
+  var esFormatoCorto =
+    tipo === 'Pelicula' ||
+    formato === 'Pelicula' ||
+    formato === 'Movie' ||
+    tipo === 'OVA' ||
+    tipo === 'ONA' ||
+    tipo === 'Especial' ||
+    formato === 'OVA' ||
+    formato === 'ONA' ||
+    formato === 'Especial';
+  // Película siempre; OVA/ONA/Especial solo si 1 ep y NO en emisión (concluido)
+  var tratarComoPelicula =
+    !epNum &&
+    (
+      tipo === 'Pelicula' ||
+      formato === 'Pelicula' ||
+      formato === 'Movie' ||
+      (esFormatoCorto && totalEpsEarly <= 1 && !enEmisionEarly)
+    );
+  // Si en emisión y solo 1-2 eps, aún listar episodios (no forzar película)
+  if (enEmisionEarly && totalEpsEarly >= 1 && totalEpsEarly <= 2 && tipo !== 'Pelicula' && formato !== 'Pelicula') {
+    tratarComoPelicula = false;
+  }
+  // Más de 1 ep → nunca película
+  if (totalEpsEarly > 1) tratarComoPelicula = false;
+  if (tratarComoPelicula && (tipo === 'OVA' || tipo === 'ONA' || tipo === 'Especial')) {
+    // mantener formato real; tipo de respuesta como Pelicula solo para path/players
+    // (formato sigue OVA/ONA/Especial)
+  }
+  if (tratarComoPelicula) {
     try {
       var epNumsTry = [];
       try {
@@ -10278,8 +10322,8 @@ async function scrapearAnimeAv1(pageUrl, opts) {
         success: true,
         fuente: 'animeav1',
         source_id: '4',
-        tipo: 'Pelicula',
-        formato: formato || 'Pelicula',
+        tipo: (tipo === 'OVA' || tipo === 'ONA' || tipo === 'Especial') ? tipo : 'Pelicula',
+        formato: formato || ((tipo === 'OVA' || tipo === 'ONA' || tipo === 'Especial') ? tipo : 'Pelicula'),
         link: ANIMEAV1_BASE + '/media/' + slug,
         slug: slug,
         titulo: titulo,
@@ -10288,6 +10332,9 @@ async function scrapearAnimeAv1(pageUrl, opts) {
         descripcion: sinopsis,
         calificacion: score,
         year: yearAv1,
+        estado: (stEarly && stEarly.estado) || null,
+        en_emision: enEmisionEarly ? true : false,
+        finalizado: finalizadoEarly ? true : (totalEpsEarly <= 1),
         total: repsMovie.length,
         embeds: repsMovie.map(function (r) { return r.url; }),
         reproductores: repsMovie,
@@ -12635,13 +12682,21 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
   ) tipo = 'Pelicula';
   else tipo = 'Anime';
   var esPeliculaJk = (tipo === 'Pelicula');
-  // OVA / ONA / Especial / Película: un solo capítulo en /slug/1/ (players ahí)
+  // OVA/ONA/Especial: 1 ep + concluido → players en /1/; si varios eps o en emisión → lista
+  var totalEpsJk = 0;
+  try {
+    totalEpsJk = parseInt(episodios && (episodios._jkTotal || episodios.length), 10) || (episodios ? episodios.length : 0) || 0;
+  } catch (_) { totalEpsJk = 0; }
   var esUnicoCapJk =
     tipo === 'Pelicula' ||
-    tipo === 'OVA' ||
-    tipo === 'ONA' ||
-    tipo === 'Especial' ||
-    (formatoJk && /ova|ona|especial|pelicula|movie/i.test(String(formatoJk)));
+    (
+      (tipo === 'OVA' || tipo === 'ONA' || tipo === 'Especial' ||
+        (formatoJk && /ova|ona|especial|pelicula|movie/i.test(String(formatoJk)))) &&
+      totalEpsJk <= 1 &&
+      !enEmision
+    );
+  // Más de 1 episodio → siempre lista
+  if (totalEpsJk > 1) esUnicoCapJk = false;
 
   // Año / fecha desde "Emitido: Sabado, 15 de Diciembre de 2012"
   var yearJk = null;
