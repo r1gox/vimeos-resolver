@@ -7183,6 +7183,24 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
         pushTit(cleaned);
       }
 
+      // Variantes anime romaji → inglés (kaijuu 8-gou movie → Kaiju No. 8)
+      try {
+        var extraTit = [];
+        candidatosTitulo.forEach(function (t) {
+          var x = String(t || '');
+          var y = x
+            .replace(/\bkaijuu\b/ig, 'Kaiju')
+            .replace(/\b(\d+)\s*-?\s*gou\b/ig, 'No. $1')
+            .replace(/\bmovie\b/ig, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (y && y !== x) extraTit.push(y);
+          var z = y.replace(/\bno\.?\s*/ig, '').replace(/\s+/g, ' ').trim();
+          if (z && z.length > 3) extraTit.push(z);
+        });
+        extraTit.forEach(function (t) { pushTit(t); });
+      } catch (_) {}
+
       var year = detalle.year || null;
       var t = String(tipo).toLowerCase();
       var kinds = /anime|serie|series|tv|dorama/.test(t)
@@ -7207,18 +7225,47 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
         if (!meta) return -1;
         var id = meta.imdb_id || meta.id;
         if (!id || !/^tt\d+$/i.test(String(id))) return -1;
+        // q vacío o muy corto → no matchear (evita 8½ / "8" / Movie genérico)
+        if (!qNorm || String(qNorm).trim().length < 4) return -1;
         var nameN = normTitleKey(meta.name || meta.title || '');
-        if (!nameN) return 0;
+        if (!nameN || nameN.length < 2) return -1;
         var sc = 0;
         if (nameN === qNorm) sc += 100;
-        else if (nameN.indexOf(qNorm) === 0 || qNorm.indexOf(nameN) === 0) sc += 70;
-        else if (nameN.indexOf(qNorm) !== -1 || qNorm.indexOf(nameN) !== -1) sc += 40;
-        else return -1; // no parece la misma obra
+        else if (nameN.indexOf(qNorm) === 0 || qNorm.indexOf(nameN) === 0) {
+          // Prefijo solo si el nombre meta no es demasiado corto (evita "8" ⊂ "kaijuu 8 gou")
+          if (Math.min(nameN.length, qNorm.length) < 5 && nameN !== qNorm) return -1;
+          sc += 70;
+        } else if (nameN.indexOf(qNorm) !== -1 || qNorm.indexOf(nameN) !== -1) {
+          if (Math.min(nameN.length, qNorm.length) < 5) return -1;
+          sc += 40;
+        } else {
+          // Tokens en común (ignorar números sueltos y palabras basura)
+          var stop = { movie: 1, the: 1, and: 1, part: 1, season: 1, vol: 1, no: 1, gou: 1 };
+          var tq = qNorm.split(' ').filter(function (t) {
+            return t.length > 2 && !stop[t] && !/^\d+$/.test(t);
+          });
+          var tn = nameN.split(' ').filter(function (t) {
+            return t.length > 2 && !stop[t] && !/^\d+$/.test(t);
+          });
+          if (!tq.length || !tn.length) return -1;
+          var hit = 0;
+          for (var i = 0; i < tq.length; i++) {
+            if (tn.indexOf(tq[i]) !== -1) hit++;
+          }
+          if (hit === 0) return -1;
+          sc += 25 + hit * 15;
+        }
+        // Año: bonus si coincide; penalización fuerte si difiere mucho (2025 vs 1963)
         if (yearPref) {
           var ri = String(meta.releaseInfo || meta.year || '');
-          if (ri.indexOf(String(yearPref)) !== -1) sc += 25;
+          var ym = ri.match(/(19|20)\d{2}/);
+          if (ri.indexOf(String(yearPref)) !== -1) sc += 30;
+          else if (ym) {
+            var dy = Math.abs(parseInt(ym[0], 10) - parseInt(String(yearPref), 10));
+            if (dy > 8) return -1;
+            if (dy > 3) sc -= 20;
+          }
         }
-        // preferir serie larga anime (1999) vs live-action 2023 si el query es genérico
         if (meta.type === 'series') sc += 5;
         return sc;
       }
@@ -7243,7 +7290,7 @@ async function enriquecerDetalleConTmdb(detalle, tipoRuta) {
           } catch (eSearch) { /* next */ }
         }
       }
-      if (bestId && bestScore >= 40) imdbId = bestId;
+      if (bestId && bestScore >= 50) imdbId = bestId;
 
       // 2) OMDb si Cinemeta no dio id
       if (!imdbId) {
