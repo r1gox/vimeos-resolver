@@ -872,7 +872,7 @@ async function handleRequest(request, env) {
           if (imdbJk.imdb_season != null) detJk.imdb_season = imdbJk.imdb_season;
           if (imdbJk.imdb_id) {
             detJk.imdb_id = imdbJk.imdb_id;
-            detJk = await enriquecerSoloCinemeta(detJk, 'anime');
+            detJk = await enriquecerSoloCinemeta(detJk, detJk.tipo || 'Anime');
           }
           // Restaurar texto/rating de la fuente JK (no la sinopsis de otra peli)
           if (descJkKeep) detJk.descripcion = descJkKeep;
@@ -11904,10 +11904,15 @@ async function resolverImdbJkanime(det, slug) {
   addq(alts.sinonimos);
   addq(String(slug || '').replace(/-/g, ' '));
 
-  var blob = (queries.join(' ') + ' ' + String(slug || '')).toLowerCase();
+  var blob = (queries.join(' ') + ' ' + String(slug || '') + ' ' + String(det.tipo || '')).toLowerCase();
+  // ¿Película / film / movie? (no serie TV)
+  var esPeli =
+    /pel[ií]cula|movie|film|pelicula/.test(String(det.tipo || '')) ||
+    /(?:^|[\s\-])(movie|film|pelicula)(?:$|[\s\-])/.test(blob) ||
+    /film[- ]z\b|movie\b/.test(blob);
 
-  // Temporadas conocidas de la misma serie IMDb (evita confusiones con pelis)
-  if (/jujutsu|kaisen/.test(blob)) {
+  // Temporadas conocidas de la misma serie IMDb (solo series, no pelis)
+  if (!esPeli && /jujutsu|kaisen/.test(blob)) {
     out.imdb_id = 'tt12343534';
     if (/shimetsu|kaiyuu|culling|zenpen|3rd|season.?3|tercer/.test(blob)) out.imdb_season = 3;
     else if (/2nd|shibuya|kaigyoku|gyokusetsu|season.?2|segunda/.test(blob)) out.imdb_season = 2;
@@ -11925,11 +11930,13 @@ async function resolverImdbJkanime(det, slug) {
       .trim();
   }
 
-  // 1) Jikan → mal_id
+  // 1) Jikan → mal_id (películas: type=movie)
   var malId = null;
   for (var qi = 0; qi < Math.min(4, queries.length) && !malId; qi++) {
     try {
-      var jurl = 'https://api.jikan.moe/v4/anime?q=' + encodeURIComponent(queries[qi]) + '&limit=8';
+      var jurl =
+        'https://api.jikan.moe/v4/anime?q=' + encodeURIComponent(queries[qi]) +
+        '&limit=10' + (esPeli ? '&type=movie' : '');
       var jr = await fetch(jurl, { headers: { Accept: 'application/json', 'User-Agent': 'MovieZoneMeta/1.0' } });
       if (!jr.ok) continue;
       var jd = await jr.json();
@@ -11939,16 +11946,54 @@ async function resolverImdbJkanime(det, slug) {
       var bestSc = -1;
       for (var i = 0; i < list.length; i++) {
         var a = list[i];
+        if (!a) continue;
+        var aType = String(a.type || '').toLowerCase();
+        // Si buscamos peli, descartar TV; si serie, preferir TV
+        if (esPeli && aType === 'tv') continue;
+        if (!esPeli && (aType === 'movie' || aType === 'ova') && !/movie|film|ova/.test(qn)) {
+          /* permitir ova si el query no es serie pura */
+        }
         var names = [a.title, a.title_english, a.title_japanese].filter(Boolean).map(norm);
         var sc = 0;
         for (var j = 0; j < names.length; j++) {
           if (names[j] === qn) sc = Math.max(sc, 100);
           else if (names[j].indexOf(qn) !== -1 || qn.indexOf(names[j]) !== -1) sc = Math.max(sc, 60);
         }
+        if (esPeli && (aType === 'movie' || aType === 'special')) sc += 25;
+        if (!esPeli && aType === 'tv') sc += 15;
         if (sc > bestSc) { bestSc = sc; best = a; }
       }
       if (best && bestSc >= 55) malId = best.mal_id;
     } catch (eJ) {}
+  }
+  // Si peli y no hubo mal_id con type=movie, reintentar sin filtro (por si Jikan no marca movie)
+  if (esPeli && !malId) {
+    for (var qi2 = 0; qi2 < Math.min(3, queries.length) && !malId; qi2++) {
+      try {
+        var jurl2 = 'https://api.jikan.moe/v4/anime?q=' + encodeURIComponent(queries[qi2]) + '&limit=10';
+        var jr2 = await fetch(jurl2, { headers: { Accept: 'application/json', 'User-Agent': 'MovieZoneMeta/1.0' } });
+        if (!jr2.ok) continue;
+        var jd2 = await jr2.json();
+        var list2 = (jd2 && jd2.data) || [];
+        var qn2b = norm(queries[qi2]);
+        var best2 = null, bestSc2b = -1;
+        for (var i2 = 0; i2 < list2.length; i2++) {
+          var a2 = list2[i2];
+          if (!a2) continue;
+          var t2 = String(a2.type || '').toLowerCase();
+          if (t2 === 'tv') continue;
+          var names2 = [a2.title, a2.title_english, a2.title_japanese].filter(Boolean).map(norm);
+          var scb = 0;
+          for (var j2 = 0; j2 < names2.length; j2++) {
+            if (names2[j2] === qn2b) scb = Math.max(scb, 100);
+            else if (names2[j2].indexOf(qn2b) !== -1 || qn2b.indexOf(names2[j2]) !== -1) scb = Math.max(scb, 60);
+          }
+          if (t2 === 'movie') scb += 30;
+          if (scb > bestSc2b) { bestSc2b = scb; best2 = a2; }
+        }
+        if (best2 && bestSc2b >= 55) malId = best2.mal_id;
+      } catch (eJ2) {}
+    }
   }
   out.mal_id = malId || null;
 
@@ -11978,39 +12023,52 @@ async function resolverImdbJkanime(det, slug) {
     } catch (eAz) {}
   }
 
-  // 3) Cinemeta series — solo si el nombre encaja (NUNCA el primer resultado a ciegas)
-  for (var ci = 0; ci < Math.min(3, queries.length); ci++) {
-    try {
-      var curl =
-        'https://v3-cinemeta.strem.io/catalog/series/top/search=' +
-        encodeURIComponent(queries[ci]) + '.json';
-      var cr = await fetch(curl, { headers: { Accept: 'application/json', 'User-Agent': 'MovieZoneMeta/1.0' } });
-      if (!cr.ok) continue;
-      var cd = await cr.json();
-      var metas = (cd && cd.metas) || [];
-      var qn2 = norm(queries[ci]);
-      var bestId = null;
-      var bestSc2 = -1;
-      for (var mi = 0; mi < metas.length; mi++) {
-        var meta = metas[mi];
-        if (!meta || meta.type === 'movie') continue;
-        var id = meta.imdb_id || meta.id;
-        if (!id || !/^tt\d+$/i.test(String(id))) continue;
-        var nm = norm(meta.name || meta.title || '');
-        var sc2 = 0;
-        if (nm === qn2) sc2 = 100;
-        else if (nm.indexOf(qn2) === 0 || qn2.indexOf(nm) === 0) sc2 = 70;
-        else if (nm.indexOf(qn2) !== -1 || qn2.indexOf(nm) !== -1) sc2 = 50;
-        else continue;
-        if (sc2 > bestSc2) { bestSc2 = sc2; bestId = String(id); }
-      }
-      if (bestId && bestSc2 >= 70) {
-        out.imdb_id = bestId;
-        return out;
-      }
-    } catch (eC) {}
+  // 3) Cinemeta: películas → catalog/movie; series → catalog/series
+  var cKinds = esPeli ? ['movie', 'series'] : ['series', 'movie'];
+  for (var ck = 0; ck < cKinds.length; ck++) {
+    var kind = cKinds[ck];
+    for (var ci = 0; ci < Math.min(3, queries.length); ci++) {
+      try {
+        var curl =
+          'https://v3-cinemeta.strem.io/catalog/' + kind + '/top/search=' +
+          encodeURIComponent(queries[ci]) + '.json';
+        var cr = await fetch(curl, { headers: { Accept: 'application/json', 'User-Agent': 'MovieZoneMeta/1.0' } });
+        if (!cr.ok) continue;
+        var cd = await cr.json();
+        var metas = (cd && cd.metas) || [];
+        var qn2 = norm(queries[ci]);
+        var bestId = null;
+        var bestSc2 = -1;
+        for (var mi = 0; mi < metas.length; mi++) {
+          var meta = metas[mi];
+          if (!meta) continue;
+          // En búsqueda de peli, no coger series
+          if (esPeli && meta.type === 'series') continue;
+          if (!esPeli && meta.type === 'movie') continue;
+          var id = meta.imdb_id || meta.id;
+          if (!id || !/^tt\d+$/i.test(String(id))) continue;
+          var nm = norm(meta.name || meta.title || '');
+          var sc2 = 0;
+          if (nm === qn2) sc2 = 100;
+          else if (nm.indexOf(qn2) === 0 || qn2.indexOf(nm) === 0) sc2 = 70;
+          else if (nm.indexOf(qn2) !== -1 || qn2.indexOf(nm) !== -1) sc2 = 50;
+          else continue;
+          if (yearHintMatch(det.year, meta.releaseInfo)) sc2 += 25;
+          if (sc2 > bestSc2) { bestSc2 = sc2; bestId = String(id); }
+        }
+        if (bestId && bestSc2 >= 70) {
+          out.imdb_id = bestId;
+          return out;
+        }
+      } catch (eC) {}
+    }
   }
   return out;
+
+  function yearHintMatch(y, releaseInfo) {
+    if (!y || !releaseInfo) return false;
+    return String(releaseInfo).indexOf(String(y).slice(0, 4)) !== -1;
+  }
 }
 
 async function scrapearJkanime(pageUrlOrSlug, opts) {
