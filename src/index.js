@@ -192,7 +192,25 @@ async function enriquecerSoloCinemeta(detalle, typeHint) {
   }
   if (meta.year && !detalle.year) detalle.year = meta.year;
   if (meta.fecha_estreno && !detalle.fecha_estreno) {
-    detalle.fecha_estreno = meta.fecha_estreno;
+    var alC = alinearFechaConYear(detalle.year || meta.year, meta.fecha_estreno);
+    // Solo aplicar fecha meta si el año cuadra con el year de la fuente
+    if (alC.fecha_estreno && detalle.year) {
+      var yDet = String(detalle.year).match(/(19|20)\d{2}/);
+      var yFe = String(alC.fecha_estreno).match(/(19|20)\d{2}/);
+      if (yDet && yFe && yDet[0] === yFe[0]) {
+        detalle.fecha_estreno = alC.fecha_estreno;
+      }
+      // si no cuadra, no poner fecha de Cinemeta
+    } else if (alC.fecha_estreno && !detalle.year) {
+      detalle.fecha_estreno = alC.fecha_estreno;
+      if (alC.year) detalle.year = alC.year;
+    }
+  }
+  // Si ya hay ambos y chocan, alinear
+  if (detalle.year && detalle.fecha_estreno) {
+    var alD = alinearFechaConYear(detalle.year, detalle.fecha_estreno);
+    detalle.year = alD.year || detalle.year;
+    detalle.fecha_estreno = alD.fecha_estreno;
   }
   if (meta.generos && meta.generos.length) {
     if (!detalle.generos || !detalle.generos.length) detalle.generos = meta.generos;
@@ -6405,6 +6423,36 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
  * Concurrencia limitada para no saturar el worker de meta.
  */
 /** Normaliza rating a número 0–10 con 1 decimal (string o number) */
+
+/**
+ * year de la fuente manda. Si fecha_estreno es de otro año (Cinemeta mal),
+ * se descarta o se ajusta a YYYY-01-01 del year correcto.
+ */
+function alinearFechaConYear(year, fechaEstreno) {
+  var y = null;
+  if (year != null && year !== "") {
+    var ym = String(year).match(/(19|20)\d{2}/);
+    if (ym) y = ym[0];
+  }
+  if (!fechaEstreno) {
+    return { year: y || null, fecha_estreno: null };
+  }
+  var fe = String(fechaEstreno).trim();
+  var fy = fe.match(/(19|20)\d{2}/);
+  fy = fy ? fy[0] : null;
+  if (y && fy && y !== fy) {
+    // Cinemeta/meta con año distinto → no confiar en esa fecha
+    return { year: y, fecha_estreno: y + "-01-01" };
+  }
+  if (!y && fy) {
+    return { year: fy, fecha_estreno: fe.length >= 10 ? fe.slice(0, 10) : (fy + "-01-01") };
+  }
+  return {
+    year: y || fy || null,
+    fecha_estreno: fe.length >= 10 ? fe.slice(0, 10) : (fe || null)
+  };
+}
+
 function normalizarCalificacion(val) {
   if (val == null || val === '' || val === 'N/A') return null;
   var n = Number(String(val).replace(',', '.').replace(/[^\d.]/g, ''));
@@ -6914,8 +6962,14 @@ function formatearDetalleRespuesta(item, origin) {
     backdrop: item.backdrop || null,
     portada_fuente_raw: portadaFuente || item.portada_fuente_raw || null,
     descripcion: desc,
-    year: item.year || null,
-    fecha_estreno: item.fecha_estreno || null,
+    year: (function () {
+      var al = alinearFechaConYear(item.year, item.fecha_estreno);
+      return al.year || item.year || null;
+    })(),
+    fecha_estreno: (function () {
+      var al = alinearFechaConYear(item.year, item.fecha_estreno);
+      return al.fecha_estreno;
+    })(),
     rating: rating,
     rating_source: rating_source,
     rating_imdb: (typeof ratingImdb !== 'undefined' && ratingImdb != null) ? ratingImdb : (item.rating_imdb != null ? normalizarCalificacion(item.rating_imdb) : null),
