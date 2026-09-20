@@ -171,9 +171,24 @@ async function enriquecerSoloCinemeta(detalle, typeHint) {
   if (!meta) return detalle;
 
   if (meta.rating != null) {
-    detalle.rating = meta.rating;
-    detalle.calificacion = meta.rating;
-    detalle.rating_source = 'imdb';
+    var esAv1 = String(detalle.fuente || '') === 'animeav1' || String(detalle.source_id || '') === '4';
+    if (esAv1) {
+      detalle.rating_imdb = meta.rating;
+      if (detalle.imdb && typeof detalle.imdb === 'object') detalle.imdb.rating = meta.rating;
+      else detalle.imdb = Object.assign({}, detalle.imdb || {}, { id: meta.imdb_id || detalle.imdb_id, rating: meta.rating });
+      if (detalle.rating_fuente != null) {
+        detalle.rating = detalle.rating_fuente;
+        detalle.calificacion = detalle.rating_fuente;
+      } else if (detalle.calificacion != null && detalle.rating_source === 'fuente') {
+        detalle.rating = detalle.calificacion;
+      }
+      // si rating ya era de fuente y coincide numéricamente con imdb, igual mantener source fuente
+      detalle.rating_source = 'fuente';
+    } else {
+      detalle.rating = meta.rating;
+      detalle.calificacion = meta.rating;
+      detalle.rating_source = 'imdb';
+    }
   }
   if (meta.year && !detalle.year) detalle.year = meta.year;
   if (meta.fecha_estreno && !detalle.fecha_estreno) {
@@ -6760,26 +6775,23 @@ function formatearDetalleRespuesta(item, origin) {
   if (item.tmdb && item.tmdb.rating != null) ratingTmdb = normalizarCalificacion(item.tmdb.rating);
   if (ratingTmdb == null && item.rating_tmdb != null) ratingTmdb = normalizarCalificacion(item.rating_tmdb);
 
-  var ratingFuente = item.rating != null ? normalizarCalificacion(item.rating) : null;
+  // Preferir rating_fuente (media.score AV1) sobre rating que Cinemeta pudo haber tocado
+  var ratingFuente = item.rating_fuente != null ? normalizarCalificacion(item.rating_fuente) : null;
   if (ratingFuente == null && item.calificacion != null) ratingFuente = normalizarCalificacion(item.calificacion);
+  if (ratingFuente == null && item.rating != null) ratingFuente = normalizarCalificacion(item.rating);
 
   var rating = null;
   var rating_source = null;
   var esAnimeAv1Fmt =
     String(item.fuente || '') === 'animeav1' ||
     String(item.source_id || '') === '4';
-  // AnimeAV1 (4): rating SIEMPRE de la fuente; IMDb en rating_imdb
+  // AnimeAV1 (4): rating = media.score; IMDb solo en rating_imdb
   if (esAnimeAv1Fmt) {
     if (ratingFuente != null) {
       rating = ratingFuente;
       rating_source = 'fuente';
-    } else if (item.mal_id && ratingFuente != null) {
-      rating = ratingFuente;
-      rating_source = 'fuente';
     }
-    if (ratingImdb != null) {
-      /* se expone abajo como rating_imdb */
-    } else if (item.rating_imdb != null) {
+    if (ratingImdb == null && item.rating_imdb != null) {
       ratingImdb = normalizarCalificacion(item.rating_imdb);
     }
   } else if (ratingImdb != null) {
@@ -10092,6 +10104,7 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     descripcion: sinopsis,
     calificacion: score,
     rating: score,
+    rating_fuente: score,
     rating_source: score != null ? 'fuente' : null,
     mal_id: malId || null,
     year: yearAv1,
