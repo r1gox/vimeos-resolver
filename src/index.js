@@ -889,7 +889,16 @@ async function handleRequest(request, env) {
         }
         detJk.fuente = 'jkanime';
         detJk.source_id = '5';
-        return json(detJk);
+        // Solo portada JK — sin Metahub
+        if (detJk.portada_fuente_raw) {
+          detJk.portada = detJk.portada_fuente_raw;
+          detJk.poster_source = 'jkanime';
+        }
+        detJk.portada_imdb = null;
+        detJk.portada_tmdb = null;
+        detJk.logo = null;
+        detJk.logo_imdb = null;
+        detJk.backdrop = null;
         return json(detJk);
       }
 
@@ -6910,6 +6919,34 @@ function formatearDetalleRespuesta(item, origin) {
     url_extract: urlExtract
   };
 
+  // Campos extra anime/JK (no tocar el resto de fuentes si vienen vacíos)
+  if (item.studios) out.studios = item.studios;
+  if (item.temporada_anime || item.temporada) {
+    out.temporada_anime = item.temporada_anime || item.temporada || null;
+    out.temporada = item.temporada || item.temporada_anime || null;
+  }
+  if (item.demografia) out.demografia = item.demografia;
+  if (item.idiomas) out.idiomas = item.idiomas;
+  if (item.titulos_alternativos) out.titulos_alternativos = item.titulos_alternativos;
+  if (item.ultimo_episodio) out.ultimo_episodio = item.ultimo_episodio;
+  if (item.ultimo_episodio_url) out.ultimo_episodio_url = item.ultimo_episodio_url;
+  if (item.proximo_episodio) out.proximo_episodio = item.proximo_episodio;
+  if (item.fecha_estreno_texto) out.fecha_estreno_texto = item.fecha_estreno_texto;
+  if (item.calidad) out.calidad = item.calidad;
+
+  // Fuente 5 JKanime: quitar decoración Metahub
+  if (String(sid) === '5' || String(item.fuente || '').toLowerCase() === 'jkanime') {
+    if (out.portada_fuente_raw) {
+      out.portada = out.portada_fuente_raw;
+      out.poster_source = 'jkanime';
+    }
+    out.portada_imdb = null;
+    out.portada_tmdb = null;
+    out.logo = null;
+    out.logo_imdb = null;
+    out.backdrop = null;
+  }
+
   if (esSerieAnime) {
     var totalEps = item.total_episodios != null ? parseInt(item.total_episodios, 10) : null;
     var totalTemps = item.total_temporadas != null ? parseInt(item.total_temporadas, 10) : null;
@@ -11861,6 +11898,24 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
   var enEmision = /emisi[oó]n|airing|ongoing/i.test(String(estado || ''));
   var finalizado = /final|conclu|ended|finished/i.test(String(estado || ''));
 
+  // Último / próximo episodio (ficha en emisión)
+  var ultimo_episodio = null;
+  var ultimo_episodio_url = null;
+  var proximo_episodio = null;
+  var uepM = html.match(/Último episodio<\/b>\s*:\s*<a\s+href="([^"]+)"[^>]*id="uep"[^>]*>([\s\S]*?)<\/a>/i)
+    || html.match(/Último episodio<\/b>\s*:\s*<a\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i)
+    || html.match(/Último episodio[\s\S]{0,40}?href="([^"]+)"[^>]*id="uep"[^>]*>([\s\S]*?)<\/a>/i);
+  if (uepM) {
+    ultimo_episodio_url = uepM[1].trim();
+    ultimo_episodio = String(uepM[2]).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  var pxM = html.match(/Próximo episodio:\s*<\/b>\s*([^<]+)/i)
+    || html.match(/Próximo episodio:<\/b>\s*([^<]+)/i)
+    || html.match(/id="proxep"[^>]*>[\s\S]*?Próximo episodio:\s*<\/b>\s*([^<]+)/i);
+  if (pxM) {
+    proximo_episodio = String(pxM[1]).replace(/\s+/g, ' ').trim();
+  }
+
   return {
     success: true,
     fuente: 'jkanime',
@@ -11878,15 +11933,20 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
     generos: generos,
     genero: Array.isArray(generos) ? generos.join(', ') : generos,
     studios: Array.isArray(studios) ? studios : (studios ? [studios] : []),
+    temporada: temporada || null,
     temporada_anime: temporada || null,
     demografia: demografia || null,
-    idiomas: idiomas || [],
+    idiomas: Array.isArray(idiomas) ? idiomas : (idiomas ? [idiomas] : []),
     duracion_texto: duracion || null,
     fecha_estreno_texto: emitido || null,
     estado: estado || null,
     en_emision: enEmision,
     finalizado: finalizado,
     calidad: calidad || null,
+    ultimo_episodio: ultimo_episodio,
+    ultimo_episodio_url: ultimo_episodio_url,
+    proximo_episodio: proximo_episodio,
+    portada_fuente_raw: portada || null,
     anime_id: animeId,
     total_episodios: (episodios._jkTotal || episodios.length),
     total_temporadas: 1,
