@@ -12817,7 +12817,7 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
           return row;
         });
       })()
-    }]),
+    }],
     url_extract: 'https://moviezone.tvjz.workers.dev/5/' + kindPathDet + '/' + slug
   };
 }
