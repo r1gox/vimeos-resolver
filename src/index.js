@@ -12373,6 +12373,13 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
   ) tipo = 'Pelicula';
   else tipo = 'Anime';
   var esPeliculaJk = (tipo === 'Pelicula');
+  // OVA / ONA / Especial / Película: un solo capítulo en /slug/1/ (players ahí)
+  var esUnicoCapJk =
+    tipo === 'Pelicula' ||
+    tipo === 'OVA' ||
+    tipo === 'ONA' ||
+    tipo === 'Especial' ||
+    (formatoJk && /ova|ona|especial|pelicula|movie/i.test(String(formatoJk)));
 
   // Año / fecha desde "Emitido: Sabado, 15 de Diciembre de 2012"
   var yearJk = null;
@@ -12382,11 +12389,11 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
     if (ymJk) yearJk = ymJk[0];
   }
 
-  // Película JK: players en /slug/1/ (un solo "episodio")
+  // Película / OVA / ONA / Especial: players en /slug/1/
   var reproductoresJk = [];
   var embedsJk = [];
   var descargasJk = [];
-  if (esPeliculaJk) {
+  if (esUnicoCapJk) {
     try {
       var ep1Url = JKANIME_BASE + '/' + slug + '/1/';
       var ep1Res = await fetch(ep1Url, { headers: jkanimeHeaders() });
@@ -12448,7 +12455,7 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
     proximo_episodio: proximo_episodio,
     portada_fuente_raw: portada || null,
     anime_id: animeId,
-    total_episodios: (episodios._jkTotal || episodios.length),
+    total_episodios: (episodios._jkTotal || episodios.length || (esUnicoCapJk ? 1 : 0)),
     total_temporadas: 1,
     episodio_desde: episodios._jkEpFrom || 1,
     episodio_hasta: episodios._jkEpTo || episodios.length,
@@ -12465,27 +12472,33 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
     })(),
     temporadas: (esPeliculaJk ? [] : [{
       temporada: 1,
-      // NO poner total_episodios aquí: slim usa lista.length (como AV1 muestra 50)
-      episodios: episodios.map(function (ep) {
-        var back = ep.back_img || ep.image || null;
-        // Asegurar URL completa del thumb JK
-        if (back && String(back).indexOf('http') !== 0) {
-          back = 'https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/' + String(back).replace(/^\/+/, '');
+      episodios: (function () {
+        var listaEps = (episodios && episodios.length) ? episodios.slice() : [];
+        // OVA/ONA/Especial sin lista AJAX → al menos ep 1
+        if (!listaEps.length && esUnicoCapJk && !esPeliculaJk) {
+          listaEps = [{ episodio: 1, titulo: (titulo || 'Episodio 1') }];
         }
-        var row = {
-          temporada: 1,
-          episodio: ep.episodio,
-          titulo: ep.titulo || ('Episodio ' + ep.episodio),
-          link: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug + '/' + ep.episodio,
-          slug: slug + '-' + ep.episodio
-        };
-        if (back) {
-          row.back_img = back;
-          row.still = back;
-          row.image = back;
-        }
-        return row;
-      })
+        return listaEps.map(function (ep) {
+          var back = ep.back_img || ep.image || null;
+          if (back && String(back).indexOf('http') !== 0) {
+            back = 'https://cdn.jkdesa.com/assets/images/animes/video/image_thumb/' + String(back).replace(/^\/+/, '');
+          }
+          var epN = ep.episodio || ep.episode || 1;
+          var row = {
+            temporada: 1,
+            episodio: epN,
+            titulo: ep.titulo || ('Episodio ' + epN),
+            link: 'https://moviezone.tvjz.workers.dev/5/anime/' + slug + '/' + epN,
+            slug: slug + '-' + epN
+          };
+          if (back) {
+            row.back_img = back;
+            row.still = back;
+            row.image = back;
+          }
+          return row;
+        });
+      })()
     }]),
     url_extract: 'https://moviezone.tvjz.workers.dev/5/' + kindPathDet + '/' + slug
   };
