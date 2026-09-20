@@ -213,9 +213,14 @@ async function enriquecerSoloCinemeta(detalle, typeHint) {
     if (!detalle.backdrop) detalle.backdrop = metahubBackground(imdbId, 'medium');
   }
 
-  var desc = detalle.descripcion || '';
-  if ((!desc || desc.length < 40) && meta.descripcion) {
-    detalle.descripcion = meta.descripcion;
+  // Descripción: siempre fuente; meta solo si la fuente no trae
+  if (detalle.descripcion_fuente) {
+    detalle.descripcion = detalle.descripcion_fuente;
+  } else {
+    var desc = String(detalle.descripcion || '').trim();
+    if (!desc && meta.descripcion) {
+      detalle.descripcion = meta.descripcion;
+    }
   }
 
   return detalle;
@@ -3549,7 +3554,7 @@ async function enriquecerDesdeFichaPelisplus(item) {
     if (!html || html.length < 500) return item;
     var meta = extraerMetas(html);
     if (meta.year && !item.year) item.year = meta.year;
-    if (meta.descripcion && (!item.descripcion || String(item.descripcion).length < 40)) {
+    if (meta.descripcion && (!item.descripcion || !String(item.descripcion).trim())) {
       item.descripcion = meta.descripcion;
     }
     if (meta.calificacion != null && (item.calificacion == null || item.calificacion === '')) {
@@ -4835,33 +4840,14 @@ function aplicarMetaAResultadoBusqueda(item, meta) {
     if (meta.imdb_id) item.imdb_id = meta.imdb_id;
   }
 
-  // Descripción: si la FUENTE tiene español válido → conservar.
-  // Si no → IMDb ES / TMDB ES. Si no hay fuente usable, aceptar meta (aunque sea inglés).
-  var descFuente = item.descripcion || '';
-  var descFuenteEs = descFuente.length >= 40 && pareceEspanol(descFuente)
-    && !/\.\.\.\s*$/.test(descFuente) && !/^(Pel[ií]cula|Serie|Anime)\s/i.test(descFuente);
-  var descFuenteOk = descFuente.length >= 40 && !/\.\.\.\s*$/.test(descFuente)
-    && !/^(Pel[ií]cula|Serie|Anime)\s/i.test(descFuente) && !pareceIngles(descFuente);
-  if (descFuenteEs || descFuenteOk) {
-    // conservar fuente
+  // Descripción: siempre la de la fuente; meta solo si no hay
+  var descFuente = String(item.descripcion_fuente || item.descripcion || '').trim();
+  if (descFuente) {
+    item.descripcion = descFuente;
   } else if (meta.descripcion) {
-    if (pareceEspanol(meta.descripcion)) {
-      item.descripcion = meta.descripcion;
-    } else if (!pareceIngles(meta.descripcion)) {
-      item.descripcion = meta.descripcion;
-    } else {
-      // Fuente sin sinopsis usable: usar meta aunque sea inglés (antes se dejaba vacío)
-      var descCortaOVacia = !descFuente || descFuente.length < 40
-        || (typeof esDescripcionBasura === 'function' && esDescripcionBasura(descFuente));
-      if (descCortaOVacia) {
-        item.descripcion = meta.descripcion;
-      }
-    }
-  }
-  // Si la fuente era inglesa y meta trae español, reemplazar
-  if (pareceIngles(descFuente) && meta.descripcion && pareceEspanol(meta.descripcion)) {
     item.descripcion = meta.descripcion;
   }
+
 
   // Géneros: preferir IMDb (ya en español) si el match es bueno
   if (yearOkMeta && simOk && meta.generos && meta.generos.length) {
@@ -6755,11 +6741,15 @@ function formatearCapituloRespuesta(item, origin, ctx) {
 function formatearDetalleRespuesta(item, origin) {
   if (!item || typeof item !== 'object') return item;
 
-  var desc = item.descripcion || null;
-  if (desc && typeof esDescripcionBasura === 'function' && esDescripcionBasura(desc)) desc = null;
-  if (!desc && item.imdb && item.imdb.descripcion) desc = item.imdb.descripcion;
-  if (!desc && item.descripcion_imdb) desc = item.descripcion_imdb;
-  if (!desc && item.descripcion_tmdb) desc = item.descripcion_tmdb;
+  // Descripción: priorizar fuente; meta solo si falta
+  var desc = item.descripcion_fuente || item.descripcion || null;
+  if (desc && typeof esDescripcionBasura === 'function' && esDescripcionBasura(desc)) {
+    // basura → intentar fuente limpia ya vacía, luego meta
+    desc = null;
+  }
+  if (!desc || !String(desc).trim()) {
+    desc = (item.imdb && item.imdb.descripcion) || item.descripcion_imdb || item.descripcion_tmdb || null;
+  }
 
   var ratingImdb = null;
   var ratingTmdb = null;
