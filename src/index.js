@@ -6408,7 +6408,10 @@ async function metaTmdbParaTitulo(titulo, tipoHint, yearHint) {
 function normalizarCalificacion(val) {
   if (val == null || val === '' || val === 'N/A') return null;
   var n = Number(String(val).replace(',', '.').replace(/[^\d.]/g, ''));
-  if (isNaN(n) || n <= 0) return null;
+  if (isNaN(n) || n < 0) return null;
+  // 0 = sin calificación aún (anime nuevo) — se conserva
+  if (n === 0) return 0;
+  if (n <= 0) return null;
   // Si viene 0–100 (raro), escalar
   if (n > 10 && n <= 100) n = n / 10;
   if (n > 10) n = 10;
@@ -6788,7 +6791,10 @@ function formatearDetalleRespuesta(item, origin) {
   // AnimeAV1 (4): rating = media.score; IMDb solo en rating_imdb
   if (esAnimeAv1Fmt) {
     if (ratingFuente != null) {
-      rating = ratingFuente;
+      rating = ratingFuente; // puede ser 0
+      rating_source = 'fuente';
+    } else {
+      rating = 0;
       rating_source = 'fuente';
     }
     if (ratingImdb == null && item.rating_imdb != null) {
@@ -9797,7 +9803,11 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   }
   var sinopsis = media.synopsis || null;
   var epsCount = media.episodesCount || 0;
-  var score = media.score || null;
+  // 0 es válido (anime nuevo sin score aún)
+  var score = (media.score != null && media.score !== '') ? Number(media.score) : null;
+  if (score != null && isNaN(score)) score = null;
+  if (score != null && score > 0) score = Math.round(score * 10) / 10;
+  // score === 0 se conserva tal cual
   var malId = media.malId || null;
   var portada = media.poster || media.cover || media.image || null;
   if (!portada && media.id != null && String(media.id).match(/^\d+$/)) {
@@ -10105,7 +10115,7 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     calificacion: score,
     rating: score,
     rating_fuente: score,
-    rating_source: score != null ? 'fuente' : null,
+    rating_source: 'fuente',
     mal_id: malId || null,
     year: yearAv1,
     fecha_estreno: media.startDate || media.airedFrom || media.premiereDate || null,
