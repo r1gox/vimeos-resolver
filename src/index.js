@@ -28,6 +28,15 @@ var PELISPLUS_BASE = 'https://www.pelisplushd.to';
 var PELISPLUS_BZ_BASE = 'https://pelisplushd.bz';
 // NO mezclar dominios PelisPlus: .la (fuente 3), .bz (fuente 9) y .to son catálogos distintos.
 var PELISPLUS_TO_BASE = 'https://pelisplushd.to'; // referencia; NO usar como espejo de .bz
+
+/**
+ * Switch PelisPlus en búsqueda UNIVERSAL (/?q=  y  /search?q=)
+ *   'to'  → pelisplushd.to  (fuente 3)
+ *   'bz'  → pelisplushd.bz  (fuente 9)  ← recomendado (sin Cloudflare challenge)
+ * Rutas fijas /3/... y /9/... NO se ven afectadas; solo el buscador global.
+ * Cambia solo esta línea para probar:
+ */
+var PELISPLUS_UNIVERSAL = 'bz'; // 'to' | 'bz'
 var ANIMEAV1_BASE = 'https://animeav1.com';
 var DORAMASFLIX_BASE = 'https://doramasflix.io';
 var DORAMASFLIX_GQL = 'https://user-api.fluxcedene.net/graphql';
@@ -7623,12 +7632,20 @@ async function buscarUniversal(query, sourceFilter, limit) {
   }
 */
    
+  // Switch .to / .bz solo en universal (ver PELISPLUS_UNIVERSAL arriba)
+  var ppUni = String(typeof PELISPLUS_UNIVERSAL !== 'undefined' ? PELISPLUS_UNIVERSAL : 'bz').toLowerCase().trim();
+  var ppUseTo = (ppUni === 'to' || ppUni === '3' || ppUni === 'pelisplushd' || ppUni === '.to');
   for (var i = 0; i < cadena.length; i++) {
     var c = cadena[i];
     if (sourceFilter !== 'all' && c.aliases.indexOf(sourceFilter) === -1) continue;
-    // Universal: sin LaMovie, Hackstore ni pelisplushd .to — solo pelisplushd.bz (9)
-    if (sourceFilter === 'all' && (c.id === 'lamovie' || c.id === 'pelisplushd' || c.id === 'hackstore')) continue;
-    var tms = (c.id === 'animeav1') ? 12000 : (c.id === 'pelisplushd_bz' ? 15000 : 8000);
+    // Universal: sin LaMovie ni Hackstore; PelisPlus según PELISPLUS_UNIVERSAL
+    if (sourceFilter === 'all') {
+      if (c.id === 'lamovie' || c.id === 'hackstore') continue;
+      if (ppUseTo && c.id === 'pelisplushd_bz') continue; // modo to → descarta bz
+      if (!ppUseTo && c.id === 'pelisplushd') continue;    // modo bz → descarta .to
+    }
+    var tms = (c.id === 'animeav1') ? 12000
+      : ((c.id === 'pelisplushd' || c.id === 'pelisplushd_bz') ? 15000 : 8000);
     jobs.push({ id: c.id, p: withTimeout(c.fn(), tms) });
   }
   var settled = await Promise.all(jobs.map(function (j) { return j.p; }));
