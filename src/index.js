@@ -12520,21 +12520,129 @@ async function scrapearJkanimeHome() {
 
   var recientes = [];
   var seenEp = Object.create(null);
-  // Card: href ep + imgs + Ep badge + fecha relativa (Hoy / Ayer / Sábado 19…)
-  var cardRe = /href="(https:\/\/jkanime\.net\/([a-z0-9\-]+)\/(\d+)\/?)"[\s\S]*?src="([^"]+)"[\s\S]*?data-animepic="([^"]*)"[\s\S]*?alt="([^"]*)"[\s\S]*?badge-primary">([^<]*)[\s\S]*?badge-secondary">([\s\S]*?)<\/span>/gi;
-  var cm;
-  while ((cm = cardRe.exec(animesBlock)) !== null) {
-    var slug = cm[2];
-    var epNum = parseInt(cm[3], 10) || 0;
+
+  // Fecha relativa JK → ISO + etiqueta (America/Mexico_City)
+  function jkNowParts() {
+    try {
+      var fmt = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Mexico_City',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        weekday: 'short'
+      });
+      var parts = fmt.formatToParts(new Date());
+      var get = function (t) {
+        for (var i = 0; i < parts.length; i++) if (parts[i].type === t) return parts[i].value;
+        return '';
+      };
+      return {
+        iso: get('year') + '-' + get('month') + '-' + get('day'),
+        y: parseInt(get('year'), 10),
+        m: parseInt(get('month'), 10),
+        d: parseInt(get('day'), 10)
+      };
+    } catch (e) {
+      var n = new Date();
+      var iso = n.toISOString().slice(0, 10);
+      return { iso: iso, y: parseInt(iso.slice(0, 4), 10), m: parseInt(iso.slice(5, 7), 10), d: parseInt(iso.slice(8, 10), 10) };
+    }
+  }
+  function jkAddDaysIso(iso, delta) {
+    var p = String(iso).split('-');
+    var dt = new Date(Date.UTC(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10) + delta));
+    var y = dt.getUTCFullYear();
+    var m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    var d = String(dt.getUTCDate()).padStart(2, '0');
+    return y + '-' + m + '-' + d;
+  }
+  function jkLabelFromIso(iso, todayIso) {
+    if (!iso) return null;
+    if (iso === todayIso) return 'Hoy';
+    if (iso === jkAddDaysIso(todayIso, -1)) return 'Ayer';
+    try {
+      var p = iso.split('-');
+      var dt = new Date(Date.UTC(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10)));
+      var lab = new Intl.DateTimeFormat('es-MX', {
+        timeZone: 'UTC',
+        weekday: 'long',
+        day: 'numeric'
+      }).format(dt);
+      // "sábado, 19" → "Sábado 19"
+      lab = lab.replace(',', '');
+      return lab.charAt(0).toUpperCase() + lab.slice(1);
+    } catch (e2) {
+      return iso;
+    }
+  }
+  function jkParseFechaRelativa(raw, today) {
+    var t = String(raw || '').replace(/\s+/g, ' ').trim();
+    if (!t) return { fecha_iso: null, fecha_relativa: null };
+    var low = t.toLowerCase();
+    if (low === 'hoy') return { fecha_iso: today.iso, fecha_relativa: 'Hoy' };
+    if (low === 'ayer') return { fecha_iso: jkAddDaysIso(today.iso, -1), fecha_relativa: 'Ayer' };
+    // "Sábado 19" / "Viernes 18"
+    var dm = t.match(/(\d{1,2})\s*$/);
+    var dayNum = dm ? parseInt(dm[1], 10) : 0;
+    if (dayNum >= 1 && dayNum <= 31) {
+      var y = today.y;
+      var m = today.m;
+      // si el día es mayor que hoy, probablemente mes anterior
+      if (dayNum > today.d) {
+        m -= 1;
+        if (m < 1) { m = 12; y -= 1; }
+      }
+      var iso = y + '-' + String(m).padStart(2, '0') + '-' + String(dayNum).padStart(2, '0');
+      return { fecha_iso: iso, fecha_relativa: jkLabelFromIso(iso, today.iso) || t };
+    }
+    return { fecha_iso: null, fecha_relativa: t };
+  }
+
+  var todayMx = jkNowParts();
+
+  // Parsear tarjeta por tarjeta (evita cruzar fechas entre items)
+  var cardChunks = animesBlock.split(/class="[^"]*dir1[^"]*"/i);
+  for (var ci = 0; ci < cardChunks.length; ci++) {
+    var chunk = cardChunks[ci];
+    var hm = chunk.match(/href="https:\/\/jkanime\.net\/([a-z0-9\-]+)\/(\d+)\/?"/i);
+    if (!hm) continue;
+    var slug = hm[1];
+    var epNum = parseInt(hm[2], 10) || 0;
     var key = slug + '/' + epNum;
     if (seenEp[key]) continue;
     seenEp[key] = true;
-    var back = cm[4] || null;
-    var portada = cm[5] || null;
-    var alt = String(cm[6] || '').replace(/\s*-\s*\d+\s*$/, '').trim();
-    var epBadge = String(cm[7] || '').replace(/\s+/g, ' ').trim();
-    var fechaRaw = String(cm[8] || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+    var backM = chunk.match(/src="(https:\/\/cdn\.jkdesa\.com\/assets\/images\/animes\/video\/[^"]+)"/i);
+    var portM = chunk.match(/data-animepic="([^"]*)"/i);
+    var altM = chunk.match(/alt="([^"]*)"/i);
+    var epBM = chunk.match(/badge-primary">([^<]*)/i);
+    // Solo el badge de fecha DENTRO de esta tarjeta
+    var fecM = chunk.match(/badge-secondary">([\s\S]*?)<\/span>/i);
+    var back = backM ? backM[1] : null;
+    var portada = portM ? portM[1] : null;
+    var alt = altM ? String(altM[1]).replace(/\s*-\s*\d+\s*$/, '').trim() : slug;
+    var epBadge = epBM ? String(epBM[1]).replace(/\s+/g, ' ').trim() : (epNum ? ('Ep ' + epNum) : null);
+    // Quitar <i class="ti ti-clock-hour-5"></i> y dejar solo Hoy / Ayer / Sábado 19
+    var fechaRaw = '';
+    if (fecM) {
+      fechaRaw = String(fecM[1] || '')
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<[^>]+>/g, ' ')           // quita <i ...></i>
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&#\d+;/g, ' ')
+        .replace(/\bti\b/gi, ' ')
+        .replace(/clock-hour-\d+/gi, ' ')
+        .replace(/tabler-icons[^\s]*/gi, ' ')
+        .replace(/[^0-9A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+    var parsed = jkParseFechaRelativa(fechaRaw, todayMx);
+    // etiqueta final: recalcular Hoy/Ayer desde ISO (zona México)
+    var fechaLabel = parsed.fecha_iso
+      ? (jkLabelFromIso(parsed.fecha_iso, todayMx.iso) || parsed.fecha_relativa)
+      : (parsed.fecha_relativa || fechaRaw || null);
     var tituloAnime = alt || slug;
+
     recientes.push({
       title: tituloAnime + (epNum ? (' — Episodio ' + epNum) : ''),
       titulo: tituloAnime + (epNum ? (' — Episodio ' + epNum) : ''),
@@ -12552,10 +12660,11 @@ async function scrapearJkanimeHome() {
       tipo: 'Anime',
       source_id: '5',
       ep_badge: epBadge || (epNum ? ('Ep ' + epNum) : null),
-      // Fecha relativa de Programación: Hoy, Ayer, Sábado 19, Viernes 18…
-      fecha: fechaRaw || null,
-      fecha_relativa: fechaRaw || null,
-      published_label: fechaRaw || null
+      fecha: fechaLabel,
+      fecha_relativa: fechaLabel,
+      published_label: fechaLabel,
+      fecha_iso: parsed.fecha_iso || null,
+      fecha_jk: fechaRaw || null
     });
   }
 
