@@ -720,7 +720,9 @@ async function handleRequest(request, env) {
   var catSeccion = (parts[catTipoIdx] || '').toLowerCase(); // peliculas|series|animes|doramas|dorama|doramas
   var catFiltro = (parts[catTipoIdx + 1] || '').toLowerCase(); // estrenos|populares|''
 
-  if ((catSeccion === 'peliculas' || catSeccion === 'series' || catSeccion === 'animes' || catSeccion === 'doramas' || catSeccion === 'dorama' || catSeccion === 'episodios' || catSeccion === 'home') &&
+  // /5/home lo maneja JKanime (no catálogo PelisPlus/AV1)
+  var esFuenteJkCat = String(parts[0]) === '5' || parts[0] === 'jkanime' || parts[0] === 'jk';
+  if (!esFuenteJkCat && (catSeccion === 'peliculas' || catSeccion === 'series' || catSeccion === 'animes' || catSeccion === 'doramas' || catSeccion === 'dorama' || catSeccion === 'episodios' || catSeccion === 'home') &&
       (catFiltro === 'estrenos' || catFiltro === 'populares' || catFiltro === 'emision' || catFiltro === 'proximo' || catFiltro === 'proximamente' || catFiltro === 'recientes' || catFiltro === 'agregados' || catFiltro === 'recien' || catFiltro === 'recien-agregados' || catFiltro === 'nuevos' || catFiltro === '' || catFiltro === 'page' || catSeccion === 'home' || catSeccion === 'episodios')) {
     var pageNum = parseInt(url.searchParams.get('page') || '1', 10);
     if (catFiltro === 'page' && parts[catTipoIdx + 2]) {
