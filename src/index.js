@@ -12520,7 +12520,8 @@ async function scrapearJkanimeHome() {
 
   var recientes = [];
   var seenEp = Object.create(null);
-  var cardRe = /href="(https:\/\/jkanime\.net\/([a-z0-9\-]+)\/(\d+)\/?)"[\s\S]*?src="([^"]+)"[\s\S]*?data-animepic="([^"]*)"[\s\S]*?alt="([^"]*)"[\s\S]*?badge-primary">([^<]*)/gi;
+  // Card: href ep + imgs + Ep badge + fecha relativa (Hoy / Ayer / Sábado 19…)
+  var cardRe = /href="(https:\/\/jkanime\.net\/([a-z0-9\-]+)\/(\d+)\/?)"[\s\S]*?src="([^"]+)"[\s\S]*?data-animepic="([^"]*)"[\s\S]*?alt="([^"]*)"[\s\S]*?badge-primary">([^<]*)[\s\S]*?badge-secondary">([\s\S]*?)<\/span>/gi;
   var cm;
   while ((cm = cardRe.exec(animesBlock)) !== null) {
     var slug = cm[2];
@@ -12532,6 +12533,7 @@ async function scrapearJkanimeHome() {
     var portada = cm[5] || null;
     var alt = String(cm[6] || '').replace(/\s*-\s*\d+\s*$/, '').trim();
     var epBadge = String(cm[7] || '').replace(/\s+/g, ' ').trim();
+    var fechaRaw = String(cm[8] || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
     var tituloAnime = alt || slug;
     recientes.push({
       title: tituloAnime + (epNum ? (' — Episodio ' + epNum) : ''),
@@ -12549,7 +12551,11 @@ async function scrapearJkanimeHome() {
       type: 'Anime',
       tipo: 'Anime',
       source_id: '5',
-      ep_badge: epBadge || (epNum ? ('Ep ' + epNum) : null)
+      ep_badge: epBadge || (epNum ? ('Ep ' + epNum) : null),
+      // Fecha relativa de Programación: Hoy, Ayer, Sábado 19, Viernes 18…
+      fecha: fechaRaw || null,
+      fecha_relativa: fechaRaw || null,
+      published_label: fechaRaw || null
     });
   }
 
