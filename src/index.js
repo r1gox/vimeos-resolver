@@ -6311,6 +6311,18 @@ function resultadoRelevanteBusqueda(query, item) {
   }
   if (contieneTodos(tKey) || contieneTodos(sKey)) return true;
 
+  // Slug compacto: hoteltransilvania contiene hotel + transilvania
+  var sCompact = String(item.slug || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  var qCompact = qKey.replace(/\s+/g, '');
+  if (sCompact && qCompact && sCompact.indexOf(qCompact) !== -1) return true;
+  if (sCompact && qTokens.length) {
+    var okC = true;
+    for (var qi = 0; qi < qTokens.length; qi++) {
+      if (sCompact.indexOf(qTokens[qi]) === -1) { okC = false; break; }
+    }
+    if (okC) return true;
+  }
+
   // Prefijo casi exacto (solo año residual)
   if (tKey && (tKey.indexOf(qKey) === 0 || qKey.indexOf(tKey) === 0)) {
     var longer = tKey.length >= qKey.length ? tKey : qKey;
@@ -7614,9 +7626,9 @@ async function buscarUniversal(query, sourceFilter, limit) {
   for (var i = 0; i < cadena.length; i++) {
     var c = cadena[i];
     if (sourceFilter !== 'all' && c.aliases.indexOf(sourceFilter) === -1) continue;
-    // Búsqueda universal: sin LaMovie ni Hackstore (siguen en /1/ y /2/)
+    // Universal: sin LaMovie, Hackstore ni pelisplushd .to — solo pelisplushd.bz (9)
     if (sourceFilter === 'all' && (c.id === 'lamovie' || c.id === 'pelisplushd' || c.id === 'hackstore')) continue;
-    var tms = (c.id === 'animeav1') ? 12000 : 5000;
+    var tms = (c.id === 'animeav1') ? 12000 : (c.id === 'pelisplushd_bz' ? 15000 : 8000);
     jobs.push({ id: c.id, p: withTimeout(c.fn(), tms) });
   }
   var settled = await Promise.all(jobs.map(function (j) { return j.p; }));
@@ -8018,79 +8030,146 @@ async function buscarPelisplusBz(query, limit) {
   var BASE = PELISPLUS_BZ_BASE;
   var resultados = [];
   var vistos = {};
+
+  function pushHit(slug, full, tipo, portada, titulo) {
+    if (!slug || vistos[slug]) return;
+    if (PALABRAS_BLOQUEADAS_BUSQUEDA.some(function (w) { return String(slug).indexOf(w) !== -1; })) return;
+    vistos[slug] = true;
+    if (!titulo) titulo = limpiarTitulo(String(slug).replace(/-/g, ' '));
+    if (!full) {
+      var kind = (tipo === 'Serie') ? 'serie' : (tipo === 'Anime' ? 'anime' : 'pelicula');
+      full = BASE + '/' + kind + '/' + slug;
+    }
+    full = String(full).replace(/https?:\/\/(?:www\.)?pelisplushd\.(?:la|to)/i, BASE);
+    resultados.push({
+      titulo: titulo,
+      slug: slug,
+      tipo: tipo || 'Pelicula',
+      fuente: 'pelisplushd_bz',
+      source_id: '9',
+      portada: portada || null,
+      link: full
+    });
+  }
+
   try {
     var url = BASE + '/search?s=' + encodeURIComponent(q);
     var res = await fetch(url, {
-      headers: Object.assign({}, HEADERS, { 'Referer': BASE + '/' })
+      headers: Object.assign({}, HEADERS, {
+        'Referer': BASE + '/',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'es-MX,es;q=0.9,en;q=0.8'
+      }),
+      redirect: 'follow'
     });
-    if (!res.ok) return [];
-    var html = await res.text();
-    var re = /href=["']((?:https?:\/\/[^"']+)?\/(?:pelicula|serie|anime)\/([^"'\/\?]+)\/?)["']/gi;
-    var m;
-    while ((m = re.exec(html)) !== null) {
-      if (resultados.length >= limit) break;
-      var path = m[1];
-      var slug = m[2];
-      if (!slug || vistos[slug]) continue;
-      if (PALABRAS_BLOQUEADAS_BUSQUEDA.some(function (w) { return slug.indexOf(w) !== -1; })) continue;
-      vistos[slug] = true;
-      var full = path.indexOf('http') === 0 ? path : (BASE + (path.charAt(0) === '/' ? path : '/' + path));
-      // Nunca reescribir a .la / .to
-      full = full.replace(/https?:\/\/(?:www\.)?pelisplushd\.(?:la|to)/i, BASE);
-      var tipo = 'Pelicula';
-      if (/\/serie\//i.test(full)) tipo = 'Serie';
-      if (/\/anime\//i.test(full)) tipo = 'Anime';
-      // .bz usa TMDB (image.tmdb.org), no /poster/slug-thumb.jpg
-      
-      var tipo = 'Pelicula';
-      if (/\/serie\//i.test(full)) tipo = 'Serie';
-      if (/\/anime\//i.test(full)) tipo = 'Anime';
+    if (res.ok) {
+      var html = await res.text();
 
-      // Ventana amplia: el <img> TMDB a veces está >500 chars después del href
-      var portada = null;
-      var from = Math.max(0, m.index - 100);
-      var to = Math.min(html.length, m.index + 3000);
-      var slice = html.slice(from, to);
+      // Varias formas de href en .bz
+      var patterns = [
+        /href=["']((?:https?:\/\/[^"']+)?\/(?:pelicula|serie|anime)\/([^"'\/\?]+)\/?)["']/gi,
+        /href=["']((?:https?:\/\/[^"']+)?\/(?:pelicula|serie|anime)\/([^"'\/\?]+))["']/gi
+      ];
+      for (var pi = 0; pi < patterns.length; pi++) {
+        var re = patterns[pi];
+        var m;
+        while ((m = re.exec(html)) !== null) {
+          if (resultados.length >= limit) break;
+          var path = m[1];
+          var slug = decodeURIComponent(m[2] || '');
+          if (!slug || vistos[slug]) continue;
+          var full = path.indexOf('http') === 0 ? path : (BASE + (path.charAt(0) === '/' ? path : '/' + path));
+          full = full.replace(/https?:\/\/(?:www\.)?pelisplushd\.(?:la|to)/i, BASE);
+          var tipo = 'Pelicula';
+          if (/\/serie\//i.test(full)) tipo = 'Serie';
+          if (/\/anime\//i.test(full)) tipo = 'Anime';
 
-      // Preferir el <a>...</a> de esta ficha
-      var aOpen = slice.search(/<a\b[^>]*Posters-link/i);
-      if (aOpen < 0) aOpen = slice.search(/<a\b/i);
-      if (aOpen < 0) aOpen = 0;
-      var aClose = slice.indexOf('</a>', aOpen);
-      var tag = aClose > aOpen ? slice.slice(aOpen, aClose + 4) : slice;
+          var portada = null;
+          var from = Math.max(0, m.index - 150);
+          var to = Math.min(html.length, m.index + 3500);
+          var slice = html.slice(from, to);
+          var pm =
+            slice.match(/(https?:\/\/image\.tmdb\.org\/t\/p\/[a-z0-9_]+\/[A-Za-z0-9]+\.(?:jpg|webp|png))/i) ||
+            slice.match(/(?:src|data-src)\s*=\s*["'](https?:\/\/image\.tmdb\.org\/[^"'\s>]+)["']/i) ||
+            slice.match(/(?:src|data-src)\s*=\s*["']([^"']*\/poster\/[^"'\s>]+)["']/i);
+          if (pm) {
+            portada = pm[1];
+            if (portada.indexOf('http') !== 0) {
+              portada = BASE + (portada.charAt(0) === '/' ? portada : '/' + portada);
+            }
+          }
 
-      var pm =
-        tag.match(/(?:src|data-src)\s*=\s*["'](https?:\/\/image\.tmdb\.org\/[^"'\s>]+)["']/i) ||
-        tag.match(/(?:src|data-src)\s*=\s*["'](https?:\/\/[^"']*\/t\/p\/[^"'\s>]+)["']/i) ||
-        tag.match(/(?:src|data-src)\s*=\s*["']([^"']*\/poster\/[^"'\s>]+)["']/i);
-      // Por si el tag se corta: buscar TMDB suelto en el slice
-      if (!pm) {
-        pm = slice.match(/(https?:\/\/image\.tmdb\.org\/t\/p\/[a-z0-9_]+\/[A-Za-z0-9]+\.jpg)/i);
-      }
-      if (pm) {
-        portada = pm[1];
-        if (portada.indexOf('http') !== 0) {
-          portada = BASE + (portada.charAt(0) === '/' ? portada : '/' + portada);
+          var titulo = limpiarTitulo(slug.replace(/-/g, ' '));
+          var tm =
+            slice.match(/data-title=["']([^"']+)["']/i) ||
+            slice.match(/alt=["']([^"']{3,120})["']/i) ||
+            slice.match(/<p[^>]*class=["'][^"']*title[^"']*["'][^>]*>([^<]+)/i);
+          if (tm) {
+            titulo = limpiarTitulo(String(tm[1]).replace(/^VER\s+/i, '').replace(/\s+Online.*$/i, '').replace(/\(\d{4}\).*$/i, '').trim());
+          }
+          pushHit(slug, full, tipo, portada, titulo);
         }
+        if (resultados.length) break;
       }
-      if (!portada) {
-        portada = BASE + '/poster/' + slug + '-thumb.jpg';
-      }
-
-      var titulo = limpiarTitulo(slug.replace(/-[a-zA-Z0-9]{4,10}$/, '').replace(/-/g, ' '));
-      var tm = tag.match(/data-title=["']([^"']+)["']/i) || tag.match(/alt=["']([^"']+)["']/i);
-      if (tm) titulo = limpiarTitulo(tm[1].replace(/^VER\s+/i, '').replace(/\s+Online.*$/i, ''));
-      resultados.push({
-        titulo: titulo,
-        slug: slug,
-        tipo: tipo,
-        fuente: 'pelisplushd_bz',
-        source_id: '9',
-        portada: portada,
-        link: full
-      });
     }
   } catch (eBz) { /* ignore */ }
+
+  // Fallback: URL directa por slug (cuando search HTML no parsea o Cloudflare)
+  if (resultados.length === 0) {
+    var slugBase = String(q || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9\s-]/g, '')
+      .trim()
+      .replace(/\s+/g, '-');
+    var slugCands = [];
+    if (slugBase) {
+      slugCands.push(slugBase);
+      if (slugBase.indexOf('transilvania') !== -1) {
+        slugCands.push(slugBase.replace(/transilvania/g, 'transylvania'));
+      }
+      if (slugBase.indexOf('transylvania') !== -1) {
+        slugCands.push(slugBase.replace(/transylvania/g, 'transilvania'));
+      }
+      // secuelas frecuentes 1..4 y transformania
+      slugCands.push(slugBase + '-2');
+      slugCands.push(slugBase + '-3');
+      slugCands.push(slugBase + '-4');
+      if (slugBase.indexOf('hotel-transilvan') !== -1 || slugBase.indexOf('hotel-transylvan') !== -1) {
+        slugCands.push('hotel-transilvania-transformania');
+        slugCands.push('hotel-transylvania-transformania');
+      }
+    }
+    var kinds = ['pelicula', 'serie', 'anime'];
+    for (var sc = 0; sc < slugCands.length && resultados.length < limit; sc++) {
+      for (var kk = 0; kk < kinds.length && resultados.length < limit; kk++) {
+        try {
+          var du = BASE + '/' + kinds[kk] + '/' + slugCands[sc];
+          var dr = await fetch(du, {
+            headers: Object.assign({}, HEADERS, { 'Referer': BASE + '/' }),
+            redirect: 'follow'
+          });
+          if (!dr.ok) continue;
+          var dhtml = await dr.text();
+          if (/no encontrada|not found|404/i.test(dhtml.slice(0, 2500))) continue;
+          if (dhtml.length < 800) continue;
+          // confirmar que la URL final sigue siendo ficha
+          var finalUrl = String(dr.url || du);
+          if (!/\/(pelicula|serie|anime)\//i.test(finalUrl) && !/\/(pelicula|serie|anime)\//i.test(du)) continue;
+          var tipoD = kinds[kk] === 'serie' ? 'Serie' : (kinds[kk] === 'anime' ? 'Anime' : 'Pelicula');
+          var titD = limpiarTitulo(slugCands[sc].replace(/-/g, ' '));
+          var tmD = dhtml.match(/<title>([^<]{3,120})<\/title>/i);
+          if (tmD) titD = limpiarTitulo(tmD[1].split('|')[0].split('-')[0]);
+          var portD = null;
+          var pmD = dhtml.match(/(https?:\/\/image\.tmdb\.org\/t\/p\/[a-z0-9_]+\/[A-Za-z0-9]+\.(?:jpg|webp))/i);
+          if (pmD) portD = pmD[1];
+          pushHit(slugCands[sc], du, tipoD, portD, titD);
+          break;
+        } catch (eD) { /* next */ }
+      }
+    }
+  }
   return resultados;
 }
 
