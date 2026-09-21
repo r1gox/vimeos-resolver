@@ -12637,10 +12637,17 @@ async function scrapearJkanimeHome() {
         .trim();
     }
     var parsed = jkParseFechaRelativa(fechaRaw, todayMx);
-    // etiqueta final: recalcular Hoy/Ayer desde ISO (zona México)
-    var fechaLabel = parsed.fecha_iso
-      ? (jkLabelFromIso(parsed.fecha_iso, todayMx.iso) || parsed.fecha_relativa)
+    // JK marca a veces "Ayer" cuando en LATAM ya es el día del capítulo → Ayer → Hoy
+    var fechaIsoAdj = parsed.fecha_iso || null;
+    var lowJk = String(fechaRaw || '').toLowerCase().trim();
+    if (lowJk === 'ayer') {
+      fechaIsoAdj = todayMx.iso; // forzar hoy (México)
+    }
+    var fechaLabel = fechaIsoAdj
+      ? (jkLabelFromIso(fechaIsoAdj, todayMx.iso) || parsed.fecha_relativa)
       : (parsed.fecha_relativa || fechaRaw || null);
+    if (lowJk === 'ayer') fechaLabel = 'Hoy';
+    parsed.fecha_iso = fechaIsoAdj;
     var tituloAnime = alt || slug;
 
     recientes.push({
