@@ -36,15 +36,17 @@ var PELISPLUS_TO_BASE = 'https://pelisplushd.to'; // referencia; NO usar como es
  * Rutas fijas /3/... y /9/... NO se ven afectadas; solo el buscador global.
  * Cambia solo esta línea para probar:
  */
-var PELISPLUS_UNIVERSAL = 'to'; // 'to' | 'bz'
+var PELISPLUS_UNIVERSAL = 'bz'; // 'to' | 'bz'
 var ANIMEAV1_BASE = 'https://animeav1.com';
 var DORAMASFLIX_BASE = 'https://doramasflix.io';
 var DORAMASFLIX_GQL = 'https://user-api.fluxcedene.net/graphql';
-var FUTBOLLIBRE_BASE = 'https://futbollibres.st';
+var FUTBOLLIBRE_BASE = 'https://futbollibrefullhd.org';
+var FUTBOLLIBRE_AGENDA_API = 'https://api.wqxag.com/diaries.json';
+var FUTBOLLIBRE_IMG_CDN = 'https://img.wqxag.com';
 // Metadatos TMDB vía worker público (no cambia el flujo de embeds/fuentes)
 var TMDB_META_API = ''; // desactivado: meta solo de la página fuente (+ TMDB key si hay)
-var FUTBOLLIBRE_IMG_BASE = 'https://futbollibres.st';
-var FUTBOLLIBRE_IMG_DEFAULT = FUTBOLLIBRE_IMG_BASE + '/img/librestv.png';
+var FUTBOLLIBRE_IMG_BASE = FUTBOLLIBRE_BASE;
+var FUTBOLLIBRE_IMG_DEFAULT = FUTBOLLIBRE_BASE + '/img/logo-futbol-libre.png';
 var STREAMXHD_BASE = 'https://streamxhd.com';
 var JKANIME_BASE = 'https://jkanime.net';
 
@@ -7592,8 +7594,8 @@ async function buscarUniversal(query, sourceFilter, limit) {
   var q = String(query || '').trim();
   if (!q) throw new Error('Falta el termino de busqueda');
 
-  // Anime en búsqueda global: SOLO AnimeAV1 (sin monopolio JKanime).
-  // Fuente forzada /5/?q= sigue en ruta /5/buscar del router, no aquí.
+  // Universal: AV1 + pelis + doramas + bz (sin JKanime).
+  // JK solo: /5?q= o /5/buscar (router aparte).
   // 2) Fuentes en paralelo
   /*
   var cadena = [
@@ -7673,34 +7675,48 @@ async function buscarUniversal(query, sourceFilter, limit) {
 
     var relevantes = [];
     for (var ri = 0; ri < hits.length; ri++) {
-      if (resultadoRelevanteBusqueda(q, hits[ri])) relevantes.push(hits[ri]);
+      if (resultadoRelevanteBusqueda(q, hits[ri])) {
+        relevantes.push(hits[ri]);
+      } else if (fid === 'pelisplushd_bz' || fid === 'pelisplushd' || fid === 'doramasflix') {
+        // Películas/series: aceptar si el slug contiene el query compacto
+        var sk = String(hits[ri].slug || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        var qk = String(q || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '');
+        if (sk && qk && sk.indexOf(qk) !== -1) relevantes.push(hits[ri]);
+      }
     }
     relevantes = dedupePorSlugFuente(relevantes);
     for (var rj = 0; rj < relevantes.length; rj++) todos.push(relevantes[rj]);
   }
-  // Si AnimeAV1 trajo resultados → SOLO AnimeAV1 (no pelisplus/lamovie ni Series mal etiquetadas).
-  // Si AnimeAV1 no trajo nada → otras fuentes igual (series, películas, etc.).
-  if (sourceFilter === 'all') {
-    var hayAnimeAv1 = false;
-    for (var ai = 0; ai < todos.length; ai++) {
-      var aIt = todos[ai];
-      if (!aIt) continue;
-      var aFuente = String(aIt.fuente || aIt.source || '').toLowerCase();
-      if (aFuente === 'animeav1') {
-        hayAnimeAv1 = true;
-        break;
+  // Búsqueda UNIVERSAL: mostrar TODAS las fuentes (AV1 + pelis + doramas + bz…).
+  // JKanime (5) NO entra aquí: solo /5?q= o /5/buscar (sección JK en MovieZone).
+  // (Antes: si AV1 tenía hits se descartaba el resto → búsqueda “rota” para pelis/series.)
+
+  // Fallback: si universal quedó vacío, forzar pelisplushd.bz (películas/series)
+  if (sourceFilter === 'all' && todos.length === 0) {
+    try {
+      var fbBz = await buscarPelisplusBz(q, limit);
+      if (Array.isArray(fbBz) && fbBz.length) {
+        for (var bi = 0; bi < fbBz.length; bi++) {
+          if (!fbBz[bi]) continue;
+          fbBz[bi].fuente = 'pelisplushd_bz';
+          fbBz[bi].fuentes = ['pelisplushd_bz'];
+          fbBz[bi].source_id = '9';
+          if (fbBz[bi].titulo) fbBz[bi].titulo = limpiarTitulo(fbBz[bi].titulo);
+          if (resultadoRelevanteBusqueda(q, fbBz[bi]) || true) todos.push(fbBz[bi]);
+        }
       }
-    }
-    if (hayAnimeAv1) {
-      var soloAv1 = [];
-      for (var fi = 0; fi < todos.length; fi++) {
-        var it = todos[fi];
-        if (!it) continue;
-        var fuenteIt = String(it.fuente || it.source || '').toLowerCase();
-        if (fuenteIt === 'animeav1') soloAv1.push(it);
+    } catch (eFb) { /* ignore */ }
+    try {
+      var fbDor = await buscarDoramasflix(q, limit);
+      if (Array.isArray(fbDor) && fbDor.length) {
+        for (var di = 0; di < fbDor.length; di++) {
+          if (!fbDor[di]) continue;
+          fbDor[di].fuente = 'doramasflix';
+          fbDor[di].source_id = sourceIdFromName('doramasflix');
+          if (resultadoRelevanteBusqueda(q, fbDor[di])) todos.push(fbDor[di]);
+        }
       }
-      todos = soloAv1;
-    }
+    } catch (eDor) { /* ignore */ }
   }
 
   // Fusionar misma obra entre fuentes (sin duplicados)
@@ -11547,46 +11563,47 @@ function decodeFutbollibreEmbedIframe(iframePath) {
 }
 
 /** GET /7/canales — todos los canales deportivos en vivo */
-/** GET /7/canales — lista desde home /canales-vivo/*.html */
+/** GET /7/canales — lista desde home /en-vivo/* (futbollibrefullhd.org) */
 async function listarFutbollibreCanales() {
-  var res = await fetch(FUTBOLLIBRE_BASE + '/', { headers: futbolLibreHeaders() });
+  var res = await fetch(FUTBOLLIBRE_BASE + '/', {
+    headers: Object.assign({}, futbolLibreHeaders(), {
+      Accept: 'text/html',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'
+    })
+  });
   if (!res.ok) throw new Error('FutbolLibre canales HTTP ' + res.status);
   var html = await res.text();
 
   var out = [];
   var seen = Object.create(null);
-  var re = /href=["'](\/canales-vivo\/([^"'\/]+?)(?:\.html)?)["']/gi;
+  var re = /href=["'](\/en-vivo\/([^"'\/?#]+))["']/gi;
   var m;
   while ((m = re.exec(html)) !== null) {
     var path = m[1];
-    var slug = String(m[2] || '').replace(/\.html$/i, '').toLowerCase();
+    var slug = String(m[2] || '').toLowerCase().trim();
     if (!slug || seen[slug]) continue;
     seen[slug] = 1;
 
-    // Portada cercana en el HTML (img /img/xxx.webp)
-    var portada = null;
-    var around = html.slice(Math.max(0, m.index - 400), m.index + 400);
-    var im = around.match(/(?:src|data-src)=["']([^"']+\.(?:webp|png|jpg|jpeg))["']/i);
+    var portada = FUTBOLLIBRE_IMG_DEFAULT;
+    var around = html.slice(Math.max(0, m.index - 500), m.index + 500);
+    var im = around.match(/(?:src|data-src)=["']([^"']+\.(?:webp|png|jpg|jpeg|svg))["']/i);
     if (im) {
       portada = im[1];
       if (portada.indexOf('http') !== 0) {
         portada = FUTBOLLIBRE_BASE + (portada.charAt(0) === '/' ? portada : '/' + portada);
       }
     }
-    if (!portada) portada = FUTBOLLIBRE_IMG_DEFAULT;
 
     var titulo = slug.replace(/[-_]+/g, ' ').replace(/\b\w/g, function (c) {
       return c.toUpperCase();
     });
-    // Título desde alt/texto cercano
     var alt = around.match(/alt=["']([^"']+)["']/i);
     if (alt && alt[1] && alt[1].length > 2) titulo = alt[1].replace(/\s+/g, ' ').trim();
 
-    var link = FUTBOLLIBRE_BASE + '/canales-vivo/' + slug + '.html';
     out.push({
       titulo: titulo,
       slug: slug,
-      link: link,
+      link: FUTBOLLIBRE_BASE + '/en-vivo/' + slug,
       portada: portada,
       stream_url: null,
       url: null,
@@ -11598,53 +11615,18 @@ async function listarFutbollibreCanales() {
   return out;
 }
 
-  // Horas del HTML = Europe/Madrid (UTC+1 / UTC+2 con DST).
-  // Ajuste igual que horario.js: restar (60 - husoMinutos).
-  function ajustarHoraDesdeEspana(horaStr, husoMinutos) {
-    if (!horaStr) return null;
-    var p = String(horaStr).match(/^(\d{1,2}):(\d{2})$/);
-    if (!p) return horaStr;
-    var total = parseInt(p[1], 10) * 60 + parseInt(p[2], 10);
-    // misma fórmula que el sitio: setMinutes(m - (60 - huso))
-    total = total - (60 - husoMinutos);
-    total = ((total % 1440) + 1440) % 1440;
-    var hh = Math.floor(total / 60);
-    var mm = total % 60;
-    return (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm;
-  }
-
-  // México (UTC-6 invierno) → huso = -360
-  // Argentina (UTC-3) → huso = -180
-  // España → huso = 60
-  var HUSO_DESTINO = -360; // cambia a -180 si prefieres Argentina
-/** GET /7/agenda — parsea /agenda.php (HTML, ya no JSON) */
-/** GET /7/agenda — parsea /agenda.php (eventos + servers en base64) */
+/** GET /7/agenda — API diaries.json (futbollibrefullhd.org → api.wqxag.com) */
 async function listarFutbollibreAgenda() {
-  var res = await fetch(FUTBOLLIBRE_BASE + '/agenda.php', {
-    headers: Object.assign({}, futbolLibreHeaders(), {
-      Accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
-      Referer: FUTBOLLIBRE_BASE + '/'
-    })
-  });
-  if (!res.ok) throw new Error('FutbolLibre agenda HTTP ' + res.status);
-  var html = await res.text();
-
   function decodeB64Url(b64) {
     try {
       var s = String(b64 || '').replace(/-/g, '+').replace(/_/g, '/');
       while (s.length % 4) s += '=';
       var bin = atob(s);
-      try {
-        return decodeURIComponent(escape(bin));
-      } catch (e1) {
-        return bin;
-      }
-    } catch (e) {
-      return null;
-    }
+      try { return decodeURIComponent(escape(bin)); } catch (e1) { return bin; }
+    } catch (e) { return null; }
   }
 
-  function absUrl(u) {
+  function absPlay(u) {
     u = String(u || '').trim();
     if (!u || u === '#') return null;
     if (u.indexOf('http') === 0) return u;
@@ -11652,198 +11634,219 @@ async function listarFutbollibreAgenda() {
     return FUTBOLLIBRE_BASE + '/' + u;
   }
 
-  // Fecha del encabezado: "Agenda - Miercoles 9 de Septiembre de 2026"
-  var fechaTexto = null;
-  var fm = html.match(/Agenda\s*[-–]\s*([^<]+)/i);
-  if (fm) fechaTexto = fm[1].replace(/\s+/g, ' ').trim();
+  function attrs(item) {
+    if (!item) return {};
+    return item.attributes || item;
+  }
+
+  var apiUrl = (typeof FUTBOLLIBRE_AGENDA_API !== 'undefined' && FUTBOLLIBRE_AGENDA_API)
+    ? FUTBOLLIBRE_AGENDA_API
+    : 'https://api.wqxag.com/diaries.json';
+
+  var res = await fetch(apiUrl, {
+    headers: {
+      Accept: 'application/json',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'
+    }
+  });
+  if (!res.ok) throw new Error('FutbolLibre agenda API HTTP ' + res.status);
+  var payload = await res.json();
+  var rows = Array.isArray(payload) ? payload
+    : (Array.isArray(payload.data) ? payload.data : []);
+
+  var hoy = new Date();
+  var yyyy = hoy.getUTCFullYear();
+  var mm = String(hoy.getUTCMonth() + 1).padStart(2, '0');
+  var dd = String(hoy.getUTCDate()).padStart(2, '0');
+  // Usar fecha local America/Mexico_City aproximada UTC-6
+  try {
+    var parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit', day: '2-digit'
+    }).formatToParts(hoy);
+    var map = {};
+    parts.forEach(function (p) { map[p.type] = p.value; });
+    yyyy = map.year; mm = map.month; dd = map.day;
+  } catch (eTz) {}
+  var hoyStr = yyyy + '-' + mm + '-' + dd;
 
   var out = [];
-
-  // Cada evento: <li class="XXX"> ... </li> con <ul> de servers dentro
-  var reEvento = /<li\s+class=["']([A-Z]{2,4})["']\s*>\s*<a[^>]*>([\s\S]*?)<\/a>\s*<ul>([\s\S]*?)<\/ul>\s*<\/li>/gi;
-  var em;
-  while ((em = reEvento.exec(html)) !== null) {
-    var ligaCode = em[1]; // CHA, LIB, ENG...
-    var headHtml = em[2];
-    var serversHtml = em[3];
-
-    var titulo = headHtml
-      .replace(/<span[^>]*>[\s\S]*?<\/span>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    var hora = null;
-    var hm = headHtml.match(/<span[^>]*class=["'][^"']*\bt\b[^"']*["'][^>]*>\s*(\d{1,2}:\d{2})\s*<\/span>/i);
-    if (hm) hora = hm[1];
-    else {
-      var hm2 = titulo.match(/(\d{1,2}:\d{2})\s*$/);
-      if (hm2) {
-        hora = hm2[1];
-        titulo = titulo.replace(/\s*\d{1,2}:\d{2}\s*$/, '').trim();
-      }
+  for (var i = 0; i < rows.length; i++) {
+    var a = attrs(rows[i]);
+    var fecha = String(a.date_diary || a.date || '').slice(0, 10);
+    // Preferir partidos de hoy; si no hay fecha, incluir
+    if (fecha && fecha !== hoyStr) {
+      // incluir ±1 día por huso
+      var t0 = Date.parse(hoyStr + 'T12:00:00Z');
+      var t1 = Date.parse(fecha + 'T12:00:00Z');
+      if (isFinite(t0) && isFinite(t1) && Math.abs(t0 - t1) > 36 * 3600 * 1000) continue;
     }
+
+    var titulo = String(a.diary_description || a.title || a.name || '').replace(/\s+/g, ' ').trim();
     if (!titulo) continue;
+
+    var horaRaw = String(a.diary_hour || a.hour || '').trim();
+    var hora = null;
+    var hm = horaRaw.match(/(\d{1,2}):(\d{2})/);
+    if (hm) hora = (hm[1].length < 2 ? '0' : '') + parseInt(hm[1], 10) + ':' + hm[2];
+
+    var ligaNombre = null;
+    var ligaCode = 'GEN';
+    try {
+      var country = a.country && (a.country.data ? attrs(a.country.data) : a.country);
+      if (country && country.name) {
+        ligaNombre = country.name;
+        ligaCode = String(country.name).slice(0, 3).toUpperCase();
+      }
+    } catch (eC) {}
+    // Prefijo tipo "Torneo: equipos"
+    var tm = titulo.match(/^([^:]+):\s*(.+)$/);
+    if (tm) {
+      ligaNombre = ligaNombre || tm[1].trim();
+      // keep full title
+    }
+
+    var home_team = null, away_team = null;
+    var vs = titulo.match(/(.+?)\s+vs\.?\s+(.+)/i);
+    if (vs) {
+      home_team = vs[1].replace(/^[^:]+:\s*/, '').trim();
+      away_team = vs[2].trim();
+    }
 
     var reproductores = [];
     var seen = Object.create(null);
-    var reSrv = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-    var sm;
-    while ((sm = reSrv.exec(serversHtml)) !== null) {
-      var href = sm[1];
-      var labelHtml = sm[2];
-      var nombre = labelHtml
-        .replace(/<span[^>]*>[\s\S]*?<\/span>/gi, ' ')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim() || 'Server';
+    var embeds = [];
+    if (a.embeds && Array.isArray(a.embeds.data)) embeds = a.embeds.data;
+    else if (Array.isArray(a.embeds)) embeds = a.embeds;
 
-      var calidad = null;
-      var cq = labelHtml.match(/<span[^>]*>\s*([^<]+)\s*<\/span>/i);
-      if (cq) calidad = cq[1].replace(/\s+/g, ' ').trim();
-
+    for (var j = 0; j < embeds.length; j++) {
+      var ea = attrs(embeds[j]);
+      var nombre = String(ea.embed_name || ea.name || 'Server').trim();
+      var iframePath = String(ea.embed_iframe || ea.iframe || ea.url || '').trim();
       var playUrl = null;
-      var rm = href.match(/[?&]r=([^&]+)/i);
+      var rm = iframePath.match(/[?&]r=([^&]+)/i);
       if (rm) {
-        playUrl = decodeB64Url(decodeURIComponent(rm[1]));
+        try {
+          playUrl = decodeB64Url(decodeURIComponent(rm[1]));
+        } catch (eD) {
+          playUrl = decodeB64Url(rm[1]);
+        }
       }
-      if (!playUrl) playUrl = absUrl(href);
+      if (!playUrl) playUrl = absPlay(iframePath);
       if (!playUrl || seen[playUrl]) continue;
       seen[playUrl] = 1;
-
-      // Link intermedio del sitio (por si el cliente quiere abrir eventos.html)
-      var linkEvento = absUrl(href);
-
       reproductores.push({
         servidor: nombre,
-        calidad: calidad,
+        calidad: null,
         url: playUrl,
-//        link_evento: linkEvento,
-        tipo: 'embed',
-        fuente: 'futbollibre'
+        embed: playUrl
       });
     }
 
-    var horaFuente = hora; // la que leíste del <span class="t">
-    var horaLocal = ajustarHoraDesdeEspana(horaFuente, HUSO_DESTINO);
+    // Portada país / logo
+    var portada = FUTBOLLIBRE_IMG_DEFAULT;
+    try {
+      var imgCdn = (typeof FUTBOLLIBRE_IMG_CDN !== 'undefined' && FUTBOLLIBRE_IMG_CDN) ? FUTBOLLIBRE_IMG_CDN : 'https://img.wqxag.com';
+      var country = a.country && (a.country.data ? attrs(a.country.data) : a.country);
+      var img = country && country.image && (country.image.data ? attrs(country.image.data) : country.image);
+      if (img && img.url) {
+        portada = img.url.indexOf('http') === 0 ? img.url : imgCdn + img.url;
+      }
+    } catch (eImg) {}
 
     out.push({
-      // ...
-      hora: horaLocal,           // para el usuario (México por defecto)
-      hora_fuente: horaFuente,   // como en el HTML (España)
-      // ...
-    });
-
-    out.push({
-      id: null,
       titulo: titulo,
-      liga: ligaCode || null,
-      fecha: null,
-      hora: horaLocal,
-      hora_fuente: horaFuente,
-      fecha_hora: null,
-      fecha_texto: fechaTexto,
-      pais: null,
-      portada: null,
-      tipo: 'Evento',
+      hora: hora,
+      hora_fuente: horaRaw || null,
+      fecha: fecha || hoyStr,
+      liga: ligaCode,
+      liga_nombre: ligaNombre,
+      home_team: home_team,
+      away_team: away_team,
+      portada: portada,
+      logo_home: null,
+      logo_away: null,
+      reproductores: reproductores,
+      embeds: reproductores,
+      status: 'programado',
       fuente: 'futbollibre',
       source_id: '7',
-      reproductores: reproductores,
-      embeds: reproductores.map(function (r) {
-        return r.url;
-      }),
-      total: reproductores.length,
-      link: FUTBOLLIBRE_BASE + '/agenda.php'
+      link: FUTBOLLIBRE_BASE + '/agenda'
     });
   }
 
+  // Orden por hora
+  out.sort(function (a, b) {
+    var ha = String(a.hora || '99:99');
+    var hb = String(b.hora || '99:99');
+    return ha < hb ? -1 : ha > hb ? 1 : 0;
+  });
+
+  var fechaTexto = 'Agenda · ' + hoyStr;
   return {
     success: true,
     fuente: 'futbollibre',
     source_id: '7',
     tipo: 'Agenda',
-    fecha: null,
+    fecha: hoyStr,
     fecha_texto: fechaTexto,
-    link: FUTBOLLIBRE_BASE + '/agenda.php',
-    actualizado: true,
     items: out,
-    total: out.length
+    total: out.length,
+    link: FUTBOLLIBRE_BASE + '/agenda',
+    actualizado: true
   };
 }
 
-function aLinkDirectoTvf90(url) {
-  var u = String(url || '').trim();
-  if (!u) return null;
-  if (u.charAt(0) === '/') u = FUTBOLLIBRE_BASE + u;
 
-  // Legacy tvf90
-  var m = u.match(/tvf90\.com\/online\/canal\.php\?([^#]+)/i);
-  if (m) return 'https://tvf90.com/5.php?' + m[1];
-
-  return u;
-}
-
-/** GET /7/canal/{slug} — /canales-vivo/{slug}.html + iframe */
 async function scrapearFutbollibreCanal(slugOrUrl) {
   var slug = String(slugOrUrl || '').trim();
   if (slug.indexOf('http') === 0) {
     var mm =
-      slug.match(/\/canales-vivo\/([^\/\?#]+?)(?:\.html)?(?:[?#]|$)/i) ||
-      slug.match(/\/en-vivo\/([^\/\?#]+)/i);
+      slug.match(/\/en-vivo\/([^\/\?#]+)/i) ||
+      slug.match(/\/canales-vivo\/([^\/\?#]+?)(?:\.html)?(?:[?#]|$)/i);
     slug = mm ? decodeURIComponent(mm[1]).replace(/\.html$/i, '') : slug;
   }
   slug = slug.replace(/\.html$/i, '');
   if (!slug) throw new Error('FutbolLibre: falta slug del canal');
 
-  var detailUrl = FUTBOLLIBRE_BASE + '/canales-vivo/' + encodeURIComponent(slug) + '.html';
-  var res = await fetch(detailUrl, { headers: futbolLibreHeaders() });
+  var detailUrl = FUTBOLLIBRE_BASE + '/en-vivo/' + encodeURIComponent(slug);
+  var res = await fetch(detailUrl, {
+    headers: Object.assign({}, futbolLibreHeaders(), {
+      Accept: 'text/html',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'
+    })
+  });
+  // fallback legado
+  if (!res.ok) {
+    detailUrl = FUTBOLLIBRE_BASE + '/canales-vivo/' + encodeURIComponent(slug) + '.html';
+    res = await fetch(detailUrl, { headers: futbolLibreHeaders() });
+  }
   if (!res.ok) throw new Error('FutbolLibre canal HTTP ' + res.status);
   var html = await res.text();
 
   var titulo =
-    (html.match(/<h1[^>]*class=["'][^"']*title[^"']*["'][^>]*>([^<]+)/i) || [])[1] ||
     (html.match(/<h1[^>]*>([^<]+)/i) || [])[1] ||
     (html.match(/<title>([^<]+)/i) || [])[1] ||
     slug.replace(/-/g, ' ');
   titulo = String(titulo)
     .replace(/\s*\|\s*F[uú]tbol Libre.*$/i, '')
     .replace(/\s*-\s*F[uú]tbol Libre.*$/i, '')
-    .replace(/\s*en vivo por [Ii]nternet.*$/i, '')
     .replace(/\s+/g, ' ')
     .trim();
 
   var reproductores = [];
   var seen = Object.create(null);
-
-  function addRep(url, servidor) {
-    var direct = aLinkDirectoTvf90(url);
-    if (!direct || seen[direct]) return;
-    if (/futbollibretvhd\.org|futbollibres\.st\/?$/i.test(direct)) return;
-    seen[direct] = 1;
-    reproductores.push({
-      servidor: servidor || 'embed',
-      url: direct,
-      tipo: 'embed',
-      fuente: 'futbollibre'
-    });
-  }
-
   var reIframe = /<iframe[^>]+src=["']([^"']+)["']/gi;
   var im;
-  while ((im = reIframe.exec(html))) {
-    var u = im[1].trim();
-    if (u.indexOf('http') !== 0) {
-      u = u.charAt(0) === '/' ? FUTBOLLIBRE_BASE + u : FUTBOLLIBRE_BASE + '/' + u;
-    }
-    var serv = /la18hd|tvf90|stream/i.test(u) ? (u.match(/https?:\/\/([^\/]+)/) || [])[1] || 'embed' : 'embed';
-    addRep(u, serv);
-  }
-
-  // stream=xxx en la página
-  var reStream = /[?&]stream=([a-z0-9_\-]+)/gi;
-  var sm;
-  while ((sm = reStream.exec(html))) {
-    addRep('https://la18hd.su/vivo/canales.php?stream=' + sm[1], 'la18hd');
+  while ((im = reIframe.exec(html)) !== null) {
+    var src = String(im[1] || '').trim();
+    if (!src || seen[src]) continue;
+    seen[src] = 1;
+    reproductores.push({
+      servidor: 'Stream',
+      calidad: null,
+      url: src,
+      embed: src
+    });
   }
 
   return {
@@ -11851,167 +11854,16 @@ async function scrapearFutbollibreCanal(slugOrUrl) {
     fuente: 'futbollibre',
     source_id: '7',
     tipo: 'Canal',
-    link: detailUrl,
-    slug: slug,
     titulo: titulo,
+    slug: slug,
+    link: FUTBOLLIBRE_BASE + '/en-vivo/' + slug,
+    portada: FUTBOLLIBRE_IMG_DEFAULT,
     reproductores: reproductores,
-    embeds: reproductores.map(function (r) {
-      return r.url;
-    }),
-    total: reproductores.length
+    embeds: reproductores
   };
 }
 
 
-/** Ordena campos útiles y elimina nulls del detalle jkanime */
-function limpiarDetalleJkanime(item) {
-  if (!item || typeof item !== 'object') return item;
-
-  var rating = item.rating != null ? item.rating
-    : (item.calificacion != null ? item.calificacion
-      : (item.imdb && item.imdb.rating != null ? item.imdb.rating
-        : (item.tmdb && item.tmdb.rating != null ? item.tmdb.rating : null)));
-
-  var votos = item.votos != null ? item.votos
-    : (item.imdb && item.imdb.votos != null ? item.imdb.votos : null);
-
-  var ratingSource = item.rating_source || null;
-  if (!ratingSource && rating != null) {
-    if (item.imdb_id || (item.imdb && item.imdb.rating != null) || item.portada_imdb) ratingSource = 'imdb';
-    else if (item.tmdb && item.tmdb.rating != null) ratingSource = 'tmdb';
-    else if (item.calificacion != null) ratingSource = 'fuente';
-  }
-
-  // Misma info visual que el resto de fuentes (Metahub / Cinemeta)
-  var portadaImdb = item.portada_imdb || null;
-  var logoImdb = item.logo_imdb || item.logo || null;
-  var backdrop = item.backdrop || item.fondo || item.background || null;
-  var imdbId = item.imdb_id || (item.imdb && item.imdb.id) || null;
-  if (imdbId && /^tt\d+$/i.test(String(imdbId))) {
-    if (!portadaImdb && typeof metahubPoster === 'function') portadaImdb = metahubPoster(imdbId, 'medium');
-    if (!logoImdb && typeof metahubLogo === 'function') logoImdb = metahubLogo(imdbId, 'medium');
-    if (!backdrop && typeof metahubBackground === 'function') backdrop = metahubBackground(imdbId, 'medium');
-  }
-
-  var out = {
-    success: true,
-    fuente: item.fuente || 'jkanime',
-    source_id: String(item.source_id || '5'),
-    tipo: item.tipo || 'Anime',
-    link: item.link || null,
-    slug: item.slug || null,
-    titulo: item.titulo || null,
-    titulo_original: item.titulo_original || null,
-    rating: rating != null ? Number(rating) : null,
-    rating_source: ratingSource,
-    votos: votos != null ? String(votos) : null,
-    portada: portadaImdb || item.portada || item.portada_tmdb || null,
-    portada_fuente_raw: item.portada_fuente_raw || item.portada || null,
-    portada_imdb: portadaImdb,
-    portada_tmdb: item.portada_tmdb || null,
-    logo: logoImdb,
-    logo_imdb: logoImdb,
-    backdrop: backdrop,
-    poster_source: item.poster_source || (portadaImdb ? 'metahub' : (item.portada ? 'fuente' : null)),
-    descripcion: item.descripcion || null,
-    year: item.year || null,
-    fecha_estreno: item.fecha_estreno || null,
-    fecha_estreno_texto: item.fecha_estreno_texto || null,
-    generos: item.generos || null,
-    genero: item.genero || null,
-    studios: item.studios || null,
-    temporada_anime: item.temporada_anime || null,
-    demografia: item.demografia || null,
-    idiomas: item.idiomas || null,
-    duracion: item.duracion != null ? item.duracion : null,
-    duracion_texto: item.duracion_texto || null,
-    estado: item.estado || null,
-    en_emision: item.en_emision != null ? item.en_emision : null,
-    finalizado: item.finalizado != null ? item.finalizado : null,
-    calidad: item.calidad || null,
-    imdb_id: imdbId,
-    tmdb_id: item.tmdb_id || (item.tmdb && item.tmdb.id) || null,
-    titulos_alternativos: item.titulos_alternativos || null,
-    anime_id: item.anime_id || null,
-    total_episodios: item.total_episodios != null ? item.total_episodios : null,
-    total_temporadas: item.total_temporadas != null ? item.total_temporadas : null,
-    temporadas: item.temporadas || null,
-    formato: item.formato || null,
-    url_extract: item.url_extract || null
-  };
-
-  Object.keys(out).forEach(function (k) {
-    if (out[k] == null || out[k] === '') delete out[k];
-    if (Array.isArray(out[k]) && out[k].length === 0) delete out[k];
-  });
-
-  // Rellenar back_img faltantes con still Metahub (series largas JK)
-  try {
-    var imdbFill = out.imdb_id || (out.imdb && out.imdb.id) || null;
-    if (imdbFill && out.temporadas && out.temporadas.length) {
-      out.temporadas.forEach(function (t) {
-        var lista = t.lista || t.episodios || [];
-        lista.forEach(function (ep) {
-          if (ep && !ep.back_img && ep.episodio && typeof metahubEpisodeStill === 'function') {
-            var still = metahubEpisodeStill(imdbFill, t.temporada || 1, ep.episodio);
-            if (still) {
-              ep.back_img = still;
-              ep.still = still;
-              if (!ep.image) ep.image = still;
-            }
-          }
-        });
-      });
-    }
-  } catch (eFill) {}
-
-  return out;
-}
-
-// ======================================================
-// JKANIME (5) — https://jkanime.net
-// ======================================================
-function jkanimeHeaders(extra) {
-  var h = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-    'Referer': JKANIME_BASE + '/'
-  };
-  if (extra) {
-    for (var k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) h[k] = extra[k];
-  }
-  return h;
-}
-
-function b64DecodeJk(str) {
-  try {
-    var s = String(str || '').replace(/\s+/g, '');
-    if (typeof atob === 'function') {
-      var bin = atob(s);
-      try { return decodeURIComponent(escape(bin)); } catch (e1) { return bin; }
-    }
-  } catch (e) {}
-  return null;
-}
-
-function parseMetaListaJk(html, label) {
-  //var re = new RegExp('<span>\\s*' + label + '\\s*:?</span>\\s*([\\s\\S]*?)</li>', 'i');
-  var re = new RegExp('<span>\\s*' + label + '\\s*:?\\s*</span>\\s*([\\s\\S]*?)</li>', 'i');
-  var m = html.match(re);
-  if (!m) return null;
-  var block = m[1];
-  // textos de links o texto plano
-  var texts = [];
-  var reA = /<a[^>]*>([^<]+)<\/a>/gi;
-  var a;
-  while ((a = reA.exec(block))) texts.push(a[1].replace(/\s+/g, ' ').trim());
-  if (texts.length) return texts;
-  var plain = block.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-  return plain || null;
-}
-
-/** GET /5/buscar?q= */
 async function buscarJkanime(query) {
   var q = String(query || '').trim();
   if (!q) throw new Error('Jkanime: falta query');
