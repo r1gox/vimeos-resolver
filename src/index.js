@@ -50,6 +50,25 @@ var FUTBOLLIBRE_IMG_DEFAULT = FUTBOLLIBRE_BASE + '/img/logo-futbol-libre.png';
 var STREAMXHD_BASE = 'https://streamxhd.com';
 var JKANIME_BASE = 'https://jkanime.net';
 
+/** Headers para fetch a jkanime.net (Referer/Origin + extras CSRF/AJAX). */
+function jkanimeHeaders(extra) {
+  var h = Object.assign({}, HEADERS, {
+    Referer: JKANIME_BASE + '/',
+    Origin: JKANIME_BASE,
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
+  });
+  if (extra && typeof extra === 'object') {
+    for (var k in extra) {
+      if (Object.prototype.hasOwnProperty.call(extra, k) && extra[k] != null) {
+        h[k] = extra[k];
+      }
+    }
+  }
+  return h;
+}
+
+
 
 
 // ============================================================
