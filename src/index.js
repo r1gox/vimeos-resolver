@@ -12178,6 +12178,51 @@ function esDescargaJk(servidor, url) {
   return false;
 }
 
+/**
+ * Lee un campo del bloque meta de detalle JKanime:
+ *   <li><span>Tipo:</span> Serie</li>
+ *   <li><span>Generos:</span> <a>Accion</a>, ...</li>
+ * Devuelve string, array de strings, o null.
+ */
+function parseMetaListaJk(html, label) {
+  if (!html || !label) return null;
+  var lab = String(label)
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/[oó]/gi, '[oó]')
+    .replace(/[eé]/gi, '[eé]')
+    .replace(/[ií]/gi, '[ií]')
+    .replace(/[uú]/gi, '[uú]')
+    .replace(/[aá]/gi, '[aá]');
+  var re = new RegExp(
+    '<span[^>]*>\\s*' + lab + '\\s*:?\\s*</span>\\s*([\\s\\S]*?)</li>',
+    'i'
+  );
+  var m = String(html).match(re);
+  if (!m) return null;
+  var chunk = m[1];
+  var links = [];
+  var reA = /<a[^>]*>([^<]+)<\/a>/gi;
+  var am;
+  while ((am = reA.exec(chunk))) {
+    var t = String(am[1]).replace(/\s+/g, ' ').trim();
+    if (t) links.push(t);
+  }
+  if (links.length) return links;
+  var text = String(chunk)
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&#039;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return null;
+  if (text.indexOf(',') !== -1) {
+    return text.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+  }
+  return text;
+}
+
 function parseJkanimeServers(html) {
   var reproductores = [];
   var descargas = [];
