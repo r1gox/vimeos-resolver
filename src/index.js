@@ -10031,11 +10031,11 @@ async function buildCatalogAv1(origin) {
   return out;
 }
 
-/** Índice JK desde scrapearJkanimeHome */
+/** Índice JK desde scrapearJkanimeHome (agregados + animes de recientes) */
 async function buildCatalogJk(origin) {
   var cacheKey = 'cat:5:index';
   var hit = catalogMemGet(cacheKey);
-  if (hit) return hit;
+  if (hit && hit.keys && hit.keys.length) return hit;
 
   var bySlug = Object.create(null);
   var keys = [];
@@ -10043,20 +10043,53 @@ async function buildCatalogJk(origin) {
     var home = await scrapearJkanimeHome();
     var pools = [];
     if (home) {
-      pools = pools.concat(home.agregados || [], home.recientes || [], home.resultados || [], home.items || []);
+      // Primero agregados (catálogo real), luego animes únicos de episodios recientes
+      pools = pools.concat(home.agregados || []);
+      var rec = home.recientes || [];
+      for (var ri = 0; ri < rec.length; ri++) {
+        var r = rec[ri];
+        if (!r || !r.slug) continue;
+        pools.push({
+          slug: r.slug,
+          titulo: r.titulo_anime || r.titulo || r.title || r.slug,
+          title: r.titulo_anime || r.titulo || r.title || r.slug,
+          portada: r.portada || r.back_img || null,
+          back_img: r.back_img || null,
+          tipo: r.tipo || 'Anime',
+          type: r.tipo || 'Anime',
+          source: 'jkanime',
+          source_id: '5',
+          fuente: 'jkanime'
+        });
+      }
     }
     for (var i = 0; i < pools.length; i++) {
-      var m = catalogItemMinimal(pools[i], '5');
-      if (!m || !m.slug || bySlug[m.slug]) continue;
+      var raw = pools[i];
+      if (!raw) continue;
+      var m = catalogItemMinimal(raw, '5');
+      if (!m || !m.slug) continue;
+      if (bySlug[m.slug]) {
+        if (!bySlug[m.slug].portada && (m.portada || raw.back_img)) {
+          bySlug[m.slug].portada = m.portada || raw.back_img;
+        }
+        continue;
+      }
       if (!m.url_extract && origin) m.url_extract = origin + '/5/anime/' + m.slug;
-      if (!m.portada && pools[i].back_img) m.portada = pools[i].back_img;
+      if (!m.portada && raw.back_img) m.portada = raw.back_img;
+      if (!m.link) m.link = 'https://jkanime.net/' + m.slug + '/';
+      m.fuente = 'jkanime';
+      m.source = 'jkanime';
+      m.source_id = '5';
       bySlug[m.slug] = m;
       keys.push(m.slug);
     }
-  } catch (e) {}
+  } catch (e) {
+    console.log('buildCatalogJk error', e && e.message);
+  }
 
   var out = { keys: keys, bySlug: bySlug, total: keys.length, source_id: '5', ts: Date.now() };
-  catalogMemSet(cacheKey, out);
+  // Solo cachear si hay datos (no cachear vacío)
+  if (keys.length) catalogMemSet(cacheKey, out);
   return out;
 }
 
@@ -10071,15 +10104,18 @@ async function buildCatalogBz(seccion, origin) {
 
   var bySlug = Object.create(null);
   var keys = [];
-  var pages = [1, 2, 3];
-  var filtros = ['estrenos', 'populares', ''];
-  for (var fi = 0; fi < filtros.length; fi++) {
-    for (var pi = 0; pi < pages.length; pi++) {
-      try {
+  // Estrenos primero (páginas 1-5), luego populares y listado general (más páginas)
+  var jobs = [];
+  var p;
+  for (p = 1; p <= 5; p++) jobs.push({ filtro: 'estrenos', page: p });
+  for (p = 1; p <= 5; p++) jobs.push({ filtro: 'populares', page: p });
+  for (p = 1; p <= 30; p++) jobs.push({ filtro: '', page: p });
+  for (var ji = 0; ji < jobs.length; ji++) {
+    try {
         var cat = await listarPelisplusCatalogo(
           seccion,
-          filtros[fi] || null,
-          pages[pi],
+          jobs[ji].filtro || null,
+          jobs[ji].page,
           origin || '',
           PELISPLUS_BZ_BASE
         );
@@ -10108,8 +10144,7 @@ async function buildCatalogBz(seccion, origin) {
           bySlug[m.slug] = m;
           keys.push(m.slug);
         }
-      } catch (ePage) {}
-    }
+    } catch (ePage) {}
   }
   var out = { keys: keys, bySlug: bySlug, total: keys.length, source_id: '9', seccion: seccion, ts: Date.now() };
   catalogMemSet(cacheKey, out);
