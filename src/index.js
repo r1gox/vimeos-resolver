@@ -50,6 +50,46 @@ var FUTBOLLIBRE_IMG_DEFAULT = FUTBOLLIBRE_BASE + '/img/logo-futbol-libre.png';
 var STREAMXHD_BASE = 'https://streamxhd.com';
 var JKANIME_BASE = 'https://jkanime.net';
 
+// Headers para scrapes JK (debe existir antes de scrapearJkanime*)
+function jkanimeHeaders(extra) {
+  var h = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+    'Referer': JKANIME_BASE + '/'
+  };
+  if (extra) {
+    for (var k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) h[k] = extra[k];
+  }
+  return h;
+}
+
+function b64DecodeJk(str) {
+  try {
+    var s = String(str || '').replace(/\s+/g, '');
+    if (typeof atob === 'function') {
+      var bin = atob(s);
+      try { return decodeURIComponent(escape(bin)); } catch (e1) { return bin; }
+    }
+  } catch (e) {}
+  return null;
+}
+
+function parseMetaListaJk(html, label) {
+  var re = new RegExp('<span>\\s*' + label + '\\s*:?\\s*</span>\\s*([\\s\\S]*?)</li>', 'i');
+  var m = html.match(re);
+  if (!m) return null;
+  var block = m[1];
+  var texts = [];
+  var reA = /<a[^>]*>([^<]+)<\/a>/gi;
+  var a;
+  while ((a = reA.exec(block))) texts.push(a[1].replace(/\s+/g, ' ').trim());
+  if (texts.length) return texts;
+  var plain = block.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return plain || null;
+}
+
+
 
 
 // ============================================================
