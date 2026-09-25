@@ -8795,6 +8795,14 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
   filtro = (filtro || '').toLowerCase();
   page = page || 1;
   var BASE = baseOpt || PELISPLUS_BASE;
+  // Cache ~20 min: evita re-scrapear la misma página (clave de velocidad)
+  var _ck = 'ppc:' + String(BASE) + ':' + seccion + ':' + (filtro || '-') + ':p' + page;
+  try {
+    if (typeof catalogMemGet === 'function') {
+      var _hit = catalogMemGet(_ck);
+      if (_hit && Array.isArray(_hit.resultados) && _hit.resultados.length) return _hit;
+    }
+  } catch (eC0) {}
 
   var pathCat = '/' + seccion;
   var tipoItem = 'Pelicula';
@@ -8914,7 +8922,7 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
     });
   }
 
-  return {
+  var outCat = {
     success: true,
     fuente: (BASE === PELISPLUS_BZ_BASE ? 'pelisplushd_bz' : 'pelisplushd'),
     source_id: (BASE === PELISPLUS_BZ_BASE ? '9' : '3'),
@@ -8924,6 +8932,10 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
     total: items.length,
     resultados: items
   };
+  try {
+    if (typeof catalogMemSet === 'function' && items.length) catalogMemSet(_ck, outCat);
+  } catch (eC1) {}
+  return outCat;
 }
 
 
