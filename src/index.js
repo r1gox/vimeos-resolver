@@ -12223,6 +12223,30 @@ function parseMetaListaJk(html, label) {
   return text;
 }
 
+/**
+ * Base64 usado en servers[].remote de JKanime (URL del embed).
+ * Soporta padding y URL-safe (-_).
+ */
+function b64DecodeJk(str) {
+  try {
+    var s = String(str || '').replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+    if (!s) return '';
+    while (s.length % 4) s += '=';
+    if (typeof atob === 'function') {
+      var bin = atob(s);
+      try {
+        return decodeURIComponent(escape(bin));
+      } catch (e1) {
+        return bin;
+      }
+    }
+    if (typeof Buffer !== 'undefined') {
+      return Buffer.from(s, 'base64').toString('utf8');
+    }
+  } catch (e) {}
+  return '';
+}
+
 function parseJkanimeServers(html) {
   var reproductores = [];
   var descargas = [];
