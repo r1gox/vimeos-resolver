@@ -50,25 +50,6 @@ var FUTBOLLIBRE_IMG_DEFAULT = FUTBOLLIBRE_BASE + '/img/logo-futbol-libre.png';
 var STREAMXHD_BASE = 'https://streamxhd.com';
 var JKANIME_BASE = 'https://jkanime.net';
 
-/** Headers para fetch a jkanime.net (Referer/Origin + extras CSRF/AJAX). */
-function jkanimeHeaders(extra) {
-  var h = Object.assign({}, HEADERS, {
-    Referer: JKANIME_BASE + '/',
-    Origin: JKANIME_BASE,
-    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
-  });
-  if (extra && typeof extra === 'object') {
-    for (var k in extra) {
-      if (Object.prototype.hasOwnProperty.call(extra, k) && extra[k] != null) {
-        h[k] = extra[k];
-      }
-    }
-  }
-  return h;
-}
-
-
 
 
 // ============================================================
@@ -404,6 +385,9 @@ function fechaAgendaEnEspanol(isoDate) {
 
 function portadaDesdeAgendaItem(attr) {
   try {
+    var cdn = (typeof FUTBOLLIBRE_IMG_CDN !== 'undefined' && FUTBOLLIBRE_IMG_CDN)
+      ? FUTBOLLIBRE_IMG_CDN
+      : 'https://img.wqxag.com';
     var img =
       attr &&
       attr.country &&
@@ -413,14 +397,15 @@ function portadaDesdeAgendaItem(attr) {
       attr.country.data.attributes.image.data &&
       attr.country.data.attributes.image.data.attributes;
     if (!img) return FUTBOLLIBRE_IMG_DEFAULT;
-    var path =
-      (img.formats && img.formats.thumbnail && img.formats.thumbnail.url) ||
+    // Preferir imagen completa (no thumbnail)
+    var path = img.url ||
+      (img.formats && img.formats.medium && img.formats.medium.url) ||
       (img.formats && img.formats.small && img.formats.small.url) ||
-      img.url ||
+      (img.formats && img.formats.thumbnail && img.formats.thumbnail.url) ||
       null;
     if (!path) return FUTBOLLIBRE_IMG_DEFAULT;
     if (path.indexOf('http') === 0) return path;
-    return FUTBOLLIBRE_IMG_BASE + (path.charAt(0) === '/' ? path : '/' + path);
+    return cdn + (path.charAt(0) === '/' ? path : '/' + path);
   } catch (e) {
     return FUTBOLLIBRE_IMG_DEFAULT;
   }
@@ -660,6 +645,10 @@ async function handleRequest(request, env) {
       },
       endpoints: {
         search: origin + '/search?q={texto}',
+        catalog_keys: origin + '/catalog/keys?source=4',
+        catalog_batch: origin + '/catalog/batch?source=4&ids=a,b,c',
+        catalog_pelis_bz: origin + '/catalog/keys?source=9&type=peliculas',
+        catalog_series_bz: origin + '/catalog/keys?source=9&type=series',
         serie: origin + '/{id}/serie/{slug}',
         serie_episodio: origin + '/{id}/serie/{slug}/{temporada}/{episodio}',
         pelicula: origin + '/{id}/pelicula/{slug}',
@@ -740,6 +729,29 @@ async function handleRequest(request, env) {
       });
     } catch (err) {
       return json({ success: false, error: err.message }, 500);
+    }
+  }
+
+  // ---------- Catálogo rápido Koiflix-style: /catalog/keys | /catalog/batch ----------
+  if (parts[0] === 'catalog' || parts[0] === 'catalogo') {
+    var catAction = (parts[1] || '').toLowerCase();
+    try {
+      if (catAction === 'keys' || catAction === 'key') {
+        return json(await handleCatalogKeys(url, origin));
+      }
+      if (catAction === 'batch' || catAction === 'items') {
+        return json(await handleCatalogBatch(url, origin));
+      }
+      return json({
+        success: true,
+        uso: {
+          keys: origin + '/catalog/keys?source=4',
+          batch: origin + '/catalog/batch?source=4&ids=slug1,slug2',
+          jk_keys: origin + '/catalog/keys?source=5'
+        }
+      });
+    } catch (errCat) {
+      return json({ success: false, error: errCat.message || 'catalog error', keys: [], results: [] }, 500);
     }
   }
 
@@ -8783,6 +8795,12 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
   filtro = (filtro || '').toLowerCase();
   page = page || 1;
   var BASE = baseOpt || PELISPLUS_BASE;
+  // Cache hasta 8 h (mem + Cache API)
+  var _ck = 'ppc:' + String(BASE) + ':' + seccion + ':' + (filtro || '-') + ':p' + page;
+  try {
+    var _hit = await catalogEdgeGet(_ck);
+    if (_hit && Array.isArray(_hit.resultados) && _hit.resultados.length) return _hit;
+  } catch (eC0) {}
 
   var pathCat = '/' + seccion;
   var tipoItem = 'Pelicula';
@@ -8902,7 +8920,7 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
     });
   }
 
-  return {
+  var outCat = {
     success: true,
     fuente: (BASE === PELISPLUS_BZ_BASE ? 'pelisplushd_bz' : 'pelisplushd'),
     source_id: (BASE === PELISPLUS_BZ_BASE ? '9' : '3'),
@@ -8912,6 +8930,10 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
     total: items.length,
     resultados: items
   };
+  try {
+    if (items.length) await catalogEdgeSet(_ck, outCat);
+  } catch (eC1) {}
+  return outCat;
 }
 
 
@@ -9915,6 +9937,338 @@ function mapAnimeAv1Embeds(embedsObj) {
  * https://animeav1.com/catalogo?status=emision
  * Ruta: /4/animes/estrenos  o  /4/animes/emision
  */
+
+// ============================================================
+// Catálogo rápido estilo Koiflix: keys + batch (cache edge)
+// GET /catalog/keys?source=4|5
+// GET /catalog/batch?source=4&ids=slug1,slug2
+// ============================================================
+var __CATALOG_MEM__ = Object.create(null);
+// Caché de listados: hasta 8 horas (memoria del isolate + Cache API de Cloudflare)
+var __CATALOG_MEM_TTL__ = 8 * 60 * 60 * 1000; // 8 horas
+
+function catalogMemGet(key) {
+  var e = __CATALOG_MEM__[key];
+  if (!e) return null;
+  if (Date.now() - e.ts > __CATALOG_MEM_TTL__) {
+    delete __CATALOG_MEM__[key];
+    return null;
+  }
+  return e.data;
+}
+function catalogMemSet(key, data) {
+  __CATALOG_MEM__[key] = { ts: Date.now(), data: data };
+}
+
+/** Cache API (persiste mejor entre requests en el edge) */
+async function catalogEdgeGet(key) {
+  var mem = catalogMemGet(key);
+  if (mem) return mem;
+  try {
+    if (typeof caches === 'undefined' || !caches.default) return null;
+    var req = new Request('https://mz-catalog-cache.internal/' + encodeURIComponent(String(key)));
+    var res = await caches.default.match(req);
+    if (!res) return null;
+    var data = await res.json();
+    if (data) catalogMemSet(key, data);
+    return data;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function catalogEdgeSet(key, data) {
+  if (!data) return;
+  catalogMemSet(key, data);
+  try {
+    if (typeof caches === 'undefined' || !caches.default) return;
+    var req = new Request('https://mz-catalog-cache.internal/' + encodeURIComponent(String(key)));
+    var res = new Response(JSON.stringify(data), {
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=28800' // 8 h
+      }
+    });
+    await caches.default.put(req, res);
+  } catch (e) {}
+}
+
+function catalogItemMinimal(it, sourceId) {
+  if (!it) return null;
+  var slug = String(it.slug || '').replace(/^\/+|\/+$/g, '');
+  if (!slug && it.id) slug = String(it.id);
+  if (!slug) return null;
+  var titulo = it.titulo || it.title || it.nombre || it.Nombre || slug;
+  var portada = it.portada || it.Carteles || it.poster || it.image || it.cover || null;
+  var logo = it.logo || it.Logo || null;
+  var backdrop = it.backdrop || it.ImagenFondo || it.imagen_fondo || null;
+  return {
+    slug: slug,
+    id: String(sourceId) + '-' + slug,
+    titulo: titulo,
+    title: titulo,
+    nombre: titulo,
+    portada: portada,
+    logo: logo,
+    backdrop: backdrop,
+    tipo: it.tipo || it.type || it.Tipo || 'Anime',
+    type: it.tipo || it.type || 'Anime',
+    year: it.year || null,
+    source_id: String(sourceId),
+    fuente: it.fuente || it.source || (sourceId === '5' ? 'jkanime' : sourceId === '4' ? 'animeav1' : null),
+    source: it.fuente || it.source || null,
+    estado: it.estado || null,
+    en_emision: it.en_emision != null ? it.en_emision : null,
+    link: it.link || it.url || null,
+    url: it.url || it.link || null,
+    url_extract: it.url_extract || null
+  };
+}
+
+/** Construye índice AV1 (varias páginas de catálogo) y guarda items por slug */
+async function buildCatalogAv1(origin) {
+  var cacheKey = 'cat:4:index';
+  var hit = catalogMemGet(cacheKey);
+  if (hit) return hit;
+
+  var bySlug = Object.create(null);
+  var keys = [];
+  var pages = [1, 2, 3];
+  var filtros = ['emision', 'populares'];
+  for (var fi = 0; fi < filtros.length; fi++) {
+    for (var pi = 0; pi < pages.length; pi++) {
+      try {
+        var cat = await listarAnimeAv1Catalogo(filtros[fi], pages[pi], origin || '');
+        var arr = (cat && cat.resultados) || [];
+        for (var i = 0; i < arr.length; i++) {
+          var m = catalogItemMinimal(arr[i], '4');
+          if (!m || !m.slug || bySlug[m.slug]) continue;
+          if (!m.url_extract && origin) m.url_extract = origin + '/4/anime/' + m.slug;
+          if (!m.link) m.link = 'https://animeav1.com/media/' + m.slug;
+          bySlug[m.slug] = m;
+          keys.push(m.slug);
+        }
+      } catch (ePage) {}
+    }
+  }
+  // Mezclar home agregados (recién añadidos)
+  try {
+    var home = await listarAnimeAv1Home('home', origin || '');
+    var extra = [].concat((home && home.agregados) || [], (home && home.recientes) || []);
+    for (var j = 0; j < extra.length; j++) {
+      var m2 = catalogItemMinimal(extra[j], '4');
+      if (!m2 || !m2.slug) continue;
+      if (!bySlug[m2.slug]) {
+        bySlug[m2.slug] = m2;
+        keys.push(m2.slug);
+      } else {
+        // enriquecer portada si faltaba
+        var prev = bySlug[m2.slug];
+        if (!prev.portada && m2.portada) prev.portada = m2.portada;
+        if (m2.back_img) prev.back_img = m2.back_img;
+      }
+    }
+  } catch (eH) {}
+
+  var out = { keys: keys, bySlug: bySlug, total: keys.length, source_id: '4', ts: Date.now() };
+  catalogMemSet(cacheKey, out);
+  return out;
+}
+
+/** Índice JK desde scrapearJkanimeHome (agregados + animes de recientes) */
+async function buildCatalogJk(origin) {
+  var cacheKey = 'cat:5:index';
+  var hit = catalogMemGet(cacheKey);
+  if (hit && hit.keys && hit.keys.length) return hit;
+
+  var bySlug = Object.create(null);
+  var keys = [];
+  try {
+    var home = await scrapearJkanimeHome();
+    var pools = [];
+    if (home) {
+      // Primero agregados (catálogo real), luego animes únicos de episodios recientes
+      pools = pools.concat(home.agregados || []);
+      var rec = home.recientes || [];
+      for (var ri = 0; ri < rec.length; ri++) {
+        var r = rec[ri];
+        if (!r || !r.slug) continue;
+        pools.push({
+          slug: r.slug,
+          titulo: r.titulo_anime || r.titulo || r.title || r.slug,
+          title: r.titulo_anime || r.titulo || r.title || r.slug,
+          portada: r.portada || r.back_img || null,
+          back_img: r.back_img || null,
+          tipo: r.tipo || 'Anime',
+          type: r.tipo || 'Anime',
+          source: 'jkanime',
+          source_id: '5',
+          fuente: 'jkanime'
+        });
+      }
+    }
+    for (var i = 0; i < pools.length; i++) {
+      var raw = pools[i];
+      if (!raw) continue;
+      var m = catalogItemMinimal(raw, '5');
+      if (!m || !m.slug) continue;
+      if (bySlug[m.slug]) {
+        if (!bySlug[m.slug].portada && (m.portada || raw.back_img)) {
+          bySlug[m.slug].portada = m.portada || raw.back_img;
+        }
+        continue;
+      }
+      if (!m.url_extract && origin) m.url_extract = origin + '/5/anime/' + m.slug;
+      if (!m.portada && raw.back_img) m.portada = raw.back_img;
+      if (!m.link) m.link = 'https://jkanime.net/' + m.slug + '/';
+      m.fuente = 'jkanime';
+      m.source = 'jkanime';
+      m.source_id = '5';
+      bySlug[m.slug] = m;
+      keys.push(m.slug);
+    }
+  } catch (e) {
+    console.log('buildCatalogJk error', e && e.message);
+  }
+
+  var out = { keys: keys, bySlug: bySlug, total: keys.length, source_id: '5', ts: Date.now() };
+  // Solo cachear si hay datos (no cachear vacío)
+  if (keys.length) catalogMemSet(cacheKey, out);
+  return out;
+}
+
+/** Índice PelisPlus .bz (source 9) — películas o series */
+async function buildCatalogBz(seccion, origin) {
+  seccion = String(seccion || 'peliculas').toLowerCase();
+  if (seccion === 'movie' || seccion === 'movies' || seccion === 'pelicula') seccion = 'peliculas';
+  if (seccion === 'serie' || seccion === 'tv') seccion = 'series';
+  var cacheKey = 'cat:9:' + seccion + ':index';
+  var hit = catalogMemGet(cacheKey);
+  if (hit) return hit;
+
+  var bySlug = Object.create(null);
+  var keys = [];
+  // Estrenos primero (páginas 1-5), luego populares y listado general (más páginas)
+  var jobs = [];
+  var p;
+  for (p = 1; p <= 5; p++) jobs.push({ filtro: 'estrenos', page: p });
+  for (p = 1; p <= 5; p++) jobs.push({ filtro: 'populares', page: p });
+  for (p = 1; p <= 30; p++) jobs.push({ filtro: '', page: p });
+  for (var ji = 0; ji < jobs.length; ji++) {
+    try {
+        var cat = await listarPelisplusCatalogo(
+          seccion,
+          jobs[ji].filtro || null,
+          jobs[ji].page,
+          origin || '',
+          PELISPLUS_BZ_BASE
+        );
+        var arr = (cat && cat.resultados) || [];
+        for (var i = 0; i < arr.length; i++) {
+          var m = catalogItemMinimal(arr[i], '9');
+          if (!m || !m.slug || bySlug[m.slug]) continue;
+          // tipo correcto
+          if (seccion === 'series') {
+            m.tipo = m.tipo && /serie|dorama/i.test(m.tipo) ? m.tipo : 'Serie';
+            m.type = 'Serie';
+          } else {
+            m.tipo = m.tipo && /pel/i.test(m.tipo) ? m.tipo : 'Película';
+            m.type = 'Película';
+          }
+          if (!m.url_extract && origin) {
+            var kind = seccion === 'series' ? 'serie' : 'pelicula';
+            m.url_extract = origin + '/9/' + kind + '/' + m.slug;
+          }
+          if (!m.link) {
+            m.link = PELISPLUS_BZ_BASE + '/' + (seccion === 'series' ? 'serie' : 'pelicula') + '/' + m.slug;
+          }
+          m.fuente = 'pelisplushd_bz';
+          m.source = 'pelisplushd_bz';
+          m.source_id = '9';
+          bySlug[m.slug] = m;
+          keys.push(m.slug);
+        }
+    } catch (ePage) {}
+  }
+  var out = { keys: keys, bySlug: bySlug, total: keys.length, source_id: '9', seccion: seccion, ts: Date.now() };
+  catalogMemSet(cacheKey, out);
+  return out;
+}
+
+async function resolveCatalogIndex(source, url, origin) {
+  source = String(source || '4').trim();
+  if (source === 'animeav1' || source === 'av1') source = '4';
+  if (source === 'jkanime' || source === 'jk') source = '5';
+  if (source === 'pelisplushd_bz' || source === 'bz' || source === 'pelisplus_bz') source = '9';
+  if (source === 'pelisplushd' || source === 'to') source = '3';
+
+  var tipo = String(url.searchParams.get('type') || url.searchParams.get('tipo') || url.searchParams.get('seccion') || '').toLowerCase();
+
+  if (source === '5') return await buildCatalogJk(origin);
+  if (source === '9' || source === '3') {
+    var sec = tipo;
+    if (!sec || sec === 'all') sec = 'peliculas';
+    if (sec === 'movie' || sec === 'movies') sec = 'peliculas';
+    if (sec === 'serie' || sec === 'tv') sec = 'series';
+    // source 3 usa .to solo si se pide explícito; por defecto pelis = bz (9)
+    if (source === '3') {
+      // no cambiar comportamiento universal; catálogo rápido de pelis usa 9
+      source = '9';
+    }
+    return await buildCatalogBz(sec, origin);
+  }
+  return await buildCatalogAv1(origin);
+}
+
+async function handleCatalogKeys(url, origin) {
+  var source = String(url.searchParams.get('source') || url.searchParams.get('source_id') || '4').trim();
+  if (source === 'animeav1' || source === 'av1') source = '4';
+  if (source === 'jkanime' || source === 'jk') source = '5';
+  if (source === 'pelisplushd_bz' || source === 'bz') source = '9';
+
+  var index = await resolveCatalogIndex(source, url, origin);
+  var sid = index.source_id || source;
+
+  return {
+    success: true,
+    source_id: sid,
+    seccion: index.seccion || null,
+    total: index.total,
+    keys: index.keys,
+    sample: index.keys.slice(0, 12).map(function (s) { return index.bySlug[s]; }).filter(Boolean)
+  };
+}
+
+async function handleCatalogBatch(url, origin) {
+  var source = String(url.searchParams.get('source') || url.searchParams.get('source_id') || '4').trim();
+  if (source === 'animeav1' || source === 'av1') source = '4';
+  if (source === 'jkanime' || source === 'jk') source = '5';
+  if (source === 'pelisplushd_bz' || source === 'bz') source = '9';
+
+  var idsRaw = url.searchParams.get('ids') || url.searchParams.get('batch') || '';
+  var ids = String(idsRaw)
+    .split(',')
+    .map(function (s) { return s.trim(); })
+    .filter(Boolean)
+    .slice(0, 40);
+
+  var index = await resolveCatalogIndex(source, url, origin);
+  var items = [];
+  for (var i = 0; i < ids.length; i++) {
+    var it = index.bySlug[ids[i]];
+    if (it) items.push(it);
+  }
+  return {
+    success: true,
+    source_id: index.source_id || source,
+    seccion: index.seccion || null,
+    count: items.length,
+    results: items,
+    items: items
+  };
+}
+
+
 async function listarAnimeAv1Catalogo(filtro, page, origin) {
   page = page || 1;
   filtro = (filtro || 'emision').toLowerCase();
@@ -11761,16 +12115,8 @@ async function listarFutbollibreAgenda() {
       });
     }
 
-    // Portada país / logo
-    var portada = FUTBOLLIBRE_IMG_DEFAULT;
-    try {
-      var imgCdn = (typeof FUTBOLLIBRE_IMG_CDN !== 'undefined' && FUTBOLLIBRE_IMG_CDN) ? FUTBOLLIBRE_IMG_CDN : 'https://img.wqxag.com';
-      var country = a.country && (a.country.data ? attrs(a.country.data) : a.country);
-      var img = country && country.image && (country.image.data ? attrs(country.image.data) : country.image);
-      if (img && img.url) {
-        portada = img.url.indexOf('http') === 0 ? img.url : imgCdn + img.url;
-      }
-    } catch (eImg) {}
+    // Portada liga/país desde API (img.wqxag.com/uploads/...)
+    var portada = portadaDesdeAgendaItem(a);
 
     out.push({
       titulo: titulo,
@@ -12176,75 +12522,6 @@ function esDescargaJk(servidor, url) {
   if (/mediafire|mega\.nz|mega\.|google.?drive|drive\.google|zippyshare|1fichier|pixeldrain/i.test(s)) return true;
   if (/mediafire\.com|mega\.nz|drive\.google\.com|1fichier\.com|pixeldrain\.com/i.test(u)) return true;
   return false;
-}
-
-/**
- * Lee un campo del bloque meta de detalle JKanime:
- *   <li><span>Tipo:</span> Serie</li>
- *   <li><span>Generos:</span> <a>Accion</a>, ...</li>
- * Devuelve string, array de strings, o null.
- */
-function parseMetaListaJk(html, label) {
-  if (!html || !label) return null;
-  var lab = String(label)
-    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    .replace(/[oó]/gi, '[oó]')
-    .replace(/[eé]/gi, '[eé]')
-    .replace(/[ií]/gi, '[ií]')
-    .replace(/[uú]/gi, '[uú]')
-    .replace(/[aá]/gi, '[aá]');
-  var re = new RegExp(
-    '<span[^>]*>\\s*' + lab + '\\s*:?\\s*</span>\\s*([\\s\\S]*?)</li>',
-    'i'
-  );
-  var m = String(html).match(re);
-  if (!m) return null;
-  var chunk = m[1];
-  var links = [];
-  var reA = /<a[^>]*>([^<]+)<\/a>/gi;
-  var am;
-  while ((am = reA.exec(chunk))) {
-    var t = String(am[1]).replace(/\s+/g, ' ').trim();
-    if (t) links.push(t);
-  }
-  if (links.length) return links;
-  var text = String(chunk)
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&#039;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!text) return null;
-  if (text.indexOf(',') !== -1) {
-    return text.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
-  }
-  return text;
-}
-
-/**
- * Base64 usado en servers[].remote de JKanime (URL del embed).
- * Soporta padding y URL-safe (-_).
- */
-function b64DecodeJk(str) {
-  try {
-    var s = String(str || '').replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
-    if (!s) return '';
-    while (s.length % 4) s += '=';
-    if (typeof atob === 'function') {
-      var bin = atob(s);
-      try {
-        return decodeURIComponent(escape(bin));
-      } catch (e1) {
-        return bin;
-      }
-    }
-    if (typeof Buffer !== 'undefined') {
-      return Buffer.from(s, 'base64').toString('utf8');
-    }
-  } catch (e) {}
-  return '';
 }
 
 function parseJkanimeServers(html) {
