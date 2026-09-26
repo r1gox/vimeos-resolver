@@ -246,18 +246,25 @@ async function enriquecerSoloCinemeta(detalle, typeHint) {
       detalle.rating_source = 'imdb';
     }
   }
-  if (meta.year && !detalle.year) detalle.year = meta.year;
+  // Year/fecha: la FUENTE manda. Cinemeta solo si falta year (nunca pisar 2026 con 2024 de otra obra)
+  var esFuenteJkAv1 =
+    String(detalle.fuente || '') === 'jkanime' ||
+    String(detalle.fuente || '') === 'animeav1' ||
+    String(detalle.source_id || '') === '5' ||
+    String(detalle.source_id || '') === '4';
+  if (meta.year && !detalle.year) {
+    detalle.year = meta.year;
+  }
   if (meta.fecha_estreno && !detalle.fecha_estreno) {
     var alC = alinearFechaConYear(detalle.year || meta.year, meta.fecha_estreno);
-    // Solo aplicar fecha meta si el año cuadra con el year de la fuente
     if (alC.fecha_estreno && detalle.year) {
       var yDet = String(detalle.year).match(/(19|20)\d{2}/);
       var yFe = String(alC.fecha_estreno).match(/(19|20)\d{2}/);
       if (yDet && yFe && yDet[0] === yFe[0]) {
         detalle.fecha_estreno = alC.fecha_estreno;
       }
-      // si no cuadra, no poner fecha de Cinemeta
-    } else if (alC.fecha_estreno && !detalle.year) {
+    } else if (alC.fecha_estreno && !detalle.year && !esFuenteJkAv1) {
+      // Solo rellenar year+fecha desde Cinemeta si NO es JK/AV1 (evita serie padre)
       detalle.fecha_estreno = alC.fecha_estreno;
       if (alC.year) detalle.year = alC.year;
     }
@@ -912,9 +919,21 @@ async function handleRequest(request, env) {
               .trim();
           }
         }
-        if (detJk.fecha_estreno_texto && !detJk.year) {
-          var ymJk = String(detJk.fecha_estreno_texto).match(/(19|20)\d{2}/);
-          if (ymJk) detJk.year = ymJk[0];
+        if (detJk.fecha_estreno_texto) {
+          var ymJkTxt = String(detJk.fecha_estreno_texto).match(/(19|20)\d{2}/);
+          if (ymJkTxt && !detJk.year) detJk.year = ymJkTxt[0];
+          // Fecha ISO desde texto ES si aún no hay
+          if (!detJk.fecha_estreno) {
+            var mesesTxt = {enero:'01',febrero:'02',marzo:'03',abril:'04',mayo:'05',junio:'06',julio:'07',agosto:'08',septiembre:'09',setiembre:'09',octubre:'10',noviembre:'11',diciembre:'12'};
+            var dmTxt = String(detJk.fecha_estreno_texto).match(/(\d{1,2})\s+de\s+([A-Za-zÁÉÍÓÚáéíóúñÑ]+)\s+de\s+((?:19|20)\d{2})/i);
+            if (dmTxt) {
+              var mesT = mesesTxt[String(dmTxt[2]).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')];
+              if (mesT) {
+                detJk.fecha_estreno = dmTxt[3] + '-' + mesT + '-' + String(dmTxt[1]).padStart(2, '0');
+                detJk.year = dmTxt[3];
+              }
+            }
+          }
         }
 
         // Guardar puntuación de JKanime (8.73) por si IMDb falla
@@ -934,9 +953,21 @@ async function handleRequest(request, env) {
               .trim();
           }
         }
-        if (detJk.fecha_estreno_texto && !detJk.year) {
-          var ymJk = String(detJk.fecha_estreno_texto).match(/(19|20)\d{2}/);
-          if (ymJk) detJk.year = ymJk[0];
+        if (detJk.fecha_estreno_texto) {
+          var ymJkTxt = String(detJk.fecha_estreno_texto).match(/(19|20)\d{2}/);
+          if (ymJkTxt && !detJk.year) detJk.year = ymJkTxt[0];
+          // Fecha ISO desde texto ES si aún no hay
+          if (!detJk.fecha_estreno) {
+            var mesesTxt = {enero:'01',febrero:'02',marzo:'03',abril:'04',mayo:'05',junio:'06',julio:'07',agosto:'08',septiembre:'09',setiembre:'09',octubre:'10',noviembre:'11',diciembre:'12'};
+            var dmTxt = String(detJk.fecha_estreno_texto).match(/(\d{1,2})\s+de\s+([A-Za-zÁÉÍÓÚáéíóúñÑ]+)\s+de\s+((?:19|20)\d{2})/i);
+            if (dmTxt) {
+              var mesT = mesesTxt[String(dmTxt[2]).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')];
+              if (mesT) {
+                detJk.fecha_estreno = dmTxt[3] + '-' + mesT + '-' + String(dmTxt[1]).padStart(2, '0');
+                detJk.year = dmTxt[3];
+              }
+            }
+          }
         }
 
         // Mismo pipeline que AnimeAV1 (ruta /4/...): enriquecer → normalizar → formatear
@@ -13485,12 +13516,36 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
   // Más de 1 episodio → siempre lista
   if (totalEpsJk > 1) esUnicoCapJk = false;
 
-  // Año / fecha desde "Emitido: Sabado, 15 de Diciembre de 2012"
+  // Año / fecha desde "Emitido: Sabado, 05 de Septiembre de 2026"
+  // En JK a veces el texto va DESPUÉS del </span>, no dentro
   var yearJk = null;
   var fechaEstrenoJk = null;
+  if (!emitido || !/(19|20)\d{2}/.test(String(emitido))) {
+    var emFull =
+      html.match(/Emitido\s*:?\s*<\/span>\s*([^<]+)/i) ||
+      html.match(/Emitido\s*:?\s*<\/b>\s*([^<]+)/i) ||
+      html.match(/Emitido\s*:\s*([^<\n]{5,80})/i);
+    if (emFull) {
+      emitido = String(emFull[1]).replace(/\s+/g, ' ').trim();
+    }
+  }
   if (emitido) {
     var ymJk = String(emitido).match(/(19|20)\d{2}/);
     if (ymJk) yearJk = ymJk[0];
+    // "05 de Septiembre de 2026" → 2026-09-05
+    var mesesJk = {
+      enero: '01', febrero: '02', marzo: '03', abril: '04', mayo: '05', junio: '06',
+      julio: '07', agosto: '08', septiembre: '09', setiembre: '09', octubre: '10',
+      noviembre: '11', diciembre: '12'
+    };
+    var dm = String(emitido).match(/(\d{1,2})\s+de\s+([A-Za-zÁÉÍÓÚáéíóúñÑ]+)\s+de\s+((?:19|20)\d{2})/i);
+    if (dm) {
+      var mesN = mesesJk[String(dm[2]).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')];
+      if (mesN) {
+        fechaEstrenoJk = dm[3] + '-' + mesN + '-' + String(dm[1]).padStart(2, '0');
+        yearJk = dm[3];
+      }
+    }
   }
 
   // Película / OVA / ONA / Especial: players en /slug/1/
