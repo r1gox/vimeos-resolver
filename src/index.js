@@ -8083,10 +8083,37 @@ function mapHackstoreDetalle(it, origin, extras) {
 }
 function mapHackstoreEmbed(e) {
   if (!e || !e.url) return null;
+  // provider real desde host/url (API suele mandar server:"Online")
+  var provider = null;
+  try {
+    if (typeof extraerServidor === 'function') provider = extraerServidor(e.url);
+  } catch (_) {}
+  if (!provider || /^(online|server|servidor|unknown|desconocido)$/i.test(String(provider))) {
+    var host = String(e.host || '').toLowerCase().replace(/^www\./, '');
+    if (!host) {
+      try { host = new URL(e.url).hostname.toLowerCase().replace(/^www\./, ''); } catch (_) {}
+    }
+    if (host) {
+      // voe.sx → voe, streamwish.to → streamwish, vimeos.net → vimeos
+      var base = host.split('.')[0];
+      if (base === 'voe' || host.indexOf('voe') !== -1) provider = 'voe';
+      else if (host.indexOf('streamwish') !== -1 || host.indexOf('flaswish') !== -1 || host.indexOf('strwish') !== -1) provider = 'streamwish';
+      else if (host.indexOf('vidhide') !== -1 || host.indexOf('filelions') !== -1 || host.indexOf('smoothpre') !== -1) provider = 'vidhide';
+      else if (host.indexOf('streamtape') !== -1 || host.indexOf('strtape') !== -1) provider = 'streamtape';
+      else if (host.indexOf('vimeos') !== -1) provider = 'vimeos';
+      else if (base) provider = base;
+    }
+  }
+  if (!provider) provider = e.server || 'online';
+  provider = String(provider).toLowerCase().trim();
   return {
     url: e.url,
-    servidor: e.server || e.host || (typeof extraerServidor === 'function' ? extraerServidor(e.url) : 'Online'),
+    provider: provider,
+    servidor: provider,
+    server: provider,
+    name: provider,
     idioma: e.lang || 'Desconocido',
+    lang: e.lang || null,
     calidad: e.quality || null,
     host: e.host || null,
     subtitle: !!e.subtitle,
@@ -8331,6 +8358,22 @@ async function scrapearHackstore(pageUrl, opts) {
   if (seasonOnly && episodeOnly && (kind === 'tvshow' || kind === 'anime')) {
     var repsEp = await hackstorePlayback(kind, card.tmdb_id, seasonOnly, episodeOnly);
     var dlsEp = await hackstoreDownloads(kind, card.tmdb_id, seasonOnly, episodeOnly);
+    // Sinopsis del episodio (cada ep tiene overview propio en la API)
+    var epMeta = null;
+    try {
+      var sdEp = await hackstoreApiGet(
+        '/v1/items/' + encodeURIComponent(kind) + '/' + encodeURIComponent(card.tmdb_id) + '/seasons/' + seasonOnly
+      );
+      var epList = (sdEp && sdEp.season && sdEp.season.episodes) || [];
+      for (var ei = 0; ei < epList.length; ei++) {
+        if (Number(epList[ei].episode) === Number(episodeOnly)) {
+          epMeta = epList[ei];
+          break;
+        }
+      }
+    } catch (_) {}
+    var epDesc = (epMeta && epMeta.overview) ? String(epMeta.overview).trim() : null;
+    var epTitulo = (epMeta && epMeta.title) ? String(epMeta.title).trim() : null;
     return {
       success: true,
       fuente: 'hackstore',
@@ -8338,9 +8381,14 @@ async function scrapearHackstore(pageUrl, opts) {
       tipo: 'Capitulo',
       link: pageUrl,
       slug: card.slug || slug,
-      titulo: (card.title || slug) + ' — T' + seasonOnly + 'E' + episodeOnly,
+      titulo: epTitulo || ((card.title || slug) + ' — T' + seasonOnly + 'E' + episodeOnly),
       titulo_serie: card.title || slug,
+      titulo_episodio: epTitulo || null,
       portada: hackstoreImg(card.poster_path, 'w500'),
+      back_img: epMeta && epMeta.still_path ? hackstoreImg(epMeta.still_path, 'w500') : null,
+      descripcion: epDesc || card.overview || null,
+      overview: epDesc || card.overview || null,
+      duracion: (epMeta && epMeta.runtime) ? epMeta.runtime : null,
       temporada: seasonOnly,
       episodio: episodeOnly,
       tmdb_id: card.tmdb_id,
