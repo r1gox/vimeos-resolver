@@ -964,6 +964,16 @@ async function handleRequest(request, env) {
           if (imdbJk.imdb_id) {
             detJk.imdb_id = imdbJk.imdb_id;
             detJk = await enriquecerSoloCinemeta(detJk, detJk.tipo || 'Anime');
+            var tJkC = String(detJk.tipo || '').toLowerCase();
+            if (/\b(ona|ova|especial|special)\b/.test(tJkC)) {
+              // Preferir siempre portada JK; logo de serie padre confunde
+              if (detJk.portada_fuente_raw) detJk.portada = detJk.portada_fuente_raw;
+              // Si no hubo match fuerte, mal_id puede ser de la serie padre → no logo Cinemeta
+              if (!imdbJk.mal_id || !imdbJk.imdb_id) {
+                detJk.logo = null;
+                detJk.portada_imdb = null;
+              }
+            }
           }
           // Restaurar texto/rating de la fuente JK (no la sinopsis de otra peli)
           if (descJkKeep) detJk.descripcion = descJkKeep;
@@ -6868,12 +6878,27 @@ function slimEpisodio(ep) {
 
 function slimTemporada(t) {
   if (!t || typeof t !== 'object') return t;
-  var eps = t.episodios || t.capitulos || [];
-  var lista = eps.map(slimEpisodio);
+  var epsRaw = t.lista || t.episodios || t.capitulos || [];
+  if (typeof epsRaw === 'number') {
+    var outNum = {
+      temporada: t.temporada != null ? t.temporada : (t.season_number != null ? t.season_number : null),
+      episodios: epsRaw
+    };
+    if (Array.isArray(t.lista) && t.lista.length) {
+      outNum.lista = t.lista.map(slimEpisodio);
+      outNum.episodios = outNum.lista.length;
+    }
+    if (outNum.temporada == null) delete outNum.temporada;
+    return outNum;
+  }
+  var lista = Array.isArray(epsRaw) ? epsRaw.map(slimEpisodio) : [];
   var declared = parseInt(t.total_episodios != null ? t.total_episodios : (t.episodios_count || 0), 10) || 0;
+  var count = lista.length
+    ? ((declared > lista.length * 2 && lista.length <= 24) ? lista.length : Math.max(declared, lista.length))
+    : declared;
   var out = {
     temporada: t.temporada != null ? t.temporada : (t.season_number != null ? t.season_number : null),
-    episodios: Math.max(declared, lista.length)
+    episodios: count
   };
   if (lista.length) out.lista = lista;
   if (out.temporada == null) delete out.temporada;
@@ -12522,23 +12547,29 @@ async function fetchJkanimeEpisodes(animeId, refererUrl, opts) {
   });
   all.sort(function (a, b) { return (a.episodio || 0) - (b.episodio || 0); });
 
-  // Completar huecos del rango (sin thumb si no vino del API)
-  var byNum = {};
-  all.forEach(function (ep) { byNum[ep.episodio] = ep; });
-  for (var fill = epFrom; fill <= epTo; fill++) {
-    if (byNum[fill]) continue;
-    byNum[fill] = {
-      episodio: fill,
-      episode: fill,
-      titulo: 'Episodio ' + fill,
-      id: null,
-      image: null,
-      back_img: null
-    };
+  // Completar huecos solo si total API es coherente (no inventar 50 caps en ONA)
+  var realCount = all.length;
+  var fillHuecos = apiTotal > 0 && realCount > 0 && apiTotal <= realCount + 5;
+  if (fillHuecos && (epTo - epFrom) <= 30) {
+    var byNum = {};
+    all.forEach(function (ep) { byNum[ep.episodio] = ep; });
+    for (var fill = epFrom; fill <= epTo; fill++) {
+      if (byNum[fill]) continue;
+      byNum[fill] = {
+        episodio: fill,
+        episode: fill,
+        titulo: 'Episodio ' + fill,
+        id: null,
+        image: null,
+        back_img: null
+      };
+    }
+    all = Object.keys(byNum).map(Number).sort(function (a, b) { return a - b; }).map(function (n) { return byNum[n]; });
   }
-  all = Object.keys(byNum).map(Number).sort(function (a, b) { return a - b; }).map(function (n) { return byNum[n]; });
-
-  all._jkTotal = apiTotal;
+  if (apiTotal > realCount * 2 && realCount > 0 && realCount <= 24) {
+    apiTotal = realCount;
+  }
+  all._jkTotal = apiTotal || realCount;
   all._jkEpFrom = epFrom;
   all._jkEpTo = epTo;
   return all;
@@ -12749,6 +12780,11 @@ async function resolverImdbJkanime(det, slug) {
     /(?:^|[\s\-])(movie|film|pelicula)(?:$|[\s\-])/.test(blob) ||
     /film[- ]z\b|movie\b/.test(blob);
 
+  // ONA / OVA / Especial: no coger la serie TV padre
+  var esCorto =
+    /\b(ona|ova|especial|special)\b/i.test(String(det.tipo || '')) ||
+    /\b(ona|ova|especial|special)\b/i.test(blob);
+
   // Temporadas conocidas de la misma serie IMDb (solo series, no pelis)
   if (!esPeli && /jujutsu|kaisen/.test(blob)) {
     out.imdb_id = 'tt12343534';
@@ -12798,10 +12834,18 @@ async function resolverImdbJkanime(det, slug) {
           else if (names[j].indexOf(qn) !== -1 || qn.indexOf(names[j]) !== -1) sc = Math.max(sc, 60);
         }
         if (esPeli && (aType === 'movie' || aType === 'special')) sc += 25;
-        if (!esPeli && aType === 'tv') sc += 15;
+        if (typeof esCorto !== 'undefined' && esCorto) {
+          if (aType === 'ona' || aType === 'ova' || aType === 'special') sc += 40;
+          if (aType === 'tv') sc -= 50;
+          var shortest = names.slice().sort(function (x, y) { return x.length - y.length; })[0] || '';
+          if (qn.length >= shortest.length + 8 && aType === 'tv') sc -= 40;
+        } else if (!esPeli && aType === 'tv') {
+          sc += 15;
+        }
         if (sc > bestSc) { bestSc = sc; best = a; }
       }
-      if (best && bestSc >= 55) malId = best.mal_id;
+      var minScJk = (typeof esCorto !== 'undefined' && esCorto) ? 80 : 55;
+      if (best && bestSc >= minScJk) malId = best.mal_id;
     } catch (eJ) {}
   }
   // Si peli y no hubo mal_id con type=movie, reintentar sin filtro (por si Jikan no marca movie)
@@ -13372,7 +13416,14 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
         image: back || ep.image || null
       });
     });
-    // Solo el rango visible (como AV1: 50); total real en _jkTotal
+    // Solo el rango visible; total real en _jkTotal
+    // ONA/OVA: no aceptar total inflado de la serie padre
+    try {
+      var tipoHintMap = String(tipoMetaJk || tipo || '').toLowerCase();
+      if (/\b(ona|ova|especial|special)\b/.test(tipoHintMap) && episodios.length > 0 && episodios.length <= 24) {
+        if (!jkTotal || jkTotal > episodios.length * 2) jkTotal = episodios.length;
+      }
+    } catch (_) {}
     episodios._jkTotal = jkTotal || episodios.length;
     episodios._jkEpFrom = jkFrom;
     episodios._jkEpTo = jkTo || episodios.length;
