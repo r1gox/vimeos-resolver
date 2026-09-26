@@ -7057,6 +7057,26 @@ function formatearCapituloRespuesta(item, origin, ctx) {
   if (item.link) out.link = item.link;
   if (item.postId != null) out.postId = item.postId;
 
+  // Sinopsis / meta del episodio (Hackstore y otras fuentes)
+  var epDesc =
+    item.descripcion ||
+    item.overview ||
+    item.sinopsis ||
+    item.synopsis ||
+    null;
+  if (epDesc && String(epDesc).trim()) {
+    out.descripcion = String(epDesc).trim();
+    out.overview = out.descripcion;
+  }
+  if (item.titulo_episodio) out.titulo_episodio = item.titulo_episodio;
+  if (item.titulo_serie) out.titulo_serie = item.titulo_serie;
+  if (item.nombre) out.nombre = item.nombre;
+  if (item.back_img) out.back_img = item.back_img;
+  if (item.still) out.still = item.still;
+  if (item.duracion != null) out.duracion = item.duracion;
+  if (item.runtime != null && out.duracion == null) out.duracion = item.runtime;
+  if (item.portada) out.portada = item.portada;
+
   Object.keys(out).forEach(function (k) {
     if (out[k] == null) delete out[k];
   });
