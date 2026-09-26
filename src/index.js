@@ -8160,6 +8160,7 @@ async function hackstoreFetchCard(kind, tmdbId) {
 async function hackstoreResolveBySlug(slug, preferKind) {
   slug = String(slug || '').replace(/\/+$/, '');
   if (!slug) return null;
+  // tmdb_id numérico
   if (/^\d+$/.test(slug)) {
     var kinds = preferKind ? [preferKind, 'movie', 'tvshow', 'anime'] : ['movie', 'tvshow', 'anime'];
     for (var i = 0; i < kinds.length; i++) {
@@ -8169,28 +8170,96 @@ async function hackstoreResolveBySlug(slug, preferKind) {
       } catch (_) {}
     }
   }
-  try {
-    var q = slug.replace(/-/g, ' ');
-    var data = await hackstoreApiGet('/v1/search', { q: q, limit: 20 });
-    var items = (data && data.items) || [];
+
+  function pickHit(items, wantSlug) {
+    if (!items || !items.length) return null;
+    var want = String(wantSlug || '').toLowerCase();
     var exact = null;
+    var partial = null;
     for (var j = 0; j < items.length; j++) {
-      if (String(items[j].slug || '').toLowerCase() === slug.toLowerCase()) {
-        exact = items[j];
-        break;
+      var is = String(items[j].slug || '').toLowerCase();
+      if (is === want) { exact = items[j]; break; }
+      if (!partial && want && (is.indexOf(want) !== -1 || want.indexOf(is) !== -1)) {
+        partial = items[j];
       }
     }
-    var hit = exact || items[0];
-    if (!hit || !hit.tmdb_id) return hit;
+    return exact || partial || items[0] || null;
+  }
+
+  async function searchOnce(q) {
+    q = String(q || '').trim();
+    if (!q || q.length < 2) return [];
     try {
-      return (await hackstoreFetchCard(hit.kind || preferKind || 'movie', hit.tmdb_id)) || hit;
+      var data = await hackstoreApiGet('/v1/search', { q: q, limit: 25 });
+      return (data && data.items) || [];
     } catch (_) {
-      return hit;
+      return [];
     }
+  }
+
+  // La API de Hackstore falla con frases muy largas (0 resultados).
+  // Probar varias consultas: completa → acortadas → palabras clave.
+  var words = slug.replace(/-/g, ' ').split(/\s+/).filter(Boolean);
+  var queries = [];
+  var full = words.join(' ');
+  if (full) queries.push(full);
+  // Ir quitando palabras del final
+  for (var n = words.length - 1; n >= 2; n--) {
+    queries.push(words.slice(0, n).join(' '));
+  }
+  // Sin artículos / preposiciones comunes
+  var stop = { el:1, la:1, los:1, las:1, un:1, una:1, de:1, del:1, al:1, en:1, y:1, a:1, the:1, of:1, to:1 };
+  var keyWords = words.filter(function (w) { return !stop[w.toLowerCase()] && w.length > 1; });
+  if (keyWords.length) {
+    queries.push(keyWords.join(' '));
+    if (keyWords.length > 2) queries.push(keyWords.slice(0, 3).join(' '));
+    if (keyWords.length > 1) queries.push(keyWords.slice(0, 2).join(' '));
+  }
+  // Últimas 2–3 palabras (a menudo el subtítulo: "regreso al infierno")
+  if (words.length >= 3) queries.push(words.slice(-3).join(' '));
+  if (words.length >= 2) queries.push(words.slice(-2).join(' '));
+
+  // dedupe queries
+  var seenQ = Object.create(null);
+  var uniq = [];
+  for (var qi = 0; qi < queries.length; qi++) {
+    var qq = queries[qi].toLowerCase();
+    if (seenQ[qq]) continue;
+    seenQ[qq] = 1;
+    uniq.push(queries[qi]);
+  }
+
+  var hit = null;
+  for (var qi2 = 0; qi2 < uniq.length && !hit; qi2++) {
+    var items = await searchOnce(uniq[qi2]);
+    hit = pickHit(items, slug);
+    // Si hay match exacto de slug, listo; si no, seguir buscando exacto
+    if (hit && String(hit.slug || '').toLowerCase() === slug.toLowerCase()) break;
+    if (hit && qi2 < uniq.length - 1) {
+      // guardar candidato pero seguir por si aparece exacto
+      var maybe = hit;
+      hit = null;
+      for (var qi3 = qi2 + 1; qi3 < uniq.length; qi3++) {
+        var items2 = await searchOnce(uniq[qi3]);
+        var h2 = pickHit(items2, slug);
+        if (h2 && String(h2.slug || '').toLowerCase() === slug.toLowerCase()) {
+          hit = h2;
+          break;
+        }
+      }
+      if (!hit) hit = maybe;
+      break;
+    }
+  }
+
+  if (!hit || !hit.tmdb_id) return hit || null;
+  try {
+    return (await hackstoreFetchCard(hit.kind || preferKind || 'movie', hit.tmdb_id)) || hit;
   } catch (_) {
-    return null;
+    return hit;
   }
 }
+
 async function hackstorePlayback(kind, tmdbId, season, episode) {
   var params = {};
   if (season) params.season = season;
