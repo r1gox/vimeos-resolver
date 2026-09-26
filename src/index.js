@@ -7764,7 +7764,8 @@ async function buscarUniversal(query, sourceFilter, limit) {
     if (sourceFilter !== 'all' && c.aliases.indexOf(sourceFilter) === -1) continue;
     // Universal: sin LaMovie ni Hackstore; PelisPlus según PELISPLUS_UNIVERSAL
     if (sourceFilter === 'all') {
-      if (c.id === 'lamovie' || c.id === 'hackstore') continue;
+      // lamovie fuera del universal (ruido); hackstore SÍ entra
+      if (c.id === 'lamovie') continue;
       if (ppUseTo && c.id === 'pelisplushd_bz') continue; // modo to → descarta bz
       if (!ppUseTo && c.id === 'pelisplushd') continue;    // modo bz → descarta .to
     }
@@ -7799,7 +7800,7 @@ async function buscarUniversal(query, sourceFilter, limit) {
     for (var ri = 0; ri < hits.length; ri++) {
       if (resultadoRelevanteBusqueda(q, hits[ri])) {
         relevantes.push(hits[ri]);
-      } else if (fid === 'pelisplushd_bz' || fid === 'pelisplushd' || fid === 'doramasflix') {
+      } else if (fid === 'pelisplushd_bz' || fid === 'pelisplushd' || fid === 'doramasflix' || fid === 'hackstore') {
         // Películas/series: aceptar si el slug contiene el query compacto
         var sk = String(hits[ri].slug || '').toLowerCase().replace(/[^a-z0-9]/g, '');
         var qk = String(q || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '');
