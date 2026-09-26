@@ -7040,6 +7040,15 @@ function formatearCapituloRespuesta(item, origin, ctx) {
     urlExtract = origin + '/' + sid + '/' + tipoRuta + '/' + slug + '/' + temporada + '/' + episodio;
   }
 
+  // Meta del episodio primero; reproductores al final
+  var epDesc =
+    item.descripcion ||
+    item.overview ||
+    item.sinopsis ||
+    item.synopsis ||
+    null;
+  if (epDesc) epDesc = String(epDesc).trim() || null;
+
   var out = {
     success: item.success !== false,
     tipo: 'Capitulo',
@@ -7047,8 +7056,15 @@ function formatearCapituloRespuesta(item, origin, ctx) {
     source_id: sid != null ? String(sid) : null,
     slug: slug,
     titulo: item.titulo_serie || item.titulo || null,
+    titulo_serie: item.titulo_serie || item.titulo || null,
+    titulo_episodio: item.titulo_episodio || item.nombre || null,
     temporada: temporada,
     episodio: episodio,
+    descripcion: epDesc,
+    overview: epDesc,
+    portada: item.portada || null,
+    back_img: item.back_img || item.still || null,
+    duracion: item.duracion != null ? item.duracion : (item.runtime != null ? item.runtime : null),
     total: reproductores.length,
     reproductores: reproductores,
     descargas: descargas
@@ -7056,26 +7072,7 @@ function formatearCapituloRespuesta(item, origin, ctx) {
   if (urlExtract) out.url_extract = urlExtract;
   if (item.link) out.link = item.link;
   if (item.postId != null) out.postId = item.postId;
-
-  // Sinopsis / meta del episodio (Hackstore y otras fuentes)
-  var epDesc =
-    item.descripcion ||
-    item.overview ||
-    item.sinopsis ||
-    item.synopsis ||
-    null;
-  if (epDesc && String(epDesc).trim()) {
-    out.descripcion = String(epDesc).trim();
-    out.overview = out.descripcion;
-  }
-  if (item.titulo_episodio) out.titulo_episodio = item.titulo_episodio;
-  if (item.titulo_serie) out.titulo_serie = item.titulo_serie;
-  if (item.nombre) out.nombre = item.nombre;
-  if (item.back_img) out.back_img = item.back_img;
-  if (item.still) out.still = item.still;
-  if (item.duracion != null) out.duracion = item.duracion;
-  if (item.runtime != null && out.duracion == null) out.duracion = item.runtime;
-  if (item.portada) out.portada = item.portada;
+  if (item.nombre && !out.titulo_episodio) out.titulo_episodio = item.nombre;
 
   Object.keys(out).forEach(function (k) {
     if (out[k] == null) delete out[k];
