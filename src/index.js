@@ -482,7 +482,10 @@ var REPRODUCTORES_PERMITIDOS = [
   'filemoon',
 
   // PelisPlus .bz
-  'embed69', 'embed69.org'
+  'embed69', 'embed69.org',
+
+  // Byse (nuevo en AnimeAV1) + mirrors
+  'byse.', 'byse.sx', 'bysefujedu', 'bysezejataos', 'byse'
 ];
 var REPRODUCTORES_BLOQUEADOS = [
   'lamovie.org', 'lamovie', 'youtube.com', 'youtu.be',
@@ -3997,6 +4000,8 @@ function extraerServidor(url) {
     if (host.indexOf('vidguard') !== -1) return 'vidguard';
     if (host.indexOf('lulustream') !== -1) return 'lulustream';
     if (host.indexOf('videoapp') !== -1) return 'videoapp';
+    // Byse (AnimeAV1 y mirrors)
+    if (host.indexOf('byse') !== -1 || host.indexOf('bysefujedu') !== -1) return 'byse';
     if (host.indexOf('mega.nz') !== -1 || host.indexOf('mega.co') !== -1) return 'mega';
     if (host.indexOf('mediafire') !== -1) return 'mediafire';
     if (host.indexOf('1fichier') !== -1) return '1fichier';
@@ -10518,7 +10523,18 @@ function mapAnimeAv1Embeds(embedsObj) {
         tipo: isDl ? 'descarga' : 'reproductor'
       };
       if (isDl) descargas.push(row);
-      else if (esReproductorValido(url) || /zilla-networks|uns\.bio|mp4upload|mega\.nz\/embed|yourupload|streamtape|vidhide|ryderjet/i.test(url)) {
+      else if (
+        esReproductorValido(url) ||
+        /zilla-networks|uns\.bio|mp4upload|mega\.nz\/embed|yourupload|streamtape|vidhide|ryderjet|byse/i.test(url) ||
+        /byse/i.test(String(e.server || e.name || e.provider || ''))
+      ) {
+        // Normalizar nombre Byse
+        if (/byse/i.test(String(server || '')) || /byse/i.test(url)) {
+          row.servidor = 'byse';
+          row.server = 'byse';
+          row.provider = 'byse';
+          row.name = 'Byse';
+        }
         reproductores.push(row);
       }
     }
