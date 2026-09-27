@@ -6850,36 +6850,124 @@ function formatearDetalleBasico(det, origin, sid, tipoPath, slug) {
   if (!det || typeof det !== 'object') {
     return { success: false, error: 'Sin datos' };
   }
+  // MODO STREAMS: meta mínima (MovieZone usa data-api para ficha). Aquí: players + episodios.
   var sidN = sid != null && sid !== '' ? String(sid) : sourceIdFromName(det.fuente);
   var tp = tipoPath || tipoPathDesdeTipo(det.tipo || det.formato || 'Anime');
   var sl = slug || det.slug || null;
-  var portada = det.portada || det.portada_fuente_raw || det.image || null;
+  var reps = Array.isArray(det.reproductores) ? det.reproductores : [];
+  var embeds = Array.isArray(det.embeds)
+    ? det.embeds
+    : reps.map(function (r) {
+        return typeof r === 'string' ? r : (r && (r.url || r.link)) || null;
+      }).filter(Boolean);
+
+  // Episodios / temporadas: solo links de vimeos (sin back_img ni sinopsis de cada cap)
+  var temporadas = [];
+  var rawTemps = det.temporadas || det.temporadas_raw || [];
+  if (Array.isArray(rawTemps) && rawTemps.length) {
+    for (var ti = 0; ti < rawTemps.length; ti++) {
+      var t = rawTemps[ti];
+      if (!t) continue;
+      var sn = t.temporada != null ? t.temporada : (t.season != null ? t.season : ti + 1);
+      if (Number(sn) === 0) continue; // especiales: opcional
+      var listaIn = t.lista || t.episodios || [];
+      var listaOut = [];
+      if (Array.isArray(listaIn)) {
+        for (var ei = 0; ei < listaIn.length; ei++) {
+          var ep = listaIn[ei];
+          if (ep == null) continue;
+          if (typeof ep === 'number') {
+            listaOut.push({
+              temporada: Number(sn),
+              episodio: ep,
+              link: origin + '/' + sidN + '/' + tp + '/' + sl + '/' + sn + '/' + ep
+            });
+            continue;
+          }
+          if (typeof ep !== 'object') continue;
+          var en = ep.episodio != null ? ep.episodio : (ep.episode != null ? ep.episode : null);
+          if (en == null) continue;
+          var epSn = ep.temporada != null ? ep.temporada : sn;
+          var link =
+            ep.link ||
+            ep.url ||
+            (origin + '/' + sidN + '/' + tp + '/' + sl + '/' + epSn + '/' + en);
+          listaOut.push({
+            temporada: Number(epSn),
+            episodio: Number(en),
+            link: link
+          });
+        }
+      }
+      // Si no hay lista pero sí conteo, generar links 1..N (tope 50 por temp para no explotar)
+      var count = listaOut.length || Number(t.episodios || t.episode_count || 0) || 0;
+      if (!listaOut.length && count > 0 && count <= 80) {
+        for (var n = 1; n <= count; n++) {
+          listaOut.push({
+            temporada: Number(sn),
+            episodio: n,
+            link: origin + '/' + sidN + '/' + tp + '/' + sl + '/' + sn + '/' + n
+          });
+        }
+      }
+      if (listaOut.length) {
+        temporadas.push({
+          temporada: Number(sn),
+          episodios: listaOut.length,
+          lista: listaOut
+        });
+      }
+    }
+  }
+
+  // Lista plana episodios (JK a veces trae episodios[])
+  if (!temporadas.length && Array.isArray(det.episodios) && det.episodios.length) {
+    var listaFlat = [];
+    for (var fj = 0; fj < det.episodios.length; fj++) {
+      var e2 = det.episodios[fj];
+      if (!e2 || typeof e2 !== 'object') continue;
+      var en2 = e2.episodio != null ? e2.episodio : (e2.episode != null ? e2.episode : null);
+      if (en2 == null) continue;
+      var sn2 = e2.temporada != null ? e2.temporada : 1;
+      listaFlat.push({
+        temporada: Number(sn2),
+        episodio: Number(en2),
+        link: e2.link || e2.url || (origin + '/' + sidN + '/' + tp + '/' + sl + '/' + sn2 + '/' + en2)
+      });
+    }
+    if (listaFlat.length) {
+      temporadas.push({
+        temporada: 1,
+        episodios: listaFlat.length,
+        lista: listaFlat
+      });
+    }
+  }
+
+  var totalEps = 0;
+  for (var tk = 0; tk < temporadas.length; tk++) totalEps += temporadas[tk].episodios || 0;
+
   var out = {
     success: true,
     basic: true,
+    modo: 'streams',
     fuente: det.fuente || null,
-    source_id: sidN,
+    source_id: String(sidN),
     tipo: det.tipo || det.formato || 'Anime',
     slug: sl,
+    // meta mínima solo para identificar (la ficha rica va en data-api)
     titulo: det.titulo || det.nombre || null,
-    titulo_original: det.titulo_original || null,
-    portada: portada,
-    portada_fuente_raw: det.portada_fuente_raw || portada,
-    year: det.year || null,
-    descripcion: det.descripcion
-      ? String(det.descripcion).replace(/\s+/g, ' ').trim().slice(0, 320)
-      : null,
-    rating: det.rating != null ? det.rating : (det.calificacion != null ? det.calificacion : null),
-    rating_source: det.rating_source || 'fuente',
-    estado: det.estado || null,
-    formato: det.formato || null,
-    total_temporadas: det.total_temporadas != null ? det.total_temporadas : null,
-    total_episodios: det.total_episodios != null ? det.total_episodios : null,
+    portada: det.portada || det.portada_fuente_raw || null,
     url_extract: (sl && sidN) ? (origin + '/' + sidN + '/' + tp + '/' + sl) : (det.url_extract || null),
     url_vid: (sl && sidN) ? (origin + '/' + sidN + '/' + tp + '/b/' + sl) : null,
-    // Streams: ir al detalle completo o a /slug/t/e — no se resuelven aquí
-    total: 0,
-    reproductores: []
+    // PLAYERS (película / OVA / página con embeds)
+    total: reps.length || embeds.length || 0,
+    reproductores: reps,
+    embeds: embeds,
+    // EPISODIOS (serie/anime) — solo links a vimeos
+    temporadas: temporadas,
+    total_temporadas: temporadas.length || det.total_temporadas || null,
+    total_episodios: totalEps || det.total_episodios || null
   };
   Object.keys(out).forEach(function (k) {
     if (out[k] == null) delete out[k];
