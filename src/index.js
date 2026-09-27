@@ -1515,9 +1515,24 @@ async function handleRequest(request, env) {
       resultado = await scrapearLamovie(targetUrl, commonOpts);
     }
     resultado = reescribirLinksCortos(resultado, origin, null, null, source);
+    // Preservar backdrop de fuente (animeav1 backdrops) antes de TMDB/Cinemeta
+    var backdropFunKeep = null;
+    try {
+      if (resultado) {
+        backdropFunKeep = resultado.backdrop_fun || resultado.backdrop_fuente || null;
+      }
+    } catch (eBf0) {}
     try {
       resultado = await enriquecerDetalleConTmdb(resultado, resultado.tipo || '');
     } catch (eUrl) { /* ok */ }
+    try {
+      if (resultado && backdropFunKeep) {
+        resultado.backdrop_fun = backdropFunKeep;
+        resultado.backdrop_fuente = backdropFunKeep;
+        // Si no hay backdrop externo, usar el de la fuente
+        if (!resultado.backdrop) resultado.backdrop = backdropFunKeep;
+      }
+    } catch (eBf1) {}
     try {
       if (resultado && (resultado.fuente === 'pelisplushd' || resultado.fuente === 'pelisplushd_bz' ||
           /pelisplus/i.test(String(resultado.link || '')))) {
@@ -7482,7 +7497,8 @@ function formatearDetalleRespuesta(item, origin) {
     portada: portada,
     portada_imdb: item.portada_imdb || null,
     logo: item.logo || item.logo_imdb || null,
-    backdrop: item.backdrop || null,
+    backdrop_fun: item.backdrop_fun || item.backdrop_fuente || null,
+    backdrop: item.backdrop || item.backdrop_fun || item.backdrop_fuente || null,
     portada_fuente_raw: portadaFuente || item.portada_fuente_raw || null,
     descripcion: desc,
     year: (function () {
@@ -10977,9 +10993,27 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     }
   }
 
-  var portada = media.poster || media.cover || media.image || null;
+    var portada = media.poster || media.cover || media.image || null;
   if (!portada && media.id != null && String(media.id).match(/^\d+$/)) {
     portada = 'https://cdn.animeav1.com/covers/' + media.id + '.jpg';
+  }
+  // Backdrop de la fuente (cdn.animeav1.com/backdrops/{id}.jpg)
+  var backdropFuenteAv1 = media.backdrop || media.backdropUrl || media.background || null;
+  if (!backdropFuenteAv1 && media.id != null && String(media.id).match(/^\d+$/)) {
+    backdropFuenteAv1 = 'https://cdn.animeav1.com/backdrops/' + media.id + '.jpg';
+  }
+  if (backdropFuenteAv1 && typeof backdropFuenteAv1 === 'string' && backdropFuenteAv1.indexOf('http') !== 0) {
+    if (/^\/?backdrops\//i.test(backdropFuenteAv1) || /^\d+\.jpe?g$/i.test(backdropFuenteAv1)) {
+      backdropFuenteAv1 = 'https://cdn.animeav1.com/backdrops/' + String(backdropFuenteAv1).replace(/^.*\//, '');
+    } else if (media.id != null) {
+      backdropFuenteAv1 = 'https://cdn.animeav1.com/backdrops/' + media.id + '.jpg';
+    } else {
+      backdropFuenteAv1 = ANIMEAV1_BASE + (backdropFuenteAv1.charAt(0) === '/' ? backdropFuenteAv1 : '/' + backdropFuenteAv1);
+    }
+  }
+  // Si el JSON trae null en backdrop (habitual), usar siempre CDN por id
+  if ((!backdropFuenteAv1 || backdropFuenteAv1 === 'null') && media.id != null && String(media.id).match(/^\d+$/)) {
+    backdropFuenteAv1 = 'https://cdn.animeav1.com/backdrops/' + media.id + '.jpg';
   }
   if (portada && typeof portada === 'string' && portada.indexOf('http') !== 0) {
     if (/^\/?covers\//i.test(portada) || /^\d+\.jpe?g$/i.test(portada)) {
@@ -11184,6 +11218,9 @@ async function scrapearAnimeAv1(pageUrl, opts) {
         titulo: titulo,
         titulo_original: (typeof tituloOriginalAv1 !== 'undefined' && tituloOriginalAv1) ? tituloOriginalAv1 : null,
         portada: portada,
+        backdrop_fun: (typeof backdropFuenteAv1 !== 'undefined' ? backdropFuenteAv1 : null),
+        backdrop_fuente: (typeof backdropFuenteAv1 !== 'undefined' ? backdropFuenteAv1 : null),
+        backdrop: (typeof backdropFuenteAv1 !== 'undefined' && backdropFuenteAv1) ? backdropFuenteAv1 : null,
         descripcion: sinopsis,
         generos: generosAv1.length ? generosAv1 : null,
         genero: generoAv1,
@@ -11372,6 +11409,9 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     titulo_original: (typeof tituloOriginalAv1 !== 'undefined' && tituloOriginalAv1) ? tituloOriginalAv1 : null,
     portada: portada,
     portada_fuente_raw: portada,
+    backdrop_fun: (typeof backdropFuenteAv1 !== 'undefined' ? backdropFuenteAv1 : null),
+    backdrop_fuente: (typeof backdropFuenteAv1 !== 'undefined' ? backdropFuenteAv1 : null),
+    backdrop: (typeof backdropFuenteAv1 !== 'undefined' && backdropFuenteAv1) ? backdropFuenteAv1 : null,
     descripcion: sinopsis,
     generos: generosAv1.length ? generosAv1 : null,
     genero: generoAv1,
