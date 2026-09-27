@@ -54,12 +54,22 @@ var JKANIME_BASE = 'https://jkanime.net';
 
 /** Headers para fetch a jkanime.net (Referer/Origin + extras CSRF/AJAX). */
 function jkanimeHeaders(extra) {
-  var h = Object.assign({}, HEADERS, {
-    Referer: JKANIME_BASE + '/',
-    Origin: JKANIME_BASE,
-    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
-  });
+  // No enviar Origin en GET de documento (dispara WAF/403 en varios sitios).
+  var h = {
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    Accept:
+      'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+    'Cache-Control': 'no-cache',
+    Pragma: 'no-cache',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-User': '?1',
+    Referer: JKANIME_BASE + '/'
+  };
   if (extra && typeof extra === 'object') {
     for (var k in extra) {
       if (Object.prototype.hasOwnProperty.call(extra, k) && extra[k] != null) {
@@ -69,6 +79,86 @@ function jkanimeHeaders(extra) {
   }
   return h;
 }
+
+/** Cookies de una Response (Workers modernos: getSetCookie). */
+function jkanimePickCookies(res) {
+  try {
+    if (res && res.headers && typeof res.headers.getSetCookie === 'function') {
+      var arr = res.headers.getSetCookie() || [];
+      return arr
+        .map(function (c) {
+          return String(c).split(';')[0].trim();
+        })
+        .filter(Boolean)
+        .join('; ');
+    }
+    var one = res && res.headers ? res.headers.get('set-cookie') : null;
+    if (one) return String(one).split(',').map(function (c) { return c.split(';')[0].trim(); }).filter(Boolean).join('; ');
+  } catch (e) {}
+  return '';
+}
+
+var __jkCookieWarm = { at: 0, cookie: '' };
+
+/**
+ * Fetch a jkanime con calentamiento de cookies.
+ * Mitiga 403 por WAF (Origin, sin cookie, UA pobre).
+ * Si la IP del Worker sigue bloqueada, el 403 persistirá (fallback en MovieZone server).
+ */
+async function jkanimeFetch(url, opts) {
+  opts = opts || {};
+  var u = String(url || '');
+  if (u.indexOf('http') !== 0) {
+    u = JKANIME_BASE + (u.charAt(0) === '/' ? u : '/' + u);
+  }
+  var now = Date.now();
+  // Calentar cookie cada 4 min
+  if (!__jkCookieWarm.cookie || now - __jkCookieWarm.at > 240000) {
+    try {
+      var homeRes = await fetch(JKANIME_BASE + '/', {
+        headers: jkanimeHeaders({ 'Sec-Fetch-Site': 'none', Referer: JKANIME_BASE + '/' }),
+        redirect: 'follow'
+      });
+      var ck = jkanimePickCookies(homeRes);
+      if (ck) {
+        __jkCookieWarm.cookie = ck;
+        __jkCookieWarm.at = now;
+      } else {
+        __jkCookieWarm.at = now;
+      }
+      // consumir body para no dejar socket colgado
+      try { await homeRes.text(); } catch (e0) {}
+    } catch (eWarm) {}
+  }
+  var hdrs = jkanimeHeaders(opts.headers || {});
+  if (__jkCookieWarm.cookie) hdrs['Cookie'] = __jkCookieWarm.cookie;
+  // AJAX
+  if (opts.ajax) {
+    hdrs['Accept'] = 'application/json, text/javascript, */*; q=0.01';
+    hdrs['X-Requested-With'] = 'XMLHttpRequest';
+    hdrs['Sec-Fetch-Dest'] = 'empty';
+    hdrs['Sec-Fetch-Mode'] = 'cors';
+    hdrs['Sec-Fetch-Site'] = 'same-origin';
+  }
+  var res = await fetch(u, {
+    method: opts.method || 'GET',
+    headers: hdrs,
+    redirect: 'follow',
+    body: opts.body || undefined
+  });
+  // Actualizar cookies si vienen nuevas
+  try {
+    var ck2 = jkanimePickCookies(res);
+    if (ck2) {
+      __jkCookieWarm.cookie = __jkCookieWarm.cookie
+        ? __jkCookieWarm.cookie + '; ' + ck2
+        : ck2;
+      __jkCookieWarm.at = Date.now();
+    }
+  } catch (eC) {}
+  return res;
+}
+
 
 
 
@@ -12697,7 +12787,7 @@ async function buscarJkanime(query) {
   if (!q) throw new Error('Jkanime: falta query');
 
   var url = JKANIME_BASE + '/buscar/' + encodeURIComponent(q);
-  var res = await fetch(url, { headers: jkanimeHeaders() });
+  var res = await jkanimeFetch(url);
   if (!res.ok) throw new Error('Jkanime buscar HTTP ' + res.status);
   var html = await res.text();
 
@@ -12791,9 +12881,7 @@ async function enriquecerTiposBusquedaJkanime(lista) {
     (function (item) {
       jobs.push((async function () {
         try {
-          var res = await fetch(JKANIME_BASE + '/' + encodeURIComponent(item.slug) + '/', {
-            headers: jkanimeHeaders()
-          });
+          var res = await jkanimeFetch(JKANIME_BASE + '/' + encodeURIComponent(item.slug) + '/');
           if (!res.ok) return;
           var html = await res.text();
           var m =
@@ -12829,7 +12917,7 @@ async function fetchJkanimeEpisodes(animeId, refererUrl, opts) {
   var epFrom = parseInt(opts.epFrom || opts.ep_from || 0, 10) || 0;
   var epTo = parseInt(opts.epTo || opts.ep_to || 0, 10) || 0;
 
-  var pageRes = await fetch(refererUrl || (JKANIME_BASE + '/'), { headers: jkanimeHeaders() });
+  var pageRes = await jkanimeFetch(refererUrl || (JKANIME_BASE + '/'));
   var pageHtml = await pageRes.text();
   var csrf = (pageHtml.match(/name="csrf-token"\s+content="([^"]+)"/i) || [])[1] || '';
   var cookie = pageRes.headers.get('set-cookie') || '';
@@ -13369,8 +13457,10 @@ async function resolverImdbJkanime(det, slug) {
  * agregados = títulos recién listados en "Animes recientes" — portada
  */
 async function scrapearJkanimeHome() {
-  var res = await fetch(JKANIME_BASE + '/', { headers: jkanimeHeaders() });
+  var res = await jkanimeFetch(JKANIME_BASE + '/');
+  if (!res.ok) throw new Error('Jkanime home HTTP ' + res.status);
   var html = await res.text();
+  if (!html || html.length < 2000) throw new Error('Jkanime home vacío o bloqueado');
 
   // —— Programación → tab #animes (NO donghuas / ovas) ——
   var animesBlock = '';
@@ -13633,7 +13723,7 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
   // --- CAPÍTULO ---
   if (epNum && epNum > 0) {
     var epUrl = JKANIME_BASE + '/' + slug + '/' + epNum + '/';
-    var epRes = await fetch(epUrl, { headers: jkanimeHeaders() });
+    var epRes = await jkanimeFetch(epUrl);
     if (!epRes.ok) throw new Error('Jkanime episodio HTTP ' + epRes.status);
     var epHtml = await epRes.text();
     var tituloEp =
@@ -13698,7 +13788,7 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
   }
 
   // --- DETALLE ANIME ---
-  var res = await fetch(detailUrl, { headers: jkanimeHeaders() });
+  var res = await jkanimeFetch(detailUrl);
   if (!res.ok) throw new Error('Jkanime detalle HTTP ' + res.status);
   var html = await res.text();
 
