@@ -3488,6 +3488,24 @@ function attachStreamUrl(origin, rep) {
     delete rep.hls_resolve;
     return rep;
   }
+  // Byse (AnimeAV1): SPA + token; solo iframe /e/{code}, sin resolve
+  if (
+    s.indexOf('byse') !== -1 ||
+    /byse|n1mwq/i.test(u) ||
+    rep.provider === 'byse'
+  ) {
+    try { u = normalizarUrlByse(u); rep.url = u; } catch (eB) {}
+    rep.provider = 'byse';
+    rep.servidor = 'byse';
+    rep.server = 'byse';
+    rep.name = 'Byse';
+    rep.iframe = true;
+    rep.tipo = 'reproductor';
+    rep.link = u;
+    delete rep.stream_url;
+    delete rep.hls_resolve;
+    return rep;
+  }
   // Ya es HLS directo → proxy
   if (/\.m3u8(\?|$)/i.test(u) || /master\.txt(\?|$)/i.test(u)) {
     rep.hls = u;
@@ -3560,15 +3578,21 @@ function attachStreamUrlList(origin, list) {
     var rep = list[i];
     if (!rep || !rep.url) continue;
     attachStreamUrl(origin, rep);
-    // Si el provider no mapeó, genérico /streamurl
+    // Si el provider no mapeó, genérico /streamurl (excepto iframe-only: jkplayer, byse)
     if (!rep.stream_url) {
       var u = String(rep.url);
-      if (/\.m3u8(\?|$)/i.test(u) || /master\.txt(\?|$)/i.test(u)) {
+      var srv = String(rep.servidor || rep.provider || '').toLowerCase();
+      if (rep.iframe || srv === 'byse' || srv === 'jkplayer' || /byse|n1mwq|jkplayer/i.test(u)) {
+        // no inventar stream_url (rompe con token / SPA)
+        delete rep.stream_url;
+        delete rep.hls_resolve;
+      } else if (/\.m3u8(\?|$)/i.test(u) || /master\.txt(\?|$)/i.test(u)) {
         rep.stream_url = origin + '/proxy?url=' + encodeURIComponent(u);
+        rep.hls_resolve = rep.stream_url;
       } else {
         rep.stream_url = origin + '/streamurl?url=' + encodeURIComponent(u);
+        rep.hls_resolve = rep.stream_url;
       }
-      rep.hls_resolve = rep.stream_url;
     }
     if (!rep.link) rep.link = rep.url;
     if (!rep.server && rep.servidor) rep.server = String(rep.servidor).toLowerCase();
@@ -3984,7 +4008,40 @@ function extraerDescargas(html) {
   return out;
 }
 
+/** Byse: mirrors rotan; el embed real es /e/{code}. Paths tipo /r7psn/code no cargan sin token. */
+function normalizarUrlByse(url) {
+  try {
+    var u = String(url || '').trim();
+    if (!u) return u;
+    var low = u.toLowerCase();
+    var isByseHost =
+      low.indexOf('byse') !== -1 ||
+      low.indexOf('n1mwq') !== -1 ||
+      /https?:\/\/[a-z0-9.-]+\/[a-z0-9]{4,}\/[a-z0-9]{8,}/i.test(u) && /byse/i.test(low);
+    // solo tocar hosts byse / n1mwq
+    var hostOk = /byse|n1mwq/i.test(low);
+    if (!hostOk) return u;
+    var parsed = new URL(u);
+    var parts = parsed.pathname.replace(/\/+$/, '').split('/').filter(Boolean);
+    // /e/CODE → ok
+    if (parts.length >= 2 && parts[0].toLowerCase() === 'e') {
+      return parsed.origin + '/e/' + parts[1];
+    }
+    // /xxxx/CODE → usar último segmento como code en /e/
+    if (parts.length >= 1) {
+      var code = parts[parts.length - 1];
+      if (code && /^[a-z0-9]+$/i.test(code) && code.length >= 6) {
+        return parsed.origin + '/e/' + code;
+      }
+    }
+    return u;
+  } catch (e) {
+    return url;
+  }
+}
+
 function extraerServidor(url) {
+
   try {
     var host = new URL(url).hostname.replace('www.', '').toLowerCase();
     if (host.indexOf('streamwish') !== -1) return 'streamwish';
@@ -10538,10 +10595,16 @@ function mapAnimeAv1Embeds(embedsObj) {
           /byse/i.test(String(e.server || e.name || e.provider || server || '')) ||
           /byse|n1mwq/i.test(url);
         if (isByse) {
+          row.url = normalizarUrlByse(url);
           row.servidor = 'byse';
           row.server = 'byse';
           row.provider = 'byse';
           row.name = 'Byse';
+          row.iframe = true;
+          row.tipo = 'reproductor';
+          // Sin stream_url: Byse es SPA con token; solo iframe embed /e/{code}
+          delete row.stream_url;
+          delete row.hls_resolve;
         }
         reproductores.push(row);
       }
