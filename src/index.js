@@ -10933,6 +10933,50 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   if (score != null && score > 0) score = Math.round(score * 10) / 10;
   // score === 0 se conserva tal cual
   var malId = media.malId || null;
+
+  // —— Géneros / votos MAL / trailer / temporada anime (de __data.json) ——
+  var generosAv1 = [];
+  if (Array.isArray(media.genres)) {
+    for (var gi = 0; gi < media.genres.length; gi++) {
+      var gItem = media.genres[gi];
+      if (!gItem) continue;
+      if (typeof gItem === 'string' && gItem.trim()) generosAv1.push(gItem.trim());
+      else if (gItem.name) generosAv1.push(String(gItem.name).trim());
+    }
+  }
+  var generoAv1 = generosAv1.length ? generosAv1.join(', ') : null;
+  var votosMal = media.votes != null ? media.votes : (media.scored_by != null ? media.scored_by : (media.scoredBy != null ? media.scoredBy : null));
+  if (votosMal != null && votosMal !== '') {
+    try { votosMal = String(votosMal); } catch (eV) { votosMal = null; }
+  } else votosMal = null;
+  var trailerAv1 = null;
+  var trRaw = media.trailer;
+  if (trRaw) {
+    if (typeof trRaw === 'string') {
+      var trs = trRaw.trim();
+      if (/^https?:\/\//i.test(trs)) trailerAv1 = trs;
+      else if (/^[\w-]{6,20}$/.test(trs)) trailerAv1 = 'https://www.youtube.com/watch?v=' + trs;
+    } else if (typeof trRaw === 'object') {
+      trailerAv1 = trRaw.url || trRaw.youtube || trRaw.youtube_id || trRaw.id || null;
+      if (trailerAv1 && !/^https?:\/\//i.test(String(trailerAv1))) {
+        trailerAv1 = 'https://www.youtube.com/watch?v=' + String(trailerAv1).replace(/^.*v=/, '').split('&')[0];
+      }
+    }
+  }
+  var temporadaAnime = null;
+  if (media.seasonName) temporadaAnime = String(media.seasonName).trim();
+  else if (media.season && typeof media.season === 'string' && /[a-zA-Záéíóú]/i.test(media.season)) {
+    temporadaAnime = /temporada/i.test(media.season) ? media.season : ('Temporada ' + media.season);
+  } else {
+    var sdAv1 = media.startDate || media.airedFrom || media.premiereDate || '';
+    var mmAv1 = String(sdAv1).match(/-(\d{2})-/);
+    if (mmAv1) {
+      var miAv1 = parseInt(mmAv1[1], 10);
+      var nomAv1 = miAv1 <= 3 ? 'Invierno' : miAv1 <= 6 ? 'Primavera' : miAv1 <= 9 ? 'Verano' : 'Otoño';
+      temporadaAnime = 'Temporada ' + nomAv1;
+    }
+  }
+
   var portada = media.poster || media.cover || media.image || null;
   if (!portada && media.id != null && String(media.id).match(/^\d+$/)) {
     portada = 'https://cdn.animeav1.com/covers/' + media.id + '.jpg';
@@ -10953,6 +10997,7 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   var catName = (media.category && media.category.name) || 'TV Anime';
   var formato = detectarFormatoAnime(titulo, catName, slug);
   var tipo = tipoDesdeFormatoAnime(formato);
+  var categoriaAv1 = catName || formato || null;
   // Año: startDate → título/slug
   var yearAv1 = extraerYearFlexible(titulo, slug, media.startDate || media.year);
   // Temporada real del título/slug (One Punch Man 3 → 3, 2nd Season → 2)
@@ -11140,7 +11185,18 @@ async function scrapearAnimeAv1(pageUrl, opts) {
         titulo_original: (typeof tituloOriginalAv1 !== 'undefined' && tituloOriginalAv1) ? tituloOriginalAv1 : null,
         portada: portada,
         descripcion: sinopsis,
+        generos: generosAv1.length ? generosAv1 : null,
+        genero: generoAv1,
         calificacion: score,
+        rating: score,
+        rating_mal: score,
+        rating_source: (score != null ? 'mal' : 'fuente'),
+        votos: votosMal,
+        votos_mal: votosMal,
+        trailer: trailerAv1,
+        trailer_url: trailerAv1,
+        categoria: categoriaAv1 || null,
+        temporada_anime: temporadaAnime || null,
         year: yearAv1,
         estado: (stEarly && stEarly.estado) || null,
         en_emision: enEmisionEarly ? true : false,
@@ -11297,12 +11353,19 @@ async function scrapearAnimeAv1(pageUrl, opts) {
   // Estado AnimeAV1: status numérico (0 finalizado, 2 en emisión) + endDate/nextDate
   var estadoInfo = estadoDesdeAnimeAv1Media(media);
 
+  var metaLineAv1 = [categoriaAv1 || null, yearAv1 || null, temporadaAnime || null, (estadoInfo && estadoInfo.estado) || null]
+    .filter(function (x) { return x != null && String(x).trim() !== ''; })
+    .join(' • ');
+
   return {
     success: true,
     fuente: 'animeav1',
     source_id: '4',
     tipo: tipo,
     formato: formato,
+    categoria: categoriaAv1 || null,
+    temporada_anime: temporadaAnime || null,
+    meta_line: metaLineAv1 || null,
     link: ANIMEAV1_BASE + '/media/' + slug,
     slug: slug,
     titulo: titulo,
@@ -11310,10 +11373,17 @@ async function scrapearAnimeAv1(pageUrl, opts) {
     portada: portada,
     portada_fuente_raw: portada,
     descripcion: sinopsis,
+    generos: generosAv1.length ? generosAv1 : null,
+    genero: generoAv1,
     calificacion: score,
     rating: score,
     rating_fuente: score,
-    rating_source: 'fuente',
+    rating_mal: score,
+    rating_source: (score != null ? 'mal' : 'fuente'),
+    votos: votosMal,
+    votos_mal: votosMal,
+    trailer: trailerAv1,
+    trailer_url: trailerAv1,
     mal_id: malId || null,
     year: yearAv1,
     fecha_estreno: media.startDate || media.airedFrom || media.premiereDate || null,
