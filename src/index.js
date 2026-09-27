@@ -673,6 +673,7 @@ async function handleRequest(request, env) {
         serie_episodio: origin + '/{id}/serie/{slug}/{temporada}/{episodio}',
         pelicula: origin + '/{id}/pelicula/{slug}',
         anime: origin + '/{id}/anime/{slug}',
+        anime_basico: origin + '/{id}/anime/b/{slug}',
         estrenos_peliculas: origin + '/3/peliculas/estrenos',
         estrenos_series: origin + '/3/series/estrenos',
         estrenos_animes: origin + '/3/animes/estrenos',
@@ -891,14 +892,31 @@ async function handleRequest(request, env) {
       }
 
       if ((parts[1] === 'anime' || parts[1] === 'pelicula') && parts[2]) {
+        var basicJk = false;
         var slugJk = parts[2];
+        // /5/anime/b/{slug} → detalle básico (rápido)
+        if (parts[2] === 'b' && parts[3]) {
+          basicJk = true;
+          slugJk = parts[3];
+        }
         var epJk = null;
-        if (parts[4]) epJk = parseInt(parts[4], 10);
-        else if (parts[3]) epJk = parseInt(parts[3], 10);
+        if (!basicJk) {
+          if (parts[4]) epJk = parseInt(parts[4], 10);
+          else if (parts[3]) epJk = parseInt(parts[3], 10);
+        }
 
         var detJk = await scrapearJkanime(JKANIME_BASE + '/' + slugJk + '/', {
           episode: epJk || null
         });
+
+        if (basicJk && detJk) {
+          try { normalizarCamposResultado(detJk); } catch (eNb) {}
+          var kpB = /pel[ií]cula|movie|film/i.test(String(detJk.tipo || parts[1] || '')) ? 'pelicula' : 'anime';
+          detJk.fuente = 'jkanime';
+          detJk.source_id = '5';
+          if (detJk.portada_fuente_raw) detJk.portada = detJk.portada_fuente_raw;
+          return json(formatearDetalleBasico(detJk, origin, '5', kpB, slugJk));
+        }
 
         if (epJk || (detJk && (detJk.tipo === 'Capitulo' || detJk.tipo === 'Capítulo'))) {
           return json(slimCapituloJkanime(detJk, {
@@ -1111,7 +1129,7 @@ async function handleRequest(request, env) {
 
       return json({
         success: false,
-        error: 'Uso: /5/home | /5/recientes | /5/agregados | /5/buscar?q=... | /5/anime/{slug} | /5/anime/{slug}/{episodio}',
+        error: 'Uso: /5/home | /5/buscar?q=... | /5/anime/{slug} | /5/anime/b/{slug} | /5/anime/{slug}/{episodio}',
         ejemplos: [
           origin + '/5/home',
           origin + '/5/recientes',
@@ -1380,12 +1398,18 @@ async function handleRequest(request, env) {
   var tipoRuta = parts[tipoIdx];
 
   if (tipoRuta === 'pelicula' || tipoRuta === 'serie' || tipoRuta === 'anime') {
+    var basicMode = false;
     var slug = parts[tipoIdx + 1];
-    if (!slug) {
-      return json({ error: 'Falta el slug. Ej: /2/serie/nombre-titulo' }, 400);
+    // /{id}/anime/b/{slug} → básico
+    if (slug === 'b' && parts[tipoIdx + 2]) {
+      basicMode = true;
+      slug = parts[tipoIdx + 2];
     }
-    // /2/serie/slug/1/2
-    if (parts[tipoIdx + 2] && parts[tipoIdx + 3]) {
+    if (!slug) {
+      return json({ error: 'Falta el slug. Ej: /2/serie/nombre-titulo o /5/anime/b/slug' }, 400);
+    }
+    // /2/serie/slug/1/2 (no aplica en modo b)
+    if (!basicMode && parts[tipoIdx + 2] && parts[tipoIdx + 3]) {
       commonOpts.season = parseInt(parts[tipoIdx + 2], 10);
       commonOpts.episode = parseInt(parts[tipoIdx + 3], 10);
     }
@@ -1406,6 +1430,25 @@ async function handleRequest(request, env) {
           tipoRuta: tipoRuta
         });
         return json(resultadoPath);
+      }
+
+      // Detalle BÁSICO: scrape fuente, sin TMDB/Cinemeta ni thumbs de todos los caps
+      if (basicMode && resultadoPath) {
+        try { normalizarCamposResultado(resultadoPath); } catch (eNb2) {}
+        var sidB = sourceIdFromName(resultadoPath.fuente) || (forcedSource ? sourceIdFromName(forcedSource) : '') || String(parts[0] || '');
+        // forcedSource puede ser nombre: map to id
+        if (forcedSource && !/^\d+$/.test(String(sidB))) {
+          sidB = sourceIdFromName(forcedSource) || sidB;
+        }
+        if (pathSource) {
+          // parts[0] was numeric id path
+          var sidFromPath = sourceIdFromName(pathSource);
+          if (sidFromPath) sidB = sidFromPath;
+          // pathSource is name like jkanime - sourceIdFromName works
+        }
+        // Prefer numeric from parts[0]
+        if (/^\d+$/.test(String(parts[0] || ''))) sidB = String(parts[0]);
+        return json(formatearDetalleBasico(resultadoPath, origin, sidB, tipoRuta, slug));
       }
 
       // Serie / película / anime (ficha completa)
@@ -6798,6 +6841,52 @@ function esDescripcionBasura(texto) {
  * title, slug, url, image, year, source, type
  * + episodes (solo serie/anime si se conoce)
  */
+
+/**
+ * Detalle BÁSICO (/b/slug): título, portada, tipo — sin Cinemeta, sin lista enorme de caps.
+ * Para MovieZone: abrir ficha rápida; streams siguen en url (detalle completo) o capítulo.
+ */
+function formatearDetalleBasico(det, origin, sid, tipoPath, slug) {
+  if (!det || typeof det !== 'object') {
+    return { success: false, error: 'Sin datos' };
+  }
+  var sidN = sid != null && sid !== '' ? String(sid) : sourceIdFromName(det.fuente);
+  var tp = tipoPath || tipoPathDesdeTipo(det.tipo || det.formato || 'Anime');
+  var sl = slug || det.slug || null;
+  var portada = det.portada || det.portada_fuente_raw || det.image || null;
+  var out = {
+    success: true,
+    basic: true,
+    fuente: det.fuente || null,
+    source_id: sidN,
+    tipo: det.tipo || det.formato || 'Anime',
+    slug: sl,
+    titulo: det.titulo || det.nombre || null,
+    titulo_original: det.titulo_original || null,
+    portada: portada,
+    portada_fuente_raw: det.portada_fuente_raw || portada,
+    year: det.year || null,
+    descripcion: det.descripcion
+      ? String(det.descripcion).replace(/\s+/g, ' ').trim().slice(0, 320)
+      : null,
+    rating: det.rating != null ? det.rating : (det.calificacion != null ? det.calificacion : null),
+    rating_source: det.rating_source || 'fuente',
+    estado: det.estado || null,
+    formato: det.formato || null,
+    total_temporadas: det.total_temporadas != null ? det.total_temporadas : null,
+    total_episodios: det.total_episodios != null ? det.total_episodios : null,
+    url_extract: (sl && sidN) ? (origin + '/' + sidN + '/' + tp + '/' + sl) : (det.url_extract || null),
+    url_vid: (sl && sidN) ? (origin + '/' + sidN + '/' + tp + '/b/' + sl) : null,
+    // Streams: ir al detalle completo o a /slug/t/e — no se resuelven aquí
+    total: 0,
+    reproductores: []
+  };
+  Object.keys(out).forEach(function (k) {
+    if (out[k] == null) delete out[k];
+  });
+  return out;
+}
+
 function slimResultadoLista(item, origin) {
   if (!item || typeof item !== 'object') return item;
   var fuente = item.fuente || (Array.isArray(item.fuentes) && item.fuentes[0]) || null;
@@ -6832,6 +6921,10 @@ function slimResultadoLista(item, origin) {
     type: tipo
   };
   if (sid) out.source_id = sid;
+  // Detalle básico (sin meta pesada / sin Cinemeta): /{id}/{tipo}/b/{slug}
+  if (slug && sid) {
+    out.url_vid = (origin || '') + '/' + sid + '/' + tipoPath + '/b/' + slug;
+  }
   // total episodios solo en DETALLE (junto a temporadas), no en listado
   Object.keys(out).forEach(function (k) {
     if (out[k] == null) delete out[k];
