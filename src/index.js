@@ -484,8 +484,9 @@ var REPRODUCTORES_PERMITIDOS = [
   // PelisPlus .bz
   'embed69', 'embed69.org',
 
-  // Byse (nuevo en AnimeAV1) + mirrors
-  'byse.', 'byse.sx', 'bysefujedu', 'bysezejataos', 'byse'
+  // Byse (AnimeAV1) — mirrors rotan: byselapuix, n1mwq.org, byse.sx, etc.
+  'byse.', 'byse.sx', 'bysefujedu', 'bysezejataos', 'byselapuix', 'byse',
+  'n1mwq.org', 'n1mwq'
 ];
 var REPRODUCTORES_BLOQUEADOS = [
   'lamovie.org', 'lamovie', 'youtube.com', 'youtu.be',
@@ -4000,8 +4001,12 @@ function extraerServidor(url) {
     if (host.indexOf('vidguard') !== -1) return 'vidguard';
     if (host.indexOf('lulustream') !== -1) return 'lulustream';
     if (host.indexOf('videoapp') !== -1) return 'videoapp';
-    // Byse (AnimeAV1 y mirrors)
-    if (host.indexOf('byse') !== -1 || host.indexOf('bysefujedu') !== -1) return 'byse';
+    // Byse (AnimeAV1) — dominios rotan: byselapuix.com, n1mwq.org/r7psn/..., byse.sx
+    if (
+      host.indexOf('byse') !== -1 ||
+      host.indexOf('n1mwq') !== -1 ||
+      host.indexOf('bysefujedu') !== -1
+    ) return 'byse';
     if (host.indexOf('mega.nz') !== -1 || host.indexOf('mega.co') !== -1) return 'mega';
     if (host.indexOf('mediafire') !== -1) return 'mediafire';
     if (host.indexOf('1fichier') !== -1) return '1fichier';
@@ -10525,11 +10530,14 @@ function mapAnimeAv1Embeds(embedsObj) {
       if (isDl) descargas.push(row);
       else if (
         esReproductorValido(url) ||
-        /zilla-networks|uns\.bio|mp4upload|mega\.nz\/embed|yourupload|streamtape|vidhide|ryderjet|byse/i.test(url) ||
+        /zilla-networks|uns\.bio|mp4upload|mega\.nz\/embed|yourupload|streamtape|vidhide|ryderjet|byse|n1mwq/i.test(url) ||
         /byse/i.test(String(e.server || e.name || e.provider || ''))
       ) {
-        // Normalizar nombre Byse
-        if (/byse/i.test(String(server || '')) || /byse/i.test(url)) {
+        // Byse: server name "Byse" o URL tipo https://n1mwq.org/r7psn/... / byselapuix.com/e/...
+        var isByse =
+          /byse/i.test(String(e.server || e.name || e.provider || server || '')) ||
+          /byse|n1mwq/i.test(url);
+        if (isByse) {
           row.servidor = 'byse';
           row.server = 'byse';
           row.provider = 'byse';
