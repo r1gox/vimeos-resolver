@@ -38,7 +38,7 @@ var PELISPLUS_TO_BASE = 'https://pelisplushd.la'; // referencia; NO usar como es
  * Rutas fijas /3/... y /9/... NO se ven afectadas; solo el buscador global.
  * Cambia solo esta línea para probar:
  */
-var PELISPLUS_UNIVERSAL = 'la'; // 'to' | 'bz'
+var PELISPLUS_UNIVERSAL = 'to'; // 'to' | 'bz'
 var ANIMEAV1_BASE = 'https://animeav1.com';
 var DORAMASFLIX_BASE = 'https://doramasflix.io';
 var DORAMASFLIX_GQL = 'https://user-api.fluxcedene.net/graphql';
