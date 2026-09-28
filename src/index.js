@@ -26,10 +26,10 @@ var LAMOVIE_BASE = 'https://lamovie.org';
 var HACKSTORE_BASE = 'https://www.hackstore.fo';
 var HACKSTORE_API = 'https://tmdb.hackstore.fo';
 var HACKSTORE_TMDB_IMG = 'https://image.tmdb.org/t/p/';
-var PELISPLUS_BASE = 'https://www.pelisplushd.to';
+var PELISPLUS_BASE = 'https://www.pelisplushd.la';
 var PELISPLUS_BZ_BASE = 'https://pelisplushd.bz';
 // NO mezclar dominios PelisPlus: .la (fuente 3), .bz (fuente 9) y .to son catálogos distintos.
-var PELISPLUS_TO_BASE = 'https://pelisplushd.to'; // referencia; NO usar como espejo de .bz
+var PELISPLUS_TO_BASE = 'https://pelisplushd.la'; // referencia; NO usar como espejo de .bz
 
 /**
  * Switch PelisPlus en búsqueda UNIVERSAL (/?q=  y  /search?q=)
@@ -38,7 +38,7 @@ var PELISPLUS_TO_BASE = 'https://pelisplushd.to'; // referencia; NO usar como es
  * Rutas fijas /3/... y /9/... NO se ven afectadas; solo el buscador global.
  * Cambia solo esta línea para probar:
  */
-var PELISPLUS_UNIVERSAL = 'bz'; // 'to' | 'bz'
+var PELISPLUS_UNIVERSAL = 'la'; // 'to' | 'bz'
 var ANIMEAV1_BASE = 'https://animeav1.com';
 var DORAMASFLIX_BASE = 'https://doramasflix.io';
 var DORAMASFLIX_GQL = 'https://user-api.fluxcedene.net/graphql';
