@@ -7033,7 +7033,7 @@ function formatearDetalleBasico(det, origin, sid, tipoPath, slug) {
         return typeof r === 'string' ? r : (r && (r.url || r.link)) || null;
       }).filter(Boolean);
 
-  // Episodios / temporadas: solo links de vimeos (sin back_img ni sinopsis de cada cap)
+  // Episodios / temporadas: links + titulo + back_img cuando la fuente los trae
   var temporadas = [];
   var rawTemps = det.temporadas || det.temporadas_raw || [];
   if (Array.isArray(rawTemps) && rawTemps.length) {
@@ -7064,10 +7064,18 @@ function formatearDetalleBasico(det, origin, sid, tipoPath, slug) {
             ep.link ||
             ep.url ||
             (origin + '/' + sidN + '/' + tp + '/' + sl + '/' + epSn + '/' + en);
+          var epTit =
+            ep.titulo || ep.nombre || ep.title || ep.name || ep.titulo_episodio || null;
+          var epBack =
+            ep.back_img || ep.still || ep.screenshot || ep.imagen || ep.image || null;
           listaOut.push({
             temporada: Number(epSn),
             episodio: Number(en),
-            link: link
+            link: link,
+            titulo: epTit || null,
+            nombre: epTit || null,
+            back_img: epBack || null,
+            still: epBack || null
           });
         }
       }
@@ -7101,10 +7109,16 @@ function formatearDetalleBasico(det, origin, sid, tipoPath, slug) {
       var en2 = e2.episodio != null ? e2.episodio : (e2.episode != null ? e2.episode : null);
       if (en2 == null) continue;
       var sn2 = e2.temporada != null ? e2.temporada : 1;
+      var t2 = e2.titulo || e2.nombre || e2.title || e2.name || e2.titulo_episodio || null;
+      var b2 = e2.back_img || e2.still || e2.screenshot || e2.imagen || e2.image || null;
       listaFlat.push({
         temporada: Number(sn2),
         episodio: Number(en2),
-        link: e2.link || e2.url || (origin + '/' + sidN + '/' + tp + '/' + sl + '/' + sn2 + '/' + en2)
+        link: e2.link || e2.url || (origin + '/' + sidN + '/' + tp + '/' + sl + '/' + sn2 + '/' + en2),
+        titulo: t2 || null,
+        nombre: t2 || null,
+        back_img: b2 || null,
+        still: b2 || null
       });
     }
     if (listaFlat.length) {
@@ -10333,16 +10347,35 @@ async function scrapearPelisplus(pageUrl, opts) {
   var sm = pageUrl.match(/\/(?:pelicula|serie|anime)\/([^\/\?#]+)/i);
   if (sm) slugFromUrl = decodeURIComponent(sm[1]).replace(/\/$/, '');
   
+  // Imagen de episodio si aparece en la ficha del cap
+  var backImgCap = null;
+  try {
+    var imgCap =
+      html.match(/property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
+      html.match(/content=["']([^"']+)["'][^>]+property=["']og:image["']/i) ||
+      html.match(/src=["'](https?:\/\/image\.tmdb\.org[^"']+)["']/i);
+    if (imgCap) {
+      backImgCap = imgCap[1];
+      if (/image\.tmdb\.org\/t\/p\//i.test(backImgCap)) {
+        backImgCap = backImgCap.replace(/\/t\/p\/w\d+\//i, '/t/p/w342/');
+      }
+    }
+  } catch (_) {}
+
   return {
     success: true,
     fuente: 'pelisplushd',
     tipo: esCapitulo ? 'Capitulo' : 'Pelicula',
     link: pageUrl,
     slug: slugFromUrl,
-    titulo: titulo,
+    titulo: esCapitulo && tituloEpisodio ? tituloEpisodio : titulo,
+    titulo_episodio: tituloEpisodio || null,
+    titulo_serie: esCapitulo ? titulo : null,
     titulo_original: tituloOriginal,
     portada: portada,
-    descripcion: descripcion,
+    back_img: esCapitulo ? (backImgCap || null) : null,
+    still: esCapitulo ? (backImgCap || null) : null,
+    descripcion: (esCapitulo && sinopsisEp) ? sinopsisEp : descripcion,
     year: yearMeta,
     genero: generoMeta,
     generos: generosMeta,
