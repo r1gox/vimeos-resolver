@@ -1526,22 +1526,25 @@ async function handleRequest(request, env) {
         return json(resultadoPath);
       }
 
-      // Detalle BÁSICO: scrape fuente, sin TMDB/Cinemeta ni thumbs de todos los caps
+      // Detalle BÁSICO: streams + lista de caps (titulo/back_img si hay)
       if (basicMode && resultadoPath) {
         try { normalizarCamposResultado(resultadoPath); } catch (eNb2) {}
         var sidB = sourceIdFromName(resultadoPath.fuente) || (forcedSource ? sourceIdFromName(forcedSource) : '') || String(parts[0] || '');
-        // forcedSource puede ser nombre: map to id
         if (forcedSource && !/^\d+$/.test(String(sidB))) {
           sidB = sourceIdFromName(forcedSource) || sidB;
         }
         if (pathSource) {
-          // parts[0] was numeric id path
           var sidFromPath = sourceIdFromName(pathSource);
           if (sidFromPath) sidB = sidFromPath;
-          // pathSource is name like jkanime - sourceIdFromName works
         }
-        // Prefer numeric from parts[0]
         if (/^\d+$/.test(String(parts[0] || ''))) sidB = String(parts[0]);
+        // .bz no trae stills en HTML: resolver imdb rápido y aplicar Metahub
+        try {
+          resultadoPath = await ensureImdbIdForBacks(resultadoPath, tipoRuta);
+        } catch (eImdbB) {}
+        try {
+          resultadoPath = await attachTmdbEpisodeBackImgs(resultadoPath);
+        } catch (eBackB) {}
         return json(formatearDetalleBasico(resultadoPath, origin, sidB, tipoRuta, slug));
       }
 
@@ -7068,15 +7071,14 @@ function formatearDetalleBasico(det, origin, sid, tipoPath, slug) {
             ep.titulo || ep.nombre || ep.title || ep.name || ep.titulo_episodio || null;
           var epBack =
             ep.back_img || ep.still || ep.screenshot || ep.imagen || ep.image || null;
-          listaOut.push({
+          var rowEp = {
             temporada: Number(epSn),
             episodio: Number(en),
-            link: link,
-            titulo: epTit || null,
-            nombre: epTit || null,
-            back_img: epBack || null,
-            still: epBack || null
-          });
+            link: link
+          };
+          if (epTit) rowEp.titulo = epTit;
+          if (epBack) rowEp.back_img = epBack;
+          listaOut.push(rowEp);
         }
       }
       // Si no hay lista pero sí conteo, generar links 1..N (tope 50 por temp para no explotar)
@@ -7111,15 +7113,14 @@ function formatearDetalleBasico(det, origin, sid, tipoPath, slug) {
       var sn2 = e2.temporada != null ? e2.temporada : 1;
       var t2 = e2.titulo || e2.nombre || e2.title || e2.name || e2.titulo_episodio || null;
       var b2 = e2.back_img || e2.still || e2.screenshot || e2.imagen || e2.image || null;
-      listaFlat.push({
+      var rowF = {
         temporada: Number(sn2),
         episodio: Number(en2),
-        link: e2.link || e2.url || (origin + '/' + sidN + '/' + tp + '/' + sl + '/' + sn2 + '/' + en2),
-        titulo: t2 || null,
-        nombre: t2 || null,
-        back_img: b2 || null,
-        still: b2 || null
-      });
+        link: e2.link || e2.url || (origin + '/' + sidN + '/' + tp + '/' + sl + '/' + sn2 + '/' + en2)
+      };
+      if (t2) rowF.titulo = t2;
+      if (b2) rowF.back_img = b2;
+      listaFlat.push(rowF);
     }
     if (listaFlat.length) {
       temporadas.push({
@@ -9954,6 +9955,68 @@ async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
  * 2) Fallback Metahub: episodes.metahub.space/{imdb}/{s}/{e}/w780.jpg
  * No requiere TMDB_API_KEY.
  */
+
+/**
+ * Resuelve imdb_id rápido (solo para stills de episodios en /b/).
+ * 1) ya viene en detalle
+ * 2) Cinemeta catalog search por título
+ */
+async function ensureImdbIdForBacks(detalle, tipoRuta) {
+  if (!detalle || typeof detalle !== 'object') return detalle;
+  var cur =
+    detalle.imdb_id ||
+    (detalle.imdb && (detalle.imdb.id || detalle.imdb.imdb_id)) ||
+    null;
+  if (cur && /^tt\d+$/i.test(String(cur))) {
+    detalle.imdb_id = String(cur);
+    return detalle;
+  }
+  var title = String(detalle.titulo || detalle.nombre || detalle.title || '').trim();
+  if (!title || title.length < 2) return detalle;
+  var kind = 'series';
+  var tip = String(tipoRuta || detalle.tipo || detalle.formato || '').toLowerCase();
+  if (/pelicul|movie|film/.test(tip)) kind = 'movie';
+  try {
+    var q = title.replace(/\s+/g, ' ').slice(0, 80);
+    var url =
+      'https://v3-cinemeta.strem.io/catalog/' +
+      kind +
+      '/top/search=' +
+      encodeURIComponent(q) +
+      '.json';
+    var ctrl = new AbortController();
+    var t = setTimeout(function () { try { ctrl.abort(); } catch (_) {} }, 6000);
+    var res = await fetch(url, {
+      headers: { Accept: 'application/json', 'User-Agent': 'MovieZoneMeta/1.0' },
+      signal: ctrl.signal
+    });
+    clearTimeout(t);
+    if (!res.ok) return detalle;
+    var data = await res.json();
+    var metas = (data && data.metas) || [];
+    if (!metas.length) return detalle;
+    // Match por año si existe
+    var year = String(detalle.year || '').match(/(19|20)\d{2}/);
+    year = year ? year[0] : null;
+    var pick = null;
+    for (var i = 0; i < metas.length; i++) {
+      var m = metas[i];
+      if (!m) continue;
+      var id = m.imdb_id || m.id || null;
+      if (!id || !/^tt\d+$/i.test(String(id))) continue;
+      if (year && m.releaseInfo && String(m.releaseInfo).indexOf(year) === -1) continue;
+      pick = String(id);
+      break;
+    }
+    if (!pick && metas[0]) {
+      var id0 = metas[0].imdb_id || metas[0].id;
+      if (id0 && /^tt\d+$/i.test(String(id0))) pick = String(id0);
+    }
+    if (pick) detalle.imdb_id = pick;
+  } catch (_) {}
+  return detalle;
+}
+
 async function attachTmdbEpisodeBackImgs(detalle) {
   try {
     if (!detalle || detalle.success === false) return detalle;
@@ -10374,7 +10437,6 @@ async function scrapearPelisplus(pageUrl, opts) {
     titulo_original: tituloOriginal,
     portada: portada,
     back_img: esCapitulo ? (backImgCap || null) : null,
-    still: esCapitulo ? (backImgCap || null) : null,
     descripcion: (esCapitulo && sinopsisEp) ? sinopsisEp : descripcion,
     year: yearMeta,
     genero: generoMeta,
