@@ -4754,7 +4754,16 @@ function fusionarResultadosBusqueda(items) {
         if ((!best.descripcion || String(best.descripcion).length < 40) && cur.descripcion && String(cur.descripcion).length >= 40) {
           best.descripcion = cur.descripcion;
         }
-        if (!best.year && cur.year) best.year = cur.year;
+        // No pegar año de otra fuente a animeav1 (evita One Piece → 2023 live-action)
+        if (!best.year && cur.year) {
+          var bf = String(best.fuente || '').toLowerCase();
+          var cf = String(cur.fuente || '').toLowerCase();
+          if (bf === 'animeav1' && cf !== 'animeav1') {
+            /* skip */
+          } else {
+            best.year = cur.year;
+          }
+        }
         if (!best.calificacion && cur.calificacion) best.calificacion = cur.calificacion;
         if (!best.tmdb_id && cur.tmdb_id) best.tmdb_id = cur.tmdb_id;
         if (!best.imdb_id && cur.imdb_id) best.imdb_id = cur.imdb_id;
@@ -4803,12 +4812,19 @@ function fusionarResultadosBusqueda(items) {
         for (var ja = 0; ja < sg.length; ja++) {
           if (String(sg[ja].fuente || '').toLowerCase() === 'animeav1') {
             best.fuente = 'animeav1';
+            best.source_id = '4';
             if (sg[ja].slug) best.slug = sg[ja].slug;
+            if (sg[ja].titulo) best.titulo = sg[ja].titulo;
+            // Año SOLO el de animeav1 (no el del live-action 2023)
+            best.year = sg[ja].year || null;
             if (sg[ja].descripcion && (!best.descripcion || String(best.descripcion).length < 40)) {
               best.descripcion = sg[ja].descripcion;
             }
-            best.portada = mejorPortada(best.portada, sg[ja].portada);
+            // Portada preferir la de la fuente 4
+            if (sg[ja].portada) best.portada = sg[ja].portada;
+            else best.portada = mejorPortada(best.portada, sg[ja].portada);
             if (typeof sourceIdFromName === 'function') best.source_id = sourceIdFromName('animeav1');
+            best.source_id = '4';
             break;
           }
         }
