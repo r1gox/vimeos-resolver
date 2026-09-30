@@ -8256,32 +8256,40 @@ async function buscarUniversal(query, sourceFilter, limit) {
   // JKanime (5) NO entra aquí: solo /5?q= o /5/buscar (sección JK en MovieZone).
   // (Antes: si AV1 tenía hits se descartaba el resto → búsqueda “rota” para pelis/series.)
 
-  // Fallback: si universal quedó vacío, forzar pelisplushd.bz (películas/series)
+  // Fallback si nadie respondió: bz → doramas → pelisplushd .to (3)
   if (sourceFilter === 'all' && todos.length === 0) {
-    try {
-      var fbBz = await buscarPelisplusBz(q, limit);
-      if (Array.isArray(fbBz) && fbBz.length) {
-        for (var bi = 0; bi < fbBz.length; bi++) {
-          if (!fbBz[bi]) continue;
-          fbBz[bi].fuente = 'pelisplushd_bz';
-          fbBz[bi].fuentes = ['pelisplushd_bz'];
-          fbBz[bi].source_id = '9';
-          if (fbBz[bi].titulo) fbBz[bi].titulo = limpiarTitulo(fbBz[bi].titulo);
-          if (resultadoRelevanteBusqueda(q, fbBz[bi]) || true) todos.push(fbBz[bi]);
+    function pushFbHits(hits, fid, sid) {
+      if (!Array.isArray(hits) || !hits.length) return;
+      for (var i = 0; i < hits.length; i++) {
+        if (!hits[i]) continue;
+        hits[i].fuente = fid;
+        hits[i].fuentes = [fid];
+        hits[i].source_id = sid;
+        if (hits[i].titulo) hits[i].titulo = limpiarTitulo(hits[i].titulo);
+        if (fid === 'pelisplushd' && hits[i].portada) {
+          hits[i].portada_fuente_raw = hits[i].portada;
         }
+        todos.push(hits[i]);
       }
+    }
+    try {
+      pushFbHits(await buscarPelisplusBz(q, limit), 'pelisplushd_bz', '9');
     } catch (eFb) { /* ignore */ }
-    try {
-      var fbDor = await buscarDoramasflix(q, limit);
-      if (Array.isArray(fbDor) && fbDor.length) {
-        for (var di = 0; di < fbDor.length; di++) {
-          if (!fbDor[di]) continue;
-          fbDor[di].fuente = 'doramasflix';
-          fbDor[di].source_id = sourceIdFromName('doramasflix');
-          if (resultadoRelevanteBusqueda(q, fbDor[di])) todos.push(fbDor[di]);
-        }
-      }
-    } catch (eDor) { /* ignore */ }
+    if (todos.length === 0) {
+      try {
+        pushFbHits(
+          await buscarDoramasflix(q, limit),
+          'doramasflix',
+          typeof sourceIdFromName === 'function' ? sourceIdFromName('doramasflix') : '6'
+        );
+      } catch (eDor) { /* ignore */ }
+    }
+    // Último recurso: fuente 3 (.to) solo si ninguna otra respondió
+    if (todos.length === 0) {
+      try {
+        pushFbHits(await buscarPelisplus(q, limit), 'pelisplushd', '3');
+      } catch (eTo) { /* ignore */ }
+    }
   }
 
   // Fusionar misma obra entre fuentes (sin duplicados)
