@@ -4307,12 +4307,13 @@ function preferirTipo(tipos, items) {
     }
   }
 
+  // Anime real (animeav1) antes que serie genérica / live-action
+  if (hasAnime && !hasPeliculaCine) return 'Anime';
   // Película de cine gana sobre "Anime" basura del mismo slug en animeav1
-  if (hasPeliculaCine && !hasSerieDorama) return 'Pelicula';
+  if (hasPeliculaCine && !hasSerieDorama && !hasAnime) return 'Pelicula';
   // Dorama/serie de doramasflix
   if (hasSerieDorama && !hasPeliculaCine) return 'Serie';
-  // Anime real
-  if (hasAnime && !hasPeliculaCine) return 'Anime';
+  if (hasAnime) return 'Anime';
   if (hasSerie) return 'Serie';
   if (hasPeliculaCine) return 'Pelicula';
 
@@ -4378,12 +4379,13 @@ function claveDeduplicacion(item) {
   if (!item) return null;
   if (item.tmdb_id) {
     var tk = normalizarTipoKey(item.tipo);
-    var tb = (tk === 'anime' || tk === 'serie') ? 'show' : tk;
+    // Anime y serie/live-action NO comparten bucket (One Piece 1999 vs 2023)
+    var tb = tk || 'other';
     return 'tmdb:' + String(item.tmdb_id) + '|' + tb;
   }
   var tipo = normalizarTipoKey(item.tipo);
-  // Anime y Serie comparten bucket "show" para no duplicar la misma obra
-  var bucket = (tipo === 'anime' || tipo === 'serie') ? 'show' : tipo;
+  // Mantener anime separado de serie (evita fusionar animeav1 con live-action)
+  var bucket = tipo || 'other';
   var titulo = normalizarTituloKey(item.titulo || '');
   if (titulo && titulo.length >= 2) return 'tt:' + titulo + '|' + bucket;
   var slug = normalizarSlugKey(item.slug || '');
@@ -4468,7 +4470,7 @@ function scoreItemBusqueda(item) {
     else if (f === 'doramasflix') s += 80;
     else if (f === 'animeav1') s += 5;
   } else if (t === 'anime') {
-    if (f === 'animeav1') s += 200;
+    if (f === 'animeav1') s += 280; // animes: fuente 4 siempre arriba
     else if (f === 'pelisplushd_bz') s += 70;
     else if (f === 'pelisplushd') s += 55;
     else if (f === 'lamovie') s += 40;
@@ -4668,11 +4670,12 @@ function fusionarResultadosBusqueda(items) {
     }
     var years = Object.keys(byYear);
     var subgrupos = [];
-    if (years.length <= 1) {
+    if (years.length === 0) {
+      subgrupos.push(group);
+    } else if (years.length === 1 && !sinYear.length) {
       subgrupos.push(group);
     } else {
-      // Hay remakes/reboots con el mismo título. Los resultados sin año son
-      // ambiguos y NO se deben pegar automáticamente al año más frecuente.
+      // Remakes / anime 1999 sin año vs live-action 2023: NO fusionar
       for (var yj = 0; yj < years.length; yj++) {
         subgrupos.push(byYear[years[yj]].slice());
       }
@@ -6685,9 +6688,9 @@ function resultadoRelevanteBusqueda(query, item) {
 
  // var qTokens = qKey.split(/\s+/).filter(function (w) { return w.length >= 3; });  
   var qTokens = qKey.split(/\s+/).filter(function (w) {
-    // ignorar palabras muy genéricas
-    if (w.length < 4) return false;
-    if (/^(man|the|and|vs|del|los|las|una|one)$/i.test(w)) return false;
+    // ignorar artículos muy genéricos; NO quitar "one" (One Piece)
+    if (w.length < 3) return false;
+    if (/^(man|the|and|vs|del|los|las|una|el|la|de|a)$/i.test(w)) return false;
     return true;
   });
   if (!qTokens.length) {
@@ -8297,9 +8300,23 @@ async function buscarUniversal(query, sourceFilter, limit) {
     ? fusionarResultadosBusqueda(todos)
     : dedupePorSlugFuente(todos);
 
-  // Ordenar por score (tipo + fuente + meta)
+  // Ordenar por score + coincidencia exacta de título con la query
+  var qNormSort = normalizarTituloKey(q);
   resultados.sort(function (a, b) {
-    return scoreItemBusqueda(b) - scoreItemBusqueda(a);
+    function exactBoost(it) {
+      if (!it || !qNormSort) return 0;
+      var t = normalizarTituloKey(it.titulo || '');
+      var s = normalizarTituloKey(String(it.slug || '').replace(/-/g, ' '));
+      var b = 0;
+      if (t === qNormSort || s === qNormSort) b += 500;
+      // Anime fuente 4 con match fuerte
+      if ((it.fuente === 'animeav1' || it.source_id === '4') &&
+          (t === qNormSort || s === qNormSort || (t && t.indexOf(qNormSort) === 0))) {
+        b += 200;
+      }
+      return b;
+    }
+    return (scoreItemBusqueda(b) + exactBoost(b)) - (scoreItemBusqueda(a) + exactBoost(a));
   });
 
   var fuenteUsada = null;
