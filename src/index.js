@@ -4338,8 +4338,8 @@ function elegirFuentePrincipal(items, tipoFinal) {
     order = ['pelisplushd_bz', 'doramasflix'];
     //order = ['pelisplushd_bz', 'pelisplushd', 'lamovie', 'hackstore', 'doramasflix'];
   } else if (t === 'anime') {
-    order = ['animeav1', 'pelisplushd_bz', 'lamovie', 'hackstore'];
-    //order = ['animeav1', 'pelisplushd_bz', 'pelisplushd', 'lamovie', 'hackstore'];
+    // Fuente 4 siempre gana en animes
+    order = ['animeav1', 'pelisplushd_bz', 'pelisplushd', 'lamovie', 'hackstore', 'doramasflix'];
   } else {
     // serie / dorama
     order = ['doramasflix', 'pelisplushd_bz', 'animeav1'];
@@ -4377,14 +4377,25 @@ function extraerYearItem(item) {
  */
 function claveDeduplicacion(item) {
   if (!item) return null;
+  var f = String(item.fuente || '').toLowerCase();
+  var sid = String(item.source_id != null ? item.source_id : '');
+  // animeav1 (4): NUNCA fusionar entre sí — cada slug es una obra
+  // (dos "One Piece" distintos: serie, película, OVA, especial…)
+  if (f === 'animeav1' || sid === '4') {
+    var slugAv = normalizarSlugKey(item.slug || '');
+    if (slugAv) return 'av1:' + slugAv;
+    var titAv = normalizarTituloKey(item.titulo || '');
+    var yrAv = extraerYearItem(item) || '';
+    if (titAv) return 'av1:' + titAv + '|' + yrAv + '|' + normalizarTipoKey(item.tipo);
+    return null;
+  }
   if (item.tmdb_id) {
     var tk = normalizarTipoKey(item.tipo);
-    // Anime y serie/live-action NO comparten bucket (One Piece 1999 vs 2023)
     var tb = tk || 'other';
     return 'tmdb:' + String(item.tmdb_id) + '|' + tb;
   }
   var tipo = normalizarTipoKey(item.tipo);
-  // Mantener anime separado de serie (evita fusionar animeav1 con live-action)
+  // Anime separado de serie (live-action)
   var bucket = tipo || 'other';
   var titulo = normalizarTituloKey(item.titulo || '');
   if (titulo && titulo.length >= 2) return 'tt:' + titulo + '|' + bucket;
@@ -4699,14 +4710,19 @@ function fusionarResultadosBusqueda(items) {
           porFuente[f0] = it0;
           ordenF.push(f0);
         } else {
-          // Misma fuente: NO fusionar. Empujar el extra como resultado independiente
-          // (se procesará solo: una entrada = una obra)
-          out.push(Object.assign({}, it0, {
-            fuentes: [f0],
-            alternativas: [],
-            success: undefined
-          }));
-          delete out[out.length - 1].success;
+          // Misma fuente: NO fusionar (p. ej. dos animeav1 con nombre parecido)
+          var extra = {};
+          for (var ek in it0) {
+            if (Object.prototype.hasOwnProperty.call(it0, ek)) extra[ek] = it0[ek];
+          }
+          extra.fuentes = [f0];
+          extra.alternativas = [];
+          if (f0 === 'animeav1') {
+            extra.fuente = 'animeav1';
+            extra.source_id = '4';
+          }
+          delete extra.success;
+          out.push(extra);
         }
       }
 
