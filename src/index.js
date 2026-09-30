@@ -4861,8 +4861,15 @@ function fusionarResultadosBusqueda(items) {
         if (used[b]) continue;
         var other = out[b];
         if (!tiposCompatibles(other.tipo, base.tipo)) continue;
+        // NO cruzar animeav1 con otras fuentes (evita One Piece año 2023)
+        var baseAv1 = String(base.fuente || '').toLowerCase() === 'animeav1' || String(base.source_id || '') === '4';
+        var otherAv1 = String(other.fuente || '').toLowerCase() === 'animeav1' || String(other.source_id || '') === '4';
+        if (baseAv1 !== otherAv1) continue;
         var oYear = extraerYearItem(other);
         if (baseYear && oYear && baseYear !== oYear) continue;
+        // Sin año vs con año → no fusionar (live-action vs anime clásico)
+        if (!baseYear && oYear) continue;
+        if (baseYear && !oYear) continue;
         var oTitle = normalizarTituloKey(other.titulo || '');
         var oSlug = normalizarSlugKey(other.slug || '');
         // Matching estricto: evita unir "One Piece" con "One Piece Film Red" / Heroines / especiales
@@ -4891,7 +4898,12 @@ function fusionarResultadosBusqueda(items) {
           if (esFuentePelisplus(best2) && cur2.portada_imdb && esPortadaImdb(cur2.portada_imdb)) { best2.portada = cur2.portada_imdb; best2.poster_source = 'imdb'; }
           best2.portada = mejorPortada(best2.portada, cur2.portada);
           if ((!best2.descripcion || String(best2.descripcion).length < 40) && cur2.descripcion) best2.descripcion = cur2.descripcion;
-          if (!best2.year && cur2.year) best2.year = cur2.year;
+          if (!best2.year && cur2.year) {
+            var bf2 = String(best2.fuente || '').toLowerCase();
+            var cf2 = String(cur2.fuente || '').toLowerCase();
+            if (bf2 === 'animeav1' && cf2 !== 'animeav1') { /* skip */ }
+            else best2.year = cur2.year;
+          }
           if (!best2.calificacion && cur2.calificacion) best2.calificacion = cur2.calificacion;
           if (!best2.tmdb_id && cur2.tmdb_id) best2.tmdb_id = cur2.tmdb_id;
           if (!best2.imdb_id && cur2.imdb_id) best2.imdb_id = cur2.imdb_id;
@@ -4932,12 +4944,18 @@ function fusionarResultadosBusqueda(items) {
         for (var ja2 = 0; ja2 < group2.length; ja2++) {
           if (String(group2[ja2].fuente || '').toLowerCase() === 'animeav1') {
             best2.fuente = 'animeav1';
+            best2.source_id = '4';
             if (group2[ja2].slug) best2.slug = group2[ja2].slug;
+            if (group2[ja2].titulo) best2.titulo = group2[ja2].titulo;
+            // Año SOLO de animeav1 (no 2023 de live-action)
+            best2.year = group2[ja2].year || null;
             if (group2[ja2].descripcion && (!best2.descripcion || String(best2.descripcion).length < 40)) {
               best2.descripcion = group2[ja2].descripcion;
             }
-            best2.portada = mejorPortada(best2.portada, group2[ja2].portada);
+            if (group2[ja2].portada) best2.portada = group2[ja2].portada;
+            else best2.portada = mejorPortada(best2.portada, group2[ja2].portada);
             if (typeof sourceIdFromName === 'function') best2.source_id = sourceIdFromName('animeav1');
+            best2.source_id = '4';
             break;
           }
         }
@@ -8350,6 +8368,19 @@ async function buscarUniversal(query, sourceFilter, limit) {
     }
     return (scoreItemBusqueda(b) + exactBoost(b)) - (scoreItemBusqueda(a) + exactBoost(a));
   });
+
+  for (var sy = 0; sy < resultados.length; sy++) {
+    var itS = resultados[sy];
+    if (!itS) continue;
+    if (String(itS.fuente || '').toLowerCase() !== 'animeav1' && String(itS.source_id || '') !== '4') continue;
+    // Año solo si aparece en título o slug de AV1; si no, null
+    var y = itS.year != null ? String(itS.year).match(/(19|20)\d{2}/) : null;
+    y = y ? y[0] : null;
+    if (y) {
+      var blob = String(itS.titulo || '') + ' ' + String(itS.slug || '');
+      if (blob.indexOf(y) === -1) itS.year = null;
+    }
+  }
 
   var fuenteUsada = null;
   if (resultados.length) {
