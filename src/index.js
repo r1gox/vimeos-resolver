@@ -8251,18 +8251,13 @@ async function buscarUniversal(query, sourceFilter, limit) {
   }
 */
    
-  // Switch .to / .bz solo en universal (ver PELISPLUS_UNIVERSAL arriba)
-  var ppUni = String(typeof PELISPLUS_UNIVERSAL !== 'undefined' ? PELISPLUS_UNIVERSAL : 'bz').toLowerCase().trim();
-  var ppUseTo = (ppUni === 'to' || ppUni === '3' || ppUni === 'pelisplushd' || ppUni === '.to');
+  // Universal en paralelo: animeav1 + doramas + 9 (bz).
+  // 3 / lamovie / hackstore solo en cascada si el 9 no da hits.
   for (var i = 0; i < cadena.length; i++) {
     var c = cadena[i];
     if (sourceFilter !== 'all' && c.aliases.indexOf(sourceFilter) === -1) continue;
-    // Universal: sin LaMovie ni Hackstore; PelisPlus según PELISPLUS_UNIVERSAL
     if (sourceFilter === 'all') {
-      // lamovie fuera del universal (ruido); hackstore SÍ entra
-      if (c.id === 'lamovie') continue;
-      if (ppUseTo && c.id === 'pelisplushd_bz') continue; // modo to → descarta bz
-      if (!ppUseTo && c.id === 'pelisplushd') continue;    // modo bz → descarta .to
+      if (c.id === 'pelisplushd' || c.id === 'lamovie' || c.id === 'hackstore') continue;
     }
     var tms = (c.id === 'animeav1') ? 12000
       : ((c.id === 'pelisplushd' || c.id === 'pelisplushd_bz') ? 15000 : 8000);
@@ -8305,43 +8300,57 @@ async function buscarUniversal(query, sourceFilter, limit) {
     relevantes = dedupePorSlugFuente(relevantes);
     for (var rj = 0; rj < relevantes.length; rj++) todos.push(relevantes[rj]);
   }
-  // Búsqueda UNIVERSAL: mostrar TODAS las fuentes (AV1 + pelis + doramas + bz…).
-  // JKanime (5) NO entra aquí: solo /5?q= o /5/buscar (sección JK en MovieZone).
-  // (Antes: si AV1 tenía hits se descartaba el resto → búsqueda “rota” para pelis/series.)
-
-  // Fallback si nadie respondió: bz → doramas → pelisplushd .to (3)
-  if (sourceFilter === 'all' && todos.length === 0) {
-    function pushFbHits(hits, fid, sid) {
-      if (!Array.isArray(hits) || !hits.length) return;
+  // JKanime (5) NO entra aquí: solo /5?q= o /5/buscar.
+  // Cascada pelis: solo si el 9 (bz) no trajo nada → 3 → lamovie → hackstore.
+  // Si 9 sí trajo resultados, no se solicita 3 / lamovie / hackstore.
+  if (sourceFilter === 'all') {
+    function pushCascadeHits(hits, fid, sid) {
+      if (!Array.isArray(hits) || !hits.length) return 0;
+      var n = 0;
       for (var i = 0; i < hits.length; i++) {
         if (!hits[i]) continue;
+        if (hits[i].titulo) hits[i].titulo = limpiarTitulo(hits[i].titulo);
+        delete hits[i].alternativas;
         hits[i].fuente = fid;
         hits[i].fuentes = [fid];
         hits[i].source_id = sid;
-        if (hits[i].titulo) hits[i].titulo = limpiarTitulo(hits[i].titulo);
         if (fid === 'pelisplushd' && hits[i].portada) {
           hits[i].portada_fuente_raw = hits[i].portada;
+          hits[i].portada = null;
+        }
+        // filtro relevancia básico
+        if (typeof resultadoRelevanteBusqueda === 'function' && !resultadoRelevanteBusqueda(q, hits[i])) {
+          var sk = String(hits[i].slug || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+          var qk = String(q || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '');
+          if (!(sk && qk && sk.indexOf(qk) !== -1)) continue;
         }
         todos.push(hits[i]);
+        n++;
+      }
+      return n;
+    }
+    var has9 = false;
+    for (var z = 0; z < todos.length; z++) {
+      if (String(todos[z].fuente || '') === 'pelisplushd_bz' || String(todos[z].source_id || '') === '9') {
+        has9 = true;
+        break;
       }
     }
-    try {
-      pushFbHits(await buscarPelisplusBz(q, limit), 'pelisplushd_bz', '9');
-    } catch (eFb) { /* ignore */ }
-    if (todos.length === 0) {
+    if (!has9) {
       try {
-        pushFbHits(
-          await buscarDoramasflix(q, limit),
-          'doramasflix',
-          typeof sourceIdFromName === 'function' ? sourceIdFromName('doramasflix') : '6'
-        );
-      } catch (eDor) { /* ignore */ }
-    }
-    // Último recurso: fuente 3 (.to) solo si ninguna otra respondió
-    if (todos.length === 0) {
-      try {
-        pushFbHits(await buscarPelisplus(q, limit), 'pelisplushd', '3');
-      } catch (eTo) { /* ignore */ }
+        var h3 = await withTimeout(buscarPelisplus(q, limit), 15000);
+        if (pushCascadeHits(h3, 'pelisplushd', '3') === 0) {
+          try {
+            var hLm = await withTimeout(buscarLamovie(q, limit), 8000);
+            if (pushCascadeHits(hLm, 'lamovie', '1') === 0) {
+              try {
+                var hHs = await withTimeout(buscarHackstore(q, limit), 8000);
+                pushCascadeHits(hHs, 'hackstore', '2');
+              } catch (eHs) { /* ignore */ }
+            }
+          } catch (eLm) { /* ignore */ }
+        }
+      } catch (e3) { /* ignore */ }
     }
   }
 
