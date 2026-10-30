@@ -10201,13 +10201,20 @@ async function scrapearPelisplus(pageUrl, opts) {
 
   // Si piden season+episode sobre URL de serie, construir URL del capítulo
   var esSerieRoot = (/\/serie\//i.test(pageUrl) || /\/anime\//i.test(pageUrl)) &&
-    !/\/temporada\/\d+\/capitulo\/\d+/i.test(pageUrl);
+    !/\/temporada\/\d+\/capitulo\/\d+/i.test(pageUrl) &&
+    !/\/episodio\/\d+\/\d+/i.test(pageUrl);
   if (esSerieRoot && seasonOnly && episodeOnly) {
     var slugM = pageUrl.match(/\/(?:serie|anime)\/([^\/\?]+)/i);
     var tipoPath = /\/anime\//i.test(pageUrl) ? 'anime' : 'serie';
     if (slugM) {
-      pageUrl = siteBase + '/' + tipoPath + '/' + slugM[1] +
-        '/temporada/' + seasonOnly + '/capitulo/' + episodeOnly + '/';
+      // .bz usa /episodio/S/E (JSON); .la/.to usan /temporada/S/capitulo/E
+      if (/pelisplushd\.bz/i.test(siteBase) || /pelisplushd\.bz/i.test(pageUrl)) {
+        pageUrl = siteBase + '/' + tipoPath + '/' + slugM[1] +
+          '/episodio/' + seasonOnly + '/' + episodeOnly;
+      } else {
+        pageUrl = siteBase + '/' + tipoPath + '/' + slugM[1] +
+          '/temporada/' + seasonOnly + '/capitulo/' + episodeOnly + '/';
+      }
     }
   }
 
@@ -10281,7 +10288,8 @@ async function scrapearPelisplus(pageUrl, opts) {
   if (!html) throw new Error('HTTP ' + (lastStatus || (res && res.status) || 404));
 
   var esSerie = /\/serie\//i.test(pageUrl) || /\/anime\//i.test(pageUrl);
-  var esCapitulo = /\/temporada\/\d+\/capitulo\/\d+/i.test(pageUrl);
+  var esCapitulo = /\/temporada\/\d+\/capitulo\/\d+/i.test(pageUrl) ||
+    /\/episodio\/\d+\/\d+/i.test(pageUrl);
 
   var metas = extraerMetas(html);
   var titulo = metas.titulo;
@@ -10411,6 +10419,76 @@ async function scrapearPelisplus(pageUrl, opts) {
       });
     }
 
+    // pelisplushd.bz: data-season / data-episode (sin href /temporada/X/capitulo/Y)
+    if (!caps.length) {
+      var reBzEp = /data-season=["'](\d+)["'][^>]*data-episode=["'](\d+)["'][^>]*>([\s\S]*?)(?=<\/a>)/gi;
+      var bm;
+      while ((bm = reBzEp.exec(html)) !== null) {
+        var bzS = parseInt(bm[1], 10);
+        var bzE = parseInt(bm[2], 10);
+        var bzKey = bzS + 'x' + bzE;
+        if (seen[bzKey]) continue;
+        seen[bzKey] = true;
+        var bzInner = bm[3] || '';
+        var bzNombre = null;
+        var bzNm = bzInner.match(/T\s*\d+\s*-\s*E\s*\d+\s*:\s*([^<\n]+)/i)
+          || bzInner.match(/E(?:pisodio)?\s*\d+\s*[:\-]\s*([^<\n]+)/i);
+        if (bzNm) bzNombre = limpiarTitulo(String(bzNm[1] || '').replace(/\s+/g, ' ').trim());
+        var sidBz = /pelisplushd\.bz/i.test(siteBase) ? '9' : '3';
+        var tipoBz = /\/anime\//i.test(pageUrl) ? 'anime' : 'serie';
+        var slugBz = (pageUrl.match(/\/(?:serie|anime)\/([^\/\?]+)/i) || [])[1] || '';
+        var srcBz = siteBase + '/' + tipoBz + '/' + slugBz + '/episodio/' + bzS + '/' + bzE;
+        var linkBz = workerOrigin && slugBz
+          ? (workerOrigin + '/' + sidBz + '/' + tipoBz + '/' + slugBz + '/' + bzS + '/' + bzE)
+          : srcBz;
+        caps.push({
+          temporada: bzS,
+          episodio: bzE,
+          nombre: bzNombre || ('Episodio ' + bzE),
+          titulo: bzNombre || ('Episodio ' + bzE),
+          link: linkBz,
+          url: linkBz,
+          source_link: srcBz,
+          back_img: null,
+          still: null,
+          reproductor: null,
+          embeds: [],
+          reproductores: []
+        });
+      }
+      if (!caps.length) {
+        var reBzEp2 = /data-episode=["'](\d+)["'][^>]*data-season=["'](\d+)["']/gi;
+        while ((bm = reBzEp2.exec(html)) !== null) {
+          var bzE2 = parseInt(bm[1], 10);
+          var bzS2 = parseInt(bm[2], 10);
+          var bzKey2 = bzS2 + 'x' + bzE2;
+          if (seen[bzKey2]) continue;
+          seen[bzKey2] = true;
+          var sidBz2 = /pelisplushd\.bz/i.test(siteBase) ? '9' : '3';
+          var tipoBz2 = /\/anime\//i.test(pageUrl) ? 'anime' : 'serie';
+          var slugBz2 = (pageUrl.match(/\/(?:serie|anime)\/([^\/\?]+)/i) || [])[1] || '';
+          var srcBz2 = siteBase + '/' + tipoBz2 + '/' + slugBz2 + '/episodio/' + bzS2 + '/' + bzE2;
+          var linkBz2 = workerOrigin && slugBz2
+            ? (workerOrigin + '/' + sidBz2 + '/' + tipoBz2 + '/' + slugBz2 + '/' + bzS2 + '/' + bzE2)
+            : srcBz2;
+          caps.push({
+            temporada: bzS2,
+            episodio: bzE2,
+            nombre: 'Episodio ' + bzE2,
+            titulo: 'Episodio ' + bzE2,
+            link: linkBz2,
+            url: linkBz2,
+            source_link: srcBz2,
+            back_img: null,
+            still: null,
+            reproductor: null,
+            embeds: [],
+            reproductores: []
+          });
+        }
+      }
+    }
+
     // Filtrar por temporada si pidieron solo una
     if (seasonOnly) {
       caps = caps.filter(function (c) { return c.temporada === seasonOnly; });
@@ -10429,11 +10507,34 @@ async function scrapearPelisplus(pageUrl, opts) {
         try {
           var srcLink = caps[j].source_link || caps[j].link;
           var r2 = await fetch(srcLink, {
-            headers: Object.assign({}, HEADERS, { 'Referer': siteBase + '/' })
+            headers: Object.assign({}, HEADERS, {
+              'Referer': siteBase + '/',
+              'Accept': 'application/json, text/html, */*'
+            })
           });
           if (!r2.ok) continue;
           var h2 = await r2.text();
-          var reps = extraerPlayurlsPelisplus(h2);
+          var reps = [];
+          if (/^\s*\{/.test(h2) && /"servers"\s*:/.test(h2)) {
+            try {
+              var j2 = JSON.parse(h2);
+              var srv = (j2 && j2.data && j2.data.servers) ? j2.data.servers : [];
+              for (var si = 0; si < srv.length; si++) {
+                var su = srv[si] && (srv[si].url || srv[si].link || srv[si].src);
+                if (!su) continue;
+                reps.push({
+                  url: su,
+                  idioma: 'Desconocido',
+                  servidor: (srv[si].name || extraerServidor(su)),
+                  tipo: 'reproductor'
+                });
+              }
+              if (!reps.length && j2 && j2.data && j2.data.html) {
+                reps = extraerPlayurlsPelisplus(String(j2.data.html));
+              }
+            } catch (eJ) { /* ignore */ }
+          }
+          if (!reps.length) reps = extraerPlayurlsPelisplus(h2);
           if (typeof expandEmbed69InReproductores === 'function') {
             reps = await expandEmbed69InReproductores(reps);
           }
@@ -10481,7 +10582,36 @@ async function scrapearPelisplus(pageUrl, opts) {
   }
 
   // Película o capítulo
-  var reproductores = extraerPlayurlsPelisplus(html);
+  var reproductores = [];
+  var jsonEpBz = null;
+  if (/^\s*\{/.test(html) && /"success"\s*:/.test(html)) {
+    try {
+      jsonEpBz = JSON.parse(html);
+      var srvBz = (jsonEpBz && jsonEpBz.data && jsonEpBz.data.servers) ? jsonEpBz.data.servers : [];
+      for (var sbi = 0; sbi < srvBz.length; sbi++) {
+        var sbu = srvBz[sbi] && (srvBz[sbi].url || srvBz[sbi].link || srvBz[sbi].src);
+        if (!sbu) continue;
+        reproductores.push({
+          url: sbu,
+          idioma: 'Desconocido',
+          servidor: (srvBz[sbi].name || extraerServidor(sbu)),
+          tipo: 'reproductor'
+        });
+      }
+      if (!reproductores.length && jsonEpBz && jsonEpBz.data && jsonEpBz.data.html) {
+        reproductores = extraerPlayurlsPelisplus(String(jsonEpBz.data.html));
+      }
+      if (jsonEpBz && jsonEpBz.data && jsonEpBz.data.serie) {
+        var serJ = jsonEpBz.data.serie;
+        if (!titulo && serJ.title) titulo = limpiarTitulo(serJ.title);
+        if (!tituloOriginal && serJ.title_original) tituloOriginal = limpiarTitulo(serJ.title_original);
+        if (!portada && serJ.image) portada = serJ.image;
+      }
+    } catch (eJsonBz) { /* ignore */ }
+  }
+  if (!reproductores.length) {
+    reproductores = extraerPlayurlsPelisplus(html);
+  }
   reproductores = await expandEmbed69InReproductores(reproductores);
   var descargas = extraerDescargas(html);
 
@@ -10501,7 +10631,19 @@ async function scrapearPelisplus(pageUrl, opts) {
     // limpiar prefijo SEO
     sinopsisEp = sinopsisEp.replace(/^Ver\s+(?:el\s+)?(?:anime|serie|pel[ií]cula)\s+.+?online gratis\.\s*/i, '').trim();
   }
-  var capMatch = pageUrl.match(/\/temporada\/(\d+)\/capitulo\/(\d+)/i);
+  if (jsonEpBz && jsonEpBz.data && jsonEpBz.data.episode) {
+    var _epj = jsonEpBz.data.episode;
+    if (_epj.title) tituloEpisodio = limpiarTitulo(_epj.title);
+    if (_epj.description) sinopsisEp = _epj.description;
+  }
+  var capMatch = pageUrl.match(/\/temporada\/(\d+)\/capitulo\/(\d+)/i)
+    || pageUrl.match(/\/episodio\/(\d+)\/(\d+)/i);
+  if (!capMatch && jsonEpBz && jsonEpBz.data && jsonEpBz.data.episode) {
+    var _epj2 = jsonEpBz.data.episode;
+    if (_epj2.season != null && _epj2.episode != null) {
+      capMatch = [null, String(_epj2.season), String(_epj2.episode)];
+    }
+  }
   
   var slugFromUrl = null;
   var sm = pageUrl.match(/\/(?:pelicula|serie|anime)\/([^\/\?#]+)/i);
@@ -10524,8 +10666,8 @@ async function scrapearPelisplus(pageUrl, opts) {
 
   return {
     success: true,
-    fuente: 'pelisplushd',
-    tipo: esCapitulo ? 'Capitulo' : 'Pelicula',
+    fuente: (/pelisplushd\.bz/i.test(siteBase) || /pelisplushd\.bz/i.test(pageUrl)) ? 'pelisplushd_bz' : 'pelisplushd',
+    tipo: esCapitulo ? 'Capitulo' : (/\/anime\//i.test(pageUrl) ? 'Anime' : 'Pelicula'),
     link: pageUrl,
     slug: slugFromUrl,
     titulo: esCapitulo && tituloEpisodio ? tituloEpisodio : titulo,
