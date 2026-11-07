@@ -9009,14 +9009,249 @@ async function listarHackstore(kind, page, limit) {
 async function buscarHackstore(query, limit) {
   var q = String(query || '').trim();
   if (!q) return [];
+  limit = limit || 30;
+  // 1) API (si vuelve a estar viva)
   try {
-    var data = await hackstoreApiGet('/v1/search', { q: q, limit: limit || 30 });
-    return ((data && data.items) || []).map(function (it) {
+    var data = await hackstoreApiGet('/v1/search', { q: q, limit: limit });
+    var mapped = ((data && data.items) || []).map(function (it) {
       return mapHackstoreListItem(it, '');
     }).filter(Boolean);
-  } catch (e) {
+    if (mapped.length) return mapped;
+  } catch (eApi) { /* API caída → HTML */ }
+  // 2) Fallback HTML (sitio WordPress)
+  try {
+    return await buscarHackstoreHtml(q, limit);
+  } catch (eHtml) {
     return [];
   }
+}
+
+async function buscarHackstoreHtml(query, limit) {
+  limit = limit || 30;
+  var q = String(query || '').trim();
+  if (!q) return [];
+  var url = HACKSTORE_BASE + '/?s=' + encodeURIComponent(q);
+  var html = await fetchText(url, Object.assign({}, HEADERS, {
+    Referer: HACKSTORE_BASE + '/',
+    Accept: 'text/html'
+  }), 15000);
+  var out = [];
+  var seen = Object.create(null);
+  var re = /href=["']((?:https?:\/\/(?:www\.)?hackstore\.fo)?\/(peliculas|series|animes)\/([^"'\/?#]+)\/?)["']/gi;
+  var m;
+  while ((m = re.exec(html)) !== null && out.length < limit) {
+    var kindPath = m[2].toLowerCase();
+    var slug = decodeURIComponent(m[3]);
+    if (!slug || seen[slug]) continue;
+    seen[slug] = true;
+    var tipo = kindPath === 'series' ? 'Serie' : kindPath === 'animes' ? 'Anime' : 'Pelicula';
+    var tipoRuta = kindPath === 'series' ? 'serie' : kindPath === 'animes' ? 'anime' : 'pelicula';
+    var full = HACKSTORE_BASE + '/' + kindPath + '/' + slug + '/';
+    // portada cercana (opcional)
+    var portada = null;
+    var slice = html.slice(Math.max(0, m.index - 400), m.index + 400);
+    var im = slice.match(/https:\/\/image\.tmdb\.org\/t\/p\/[^"'\s<>]+/i) ||
+             slice.match(/https:\/\/www\.hackstore\.fo\/wp-content\/uploads\/[^"'\s<>]+/i);
+    if (im) portada = im[0];
+    out.push({
+      title: slug.replace(/-/g, ' '),
+      titulo: slug.replace(/-/g, ' '),
+      slug: slug,
+      url: 'https://moviezone.tvjz.workers.dev/2/' + tipoRuta + '/' + encodeURIComponent(slug),
+      link: full,
+      portada: portada,
+      year: (slug.match(/-(19|20)\d{2}$/) || [])[0] ? slug.slice(-4) : null,
+      source: 'hackstore',
+      type: tipo,
+      tipo: tipo,
+      source_id: '2'
+    });
+  }
+  // Mejorar títulos desde texto visible cerca del link
+  return out;
+}
+
+async function hackstoreFollowPlayPhp(playPath, referer) {
+  if (!playPath) return null;
+  var url = playPath.indexOf('http') === 0 ? playPath : (HACKSTORE_BASE + playPath);
+  url = url.replace(/&amp;/g, '&');
+  try {
+    var html = await fetchText(url, Object.assign({}, HEADERS, {
+      Referer: referer || HACKSTORE_BASE + '/',
+      Accept: 'text/html'
+    }), 12000);
+    var m = html.match(/location\.href\s*=\s*['"]([^'"]+)['"]/i);
+    if (m) return m[1];
+    m = html.match(/src=["'](https?:\/\/[^"']+)["']/i);
+    if (m && /vimeos|streamwish|voe|vidhide|streamtape/i.test(m[1])) return m[1];
+  } catch (e) {}
+  return null;
+}
+
+async function hackstoreExtractEmbedsFromHtml(html, pageUrl) {
+  var embeds = [];
+  var seen = Object.create(null);
+  function add(u, label) {
+    if (!u || seen[u]) return;
+    seen[u] = true;
+    embeds.push({ url: u, label: label || null });
+  }
+  var plays = html.match(/\/play\.php\?[^"'\s<>]+/gi) || [];
+  for (var i = 0; i < plays.length; i++) {
+    var emb = await hackstoreFollowPlayPhp(plays[i].replace(/&amp;/g, '&'), pageUrl);
+    if (emb) add(emb, 'Online');
+  }
+  // enlaces directos a hosts conocidos
+  var direct = html.match(/https?:\/\/(?:www\.)?(?:streamwish|voe|vidhide|streamtape|filemoon|mixdrop|dood)[^"'\s<>]+/gi) || [];
+  for (var d = 0; d < direct.length; d++) add(direct[d], null);
+  return embeds;
+}
+
+async function scrapearHackstoreHtml(pageUrl, opts) {
+  opts = opts || {};
+  var seasonOnly = opts.season ? parseInt(opts.season, 10) : null;
+  var episodeOnly = opts.episode ? parseInt(opts.episode, 10) : null;
+  var u = String(pageUrl || '').replace(/\/$/, '');
+  var slug = null;
+  var kindPath = 'peliculas';
+  var m = u.match(/\/(peliculas|series|animes)\/([^\/?#]+)/i);
+  if (m) {
+    kindPath = m[1].toLowerCase();
+    slug = decodeURIComponent(m[2]);
+  }
+  var me = u.match(/\/episodio\/([^\/?#]+)/i);
+  if (me) {
+    // página de episodio directa
+    var epSlug = decodeURIComponent(me[1]);
+    var epUrl = HACKSTORE_BASE + '/episodio/' + epSlug + '/';
+    var epHtml = await fetchText(epUrl, Object.assign({}, HEADERS, { Referer: HACKSTORE_BASE + '/' }), 15000);
+    var embedsEp = await hackstoreExtractEmbedsFromHtml(epHtml, epUrl);
+    var repsEp = embedsEp.map(function (e) {
+      return mapHackstoreEmbed({ url: e.url, language: e.label || 'Latino', server: e.label || 'Online' });
+    }).filter(Boolean);
+    var sx = epSlug.match(/(\d+)x(\d+)$/i);
+    return {
+      success: true,
+      tipo: 'Capitulo',
+      fuente: 'hackstore',
+      source_id: '2',
+      slug: epSlug,
+      titulo: epSlug.replace(/-/g, ' '),
+      temporada: sx ? parseInt(sx[1], 10) : seasonOnly,
+      episodio: sx ? parseInt(sx[2], 10) : episodeOnly,
+      total: repsEp.length,
+      reproductores: repsEp,
+      link: epUrl
+    };
+  }
+  if (!slug) throw new Error('Hackstore HTML: slug no reconocido');
+
+  // Capítulo: series/animes + season/episode
+  if (seasonOnly && episodeOnly && (kindPath === 'series' || kindPath === 'animes')) {
+    var base = slug.replace(/-(19|20)\d{2}$/, '');
+    var candidates = [
+      HACKSTORE_BASE + '/episodio/' + base + '-' + seasonOnly + 'x' + episodeOnly + '/',
+      HACKSTORE_BASE + '/episodio/' + slug + '-' + seasonOnly + 'x' + episodeOnly + '/',
+      HACKSTORE_BASE + '/episodio/' + base + '-' + seasonOnly + 'x' + String(episodeOnly).padStart(2, '0') + '/'
+    ];
+    var lastErr = null;
+    for (var ci = 0; ci < candidates.length; ci++) {
+      try {
+        return await scrapearHackstoreHtml(candidates[ci], {});
+      } catch (eC) { lastErr = eC; }
+    }
+    // listar desde página de serie
+    var serieUrl = HACKSTORE_BASE + '/' + kindPath + '/' + slug + '/';
+    var serieHtml = await fetchText(serieUrl, Object.assign({}, HEADERS, { Referer: HACKSTORE_BASE + '/' }), 15000);
+    var want = new RegExp(seasonOnly + 'x' + episodeOnly + '(?:/|"|$)', 'i');
+    var epLinks = serieHtml.match(/https?:\/\/(?:www\.)?hackstore\.fo\/episodio\/[^"'\s<>]+/gi) || [];
+    for (var ei = 0; ei < epLinks.length; ei++) {
+      if (want.test(epLinks[ei])) {
+        return await scrapearHackstoreHtml(epLinks[ei], {});
+      }
+    }
+    throw lastErr || new Error('Hackstore: episodio T' + seasonOnly + 'E' + episodeOnly + ' no encontrado');
+  }
+
+  var page = HACKSTORE_BASE + '/' + kindPath + '/' + slug + '/';
+  var html = await fetchText(page, Object.assign({}, HEADERS, { Referer: HACKSTORE_BASE + '/' }), 15000);
+  if (!html || html.length < 500) throw new Error('Hackstore: no se pudo cargar ' + slug);
+
+  var title = null;
+  var mt = html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i) ||
+           html.match(/<title>([^<]+)/i);
+  if (mt) title = mt[1].replace(/\s*[\|-].*$/, '').replace(/Pelicula\s+/i, '').replace(/Serie\s+/i, '').trim();
+  var desc = null;
+  var md = html.match(/property=["']og:description["']\s+content=["']([^"']+)["']/i);
+  if (md) desc = md[1];
+  var poster = null;
+  var mi = html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i);
+  if (mi) poster = mi[1];
+
+  var tipo = kindPath === 'series' ? 'Serie' : kindPath === 'animes' ? 'Anime' : 'Pelicula';
+  var tipoRuta = kindPath === 'series' ? 'serie' : kindPath === 'animes' ? 'anime' : 'pelicula';
+
+  var embeds = await hackstoreExtractEmbedsFromHtml(html, page);
+  var reproductores = embeds.map(function (e) {
+    return mapHackstoreEmbed({ url: e.url, language: 'Latino', server: 'Online' });
+  }).filter(Boolean);
+
+  var temporadas = [];
+  if (tipo !== 'Pelicula') {
+    var epLinks2 = html.match(/https?:\/\/(?:www\.)?hackstore\.fo\/episodio\/([^"'\/\s<>]+)/gi) || [];
+    var bySeason = Object.create(null);
+    for (var j = 0; j < epLinks2.length; j++) {
+      var fullEp = epLinks2[j];
+      var sm = fullEp.match(/\/episodio\/([^\/?#]+)/i);
+      if (!sm) continue;
+      var es = decodeURIComponent(sm[1]);
+      var sxm = es.match(/(\d+)x(\d+)$/i);
+      if (!sxm) continue;
+      var sn = parseInt(sxm[1], 10);
+      var en = parseInt(sxm[2], 10);
+      if (!bySeason[sn]) bySeason[sn] = Object.create(null);
+      bySeason[sn][en] = {
+        temporada: sn,
+        episodio: en,
+        titulo: 'T' + sn + ' · E' + en,
+        link: 'https://moviezone.tvjz.workers.dev/2/' + tipoRuta + '/' + slug + '/' + sn + '/' + en,
+        slug: es
+      };
+    }
+    Object.keys(bySeason).map(Number).sort(function (a, b) { return a - b; }).forEach(function (sn) {
+      var lista = Object.keys(bySeason[sn]).map(Number).sort(function (a, b) { return a - b; }).map(function (en) {
+        return bySeason[sn][en];
+      });
+      temporadas.push({ temporada: sn, episodios: lista.length, lista: lista });
+    });
+  }
+
+  var detalle = {
+    success: true,
+    fuente: 'hackstore',
+    source_id: '2',
+    tipo: tipo,
+    link: page,
+    slug: slug,
+    titulo: title || slug.replace(/-/g, ' '),
+    portada: poster,
+    portada_fuente_raw: poster,
+    descripcion: desc || '',
+    poster_source: 'hackstore',
+    url_extract: 'https://moviezone.tvjz.workers.dev/2/' + tipoRuta + '/' + slug,
+    url_vid: 'https://moviezone.tvjz.workers.dev/2/' + tipoRuta + '/b/' + slug,
+    total: reproductores.length,
+    reproductores: reproductores,
+    embeds: reproductores.map(function (r) { return r.url; })
+  };
+  if (temporadas.length) {
+    detalle.temporadas = temporadas;
+    detalle.total_temporadas = temporadas.length;
+    var te = 0;
+    temporadas.forEach(function (t) { te += t.episodios || 0; });
+    detalle.total_episodios = te;
+  }
+  return detalle;
 }
 async function scrapearHackstoreEpisodio(pageUrl) {
   var slug = null;
@@ -9042,6 +9277,20 @@ async function scrapearHackstoreEpisodio(pageUrl) {
   };
 }
 async function scrapearHackstore(pageUrl, opts) {
+  opts = opts || {};
+  // API muerta (tmdb.hackstore.fo → 404): intentar API y si falla, HTML
+  try {
+    return await scrapearHackstoreApi(pageUrl, opts);
+  } catch (eApi) {
+    try {
+      return await scrapearHackstoreHtml(pageUrl, opts);
+    } catch (eHtml) {
+      throw new Error('No se encontro en hackstore: ' + ((eHtml && eHtml.message) || (eApi && eApi.message) || 'error'));
+    }
+  }
+}
+
+async function scrapearHackstoreApi(pageUrl, opts) {
   opts = opts || {};
   var seasonOnly = opts.season ? parseInt(opts.season, 10) : null;
   var episodeOnly = opts.episode ? parseInt(opts.episode, 10) : null;
