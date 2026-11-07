@@ -632,15 +632,21 @@ async function handleRequest(request, env) {
   // ---------- PROXY HLS (reproduce m3u8 / segmentos con CORS) ----------
   // Solo /proxy?...  (NO confundir con &proxy=1 del endpoint /resolve)
   if (parts[0] === 'proxy') {
+    // searchParams.get ya decodifica UNA vez; no volver a decodeURIComponent (rompe firmas con %)
     var proxyTarget = url.searchParams.get('url') || '';
     if (!proxyTarget) {
-      return json({ success: false, error: 'Falta url. Uso: /proxy?url={m3u8_o_segmento}' }, 400);
+      // Fallback: parseo manual por si hay & dentro de url mal codificada
+      var rawQ = (request.url.split('?')[1] || '');
+      var mUrl = rawQ.match(/(?:^|&)url=([^&]+)/);
+      if (mUrl) {
+        try { proxyTarget = decodeURIComponent(mUrl[1]); } catch (eM) { proxyTarget = mUrl[1]; }
+      }
     }
-    try {
-      proxyTarget = decodeURIComponent(proxyTarget);
-    } catch (eDec) {}
+    if (!proxyTarget) {
+      return json({ success: false, error: 'Falta url. Uso: /proxy?url={m3u8_o_segmento}&ref={referer}' }, 400);
+    }
     if (!/^https?:\/\//i.test(proxyTarget)) {
-      return json({ success: false, error: 'url debe ser http(s)' }, 400);
+      return json({ success: false, error: 'url debe ser http(s)', got: String(proxyTarget).slice(0, 80) }, 400);
     }
     try {
       return await handleProxy(request, proxyTarget);
@@ -2690,8 +2696,16 @@ function findStreamUrlsInDecoded(decoded) {
 }
 
 function pickMasterUrl(urls) {
+  if (!urls || !urls.length) return null;
+  // Preferir master SIN urlset/comas (el CDN a veces 403 en proxy con ",n,h,")
   for (var i = 0; i < urls.length; i++) {
-    if (urls[i].indexOf('master.m3u8') !== -1 || urls[i].indexOf('.m3u8') !== -1) return urls[i];
+    var u = urls[i];
+    if ((u.indexOf('master.m3u8') !== -1 || u.indexOf('.m3u8') !== -1) && u.indexOf('urlset') === -1 && u.indexOf(',') === -1) {
+      return u;
+    }
+  }
+  for (var i2 = 0; i2 < urls.length; i2++) {
+    if (urls[i2].indexOf('master.m3u8') !== -1 || urls[i2].indexOf('.m3u8') !== -1) return urls[i2];
   }
   for (var j = 0; j < urls.length; j++) {
     if (urls[j].indexOf('master.txt') !== -1 || /\.txt(\?|$)/.test(urls[j])) return urls[j];
@@ -2778,37 +2792,69 @@ function rewriteM3u8(body, baseUrl, proxyBase) {
 }
 
 async function handleProxy(request, targetUrl) {
-  var headers = {
-    'User-Agent': HEADERS['User-Agent'],
-    'Accept': '*/*'
-  };
-  try {
-    var reqUrl = new URL(request.url);
-    var refParam = reqUrl.searchParams.get('ref') || '';
-    var host = new URL(targetUrl).hostname || '';
-    if (refParam) {
-      headers['Referer'] = refParam;
-      try { headers['Origin'] = new URL(refParam).origin; } catch (eR) {}
-    } else if (host.indexOf('vimeos') !== -1) {
-      headers['Referer'] = 'https://vimeos.net/';
-    } else if (host) {
-      headers['Referer'] = 'https://' + host + '/';
-      headers['Origin'] = 'https://' + host;
-    }
-  } catch (e) {}
+  var reqUrl = new URL(request.url);
+  var refParam = reqUrl.searchParams.get('ref') || '';
+  var host = '';
+  try { host = new URL(targetUrl).hostname || ''; } catch (eH) {}
 
-  var upstream = await fetchWithTimeout(targetUrl, { headers: headers, redirect: 'follow' }, 15000);
+  // Referers a probar (vimeos CDN suele exigir vimeos.net)
+  var referers = [];
+  if (refParam) referers.push(refParam);
+  if (host.indexOf('vimeos') !== -1) {
+    referers.push('https://vimeos.net/');
+    referers.push('https://www.vimeos.net/');
+    referers.push('https://vimeos.zip/');
+  }
+  if (host) referers.push('https://' + host + '/');
+  // dedupe
+  var seenR = Object.create(null);
+  var refs = [];
+  for (var ri = 0; ri < referers.length; ri++) {
+    var rr = String(referers[ri] || '').trim();
+    if (!rr || seenR[rr]) continue;
+    seenR[rr] = 1;
+    refs.push(rr);
+  }
+  if (!refs.length) refs.push('https://vimeos.net/');
+
+  var upstream = null;
+  var usedRef = refs[0];
+  for (var ti = 0; ti < refs.length; ti++) {
+    usedRef = refs[ti];
+    var headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Accept': '*/*',
+      'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+      'Referer': usedRef,
+      'Origin': (function () { try { return new URL(usedRef).origin; } catch (e) { return 'https://vimeos.net'; } })(),
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'cross-site'
+    };
+    try {
+      upstream = await fetchWithTimeout(targetUrl, { headers: headers, redirect: 'follow' }, 18000);
+      if (upstream && upstream.status < 400) break;
+      // 403/401: probar otro referer
+      if (upstream && (upstream.status === 403 || upstream.status === 401)) continue;
+      if (upstream && upstream.status >= 400) continue;
+      break;
+    } catch (eF) {
+      upstream = null;
+    }
+  }
+
+  if (!upstream) {
+    return json({ success: false, error: 'Proxy: sin respuesta del CDN', target: String(targetUrl).slice(0, 120) }, 502);
+  }
+
   var ct = (upstream.headers.get('content-type') || '').toLowerCase();
   var buf = await upstream.arrayBuffer();
   var isM3u8 = ct.indexOf('mpegurl') !== -1 || ct.indexOf('m3u8') !== -1 ||
-    /\.m3u8(\?|$)/i.test(targetUrl) || /\.txt(\?|$)/i.test(targetUrl);
+    /\.m3u8(\?|$)/i.test(targetUrl) || /\.txt(\?|$)/i.test(targetUrl) ||
+    (buf && buf.byteLength < 500000 && new TextDecoder().decode(buf.slice(0, 8)).indexOf('#EXT') === 0);
 
   var origin = new URL(request.url).origin;
-  var proxyBase = origin + '/proxy?url=';
-  try {
-    var refKeep = new URL(request.url).searchParams.get('ref');
-    if (refKeep) proxyBase = origin + '/proxy?ref=' + encodeURIComponent(refKeep) + '&url=';
-  } catch (eRef) {}
+  var proxyBase = origin + '/proxy?ref=' + encodeURIComponent(usedRef) + '&url=';
 
   if (isM3u8) {
     var text = new TextDecoder().decode(buf);
@@ -2818,16 +2864,33 @@ async function handleProxy(request, targetUrl) {
         status: 200,
         headers: Object.assign({}, corsHeaders(), {
           'Content-Type': 'application/vnd.apple.mpegurl',
-          'Cache-Control': 'no-cache'
+          'Cache-Control': 'no-cache',
+          'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges'
         })
       });
     }
   }
 
+  // Si el CDN devolvió 403 HTML, avisar claro
+  if (upstream.status >= 400) {
+    var snip = '';
+    try { snip = new TextDecoder().decode(buf).slice(0, 120); } catch (eS) {}
+    return json({
+      success: false,
+      error: 'CDN HTTP ' + upstream.status,
+      target: String(targetUrl).slice(0, 160),
+      referer: usedRef,
+      body: snip
+    }, 502);
+  }
+
   var h = Object.assign({}, corsHeaders(), {
     'Content-Type': ct || 'application/octet-stream',
-    'Cache-Control': 'public, max-age=60'
+    'Cache-Control': 'public, max-age=60',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges'
   });
+  if (upstream.headers.get('accept-ranges')) h['Accept-Ranges'] = upstream.headers.get('accept-ranges');
+  if (upstream.headers.get('content-range')) h['Content-Range'] = upstream.headers.get('content-range');
   return new Response(buf, { status: upstream.status, headers: h });
 }
 
@@ -3098,13 +3161,41 @@ async function resolveVimeosEmbed(embedUrl, origin) {
   var master = pickMasterUrl(urls);
   var playlist = '';
   var variants = [];
-  try {
-    playlist = await fetchText(master, headers, 10000);
-    if (playlist.indexOf('#EXTM3U') !== -1) variants = parseHlsVariants(playlist, master);
-  } catch (e) {}
+  // Intentar leer el master con varios referers (el CDN a veces 403 a IPs de CF)
+  var tryRefs = [usedReferer, 'https://vimeos.net/', 'https://www.vimeos.net/', 'https://vimeos.zip/'];
+  for (var tr = 0; tr < tryRefs.length && !variants.length; tr++) {
+    try {
+      var hTry = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+        'Referer': tryRefs[tr],
+        'Origin': (function () { try { return new URL(tryRefs[tr]).origin; } catch (e) { return 'https://vimeos.net'; } })()
+      };
+      playlist = await fetchText(master, hTry, 12000);
+      if (playlist && playlist.indexOf('#EXTM3U') !== -1) {
+        variants = parseHlsVariants(playlist, master);
+        if (variants.length) usedReferer = tryRefs[tr];
+      }
+    } catch (ePl) { playlist = ''; }
+  }
 
   var selected = selectVariant(variants, 720);
+  // Preferir variante concreta (sin comas/urlset) — el proxy falla menos
   var finalUrl = selected ? selected.url : master;
+  if ((!selected || !selected.url) && playlist && playlist.indexOf('#EXT') !== -1) {
+    // Si no hubo STREAM-INF, usar el master igual
+    finalUrl = master;
+  }
+  // Evitar devolver urlset con comas si hay alguna alternativa limpia en urls
+  if (finalUrl && (finalUrl.indexOf(',') !== -1 || finalUrl.indexOf('urlset') !== -1)) {
+    for (var ui = 0; ui < urls.length; ui++) {
+      if (urls[ui].indexOf('.m3u8') !== -1 && urls[ui].indexOf(',') === -1 && urls[ui].indexOf('urlset') === -1) {
+        finalUrl = urls[ui];
+        break;
+      }
+    }
+  }
   var quality = selected && selected.height ? selected.height + 'p' : null;
   var resolution = selected && selected.height ? (selected.width + 'x' + selected.height) : null;
 
