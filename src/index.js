@@ -2938,20 +2938,131 @@ async function resolveVimeosEmbed(embedUrl, origin) {
     return cached;
   }
 
-  var headers = {
-    'User-Agent': HEADERS['User-Agent'],
-    'Referer': 'https://vimeos.net/',
-    'Accept': HEADERS['Accept']
-  };
-  var html = await fetchText(embedUrl, headers, 12000);
-  var decoded = unpackPacker(html);
-  var urls = findStreamUrlsInDecoded(decoded);
+  // Referers: embeds con ?cf= (pelisplustv / videoapi) exigen origen permitido.
+  // Sin cf, el referer clásico de vimeos suele bastar.
+  var referers = [];
+  try {
+    var eu = new URL(embedUrl);
+    if (eu.searchParams.get('cf')) {
+      referers.push('https://player.pelisplustv.lat/');
+      referers.push('https://pelisplustv.lat/');
+      referers.push('https://www.pelisplustv.lat/');
+      // Intentar orígenes del JWT (ao / pm)
+      try {
+        var cf = eu.searchParams.get('cf') || '';
+        var body = cf.split('.')[1] || '';
+        body = body.replace(/-/g, '+').replace(/_/g, '/');
+        while (body.length % 4) body += '=';
+        var jsonStr = null;
+        try {
+          if (typeof atob === 'function') jsonStr = atob(body);
+        } catch (e0) {}
+        if (!jsonStr) {
+          // Workers: Buffer no siempre; fallback manual
+          var b64 = body;
+          var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+          var str = '';
+          for (var bi = 0; bi < b64.length; bi += 4) {
+            var e1 = chars.indexOf(b64.charAt(bi));
+            var e2 = chars.indexOf(b64.charAt(bi + 1));
+            var e3 = chars.indexOf(b64.charAt(bi + 2));
+            var e4 = chars.indexOf(b64.charAt(bi + 3));
+            var n1 = (e1 << 2) | (e2 >> 4);
+            var n2 = ((e2 & 15) << 4) | (e3 >> 2);
+            var n3 = ((e3 & 3) << 6) | e4;
+            str += String.fromCharCode(n1);
+            if (e3 !== 64 && b64.charAt(bi + 2) !== '=') str += String.fromCharCode(n2);
+            if (e4 !== 64 && b64.charAt(bi + 3) !== '=') str += String.fromCharCode(n3);
+          }
+          jsonStr = str;
+        }
+        var payload = JSON.parse(jsonStr);
+        var aos = [].concat(payload.ao || [], payload.pm || []);
+        for (var ai = 0; ai < aos.length; ai++) {
+          var a = String(aos[ai] || '');
+          if (a.indexOf('http') === 0) referers.push(a.replace(/\/?$/, '/') );
+        }
+        if (payload.origin && String(payload.origin).indexOf('http') === 0) {
+          referers.push(String(payload.origin).replace(/\/?$/, '/'));
+        }
+      } catch (eCf) {}
+    }
+  } catch (eU) {}
+  referers.push('https://vimeos.net/');
+  // dedupe
+  var seenRef = Object.create(null);
+  var refs = [];
+  for (var ri = 0; ri < referers.length; ri++) {
+    var rf = referers[ri];
+    if (!rf || seenRef[rf]) continue;
+    seenRef[rf] = true;
+    refs.push(rf);
+  }
+
+  var html = '';
+  var usedReferer = refs[0] || 'https://vimeos.net/';
+  for (var rj = 0; rj < refs.length; rj++) {
+    var headersTry = {
+      'User-Agent': HEADERS['User-Agent'],
+      'Referer': refs[rj],
+      'Origin': refs[rj].replace(/\/$/, ''),
+      'Accept': HEADERS['Accept'] || 'text/html,application/xhtml+xml'
+    };
+    try {
+      var htmlTry = await fetchText(embedUrl, headersTry, 12000);
+      if (htmlTry && (
+        htmlTry.indexOf('m3u8') !== -1 ||
+        htmlTry.indexOf('VIDAPI_CF_STREAM_RESPONSE') !== -1 ||
+        htmlTry.indexOf('eval(function(p,a,c,k,e,d)') !== -1 ||
+        htmlTry.length > 5000
+      )) {
+        html = htmlTry;
+        usedReferer = refs[rj];
+        break;
+      }
+      if (!html || htmlTry.length > html.length) {
+        html = htmlTry || html;
+        usedReferer = refs[rj];
+      }
+    } catch (eFetch) {}
+  }
+  if (!html) throw new Error('No se pudo cargar el embed vimeos');
+
+  var urls = [];
+  // Formato videoapi / pelisplustv: window.VIDAPI_CF_STREAM_RESPONSE
+  var mCf = html.match(/VIDAPI_CF_STREAM_RESPONSE\s*=\s*(\{[\s\S]*?\});/);
+  if (mCf) {
+    try {
+      var cfObj = JSON.parse(mCf[1]);
+      var streams = (cfObj && cfObj.data && cfObj.data.stream_urls) || [];
+      for (var si = 0; si < streams.length; si++) {
+        if (streams[si]) urls.push(String(streams[si]));
+      }
+    } catch (eJson) {}
+  }
+  // m3u8 directo en HTML
   if (!urls.length) {
-    var m3 = decoded.match(/https?:\/\/[^"'\s<>]+\.m3u8(?:\?[^"'\s<>]*)?/gi) || [];
-    urls = m3.filter(function (u, i, a) { return a.indexOf(u) === i; });
+    var m3direct = html.match(/https?:\/\/[^"'\s<>]+\.m3u8(?:\?[^"'\s<>]*)?/gi) || [];
+    urls = m3direct.filter(function (u, i, a) { return a.indexOf(u) === i; });
+  }
+  // Packer clásico (embeds vimeos viejos)
+  if (!urls.length) {
+    try {
+      var decoded = unpackPacker(html);
+      urls = findStreamUrlsInDecoded(decoded);
+      if (!urls.length) {
+        var m3 = decoded.match(/https?:\/\/[^"'\s<>]+\.m3u8(?:\?[^"'\s<>]*)?/gi) || [];
+        urls = m3.filter(function (u, i, a) { return a.indexOf(u) === i; });
+      }
+    } catch (ePk) {}
   }
   if (!urls.length) throw new Error('No se encontró ninguna fuente HLS (vimeos)');
 
+  var headers = {
+    'User-Agent': HEADERS['User-Agent'],
+    'Referer': usedReferer,
+    'Accept': HEADERS['Accept']
+  };
   var master = pickMasterUrl(urls);
   var playlist = '';
   var variants = [];
@@ -2975,11 +3086,14 @@ async function resolveVimeosEmbed(embedUrl, origin) {
     url: finalUrl,
     master: master,
     all_sources: urls,
-    variants: variants
+    variants: variants,
+    referer: usedReferer
   };
   if (origin) {
-    out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(finalUrl);
-    out.proxy_master = origin + '/proxy?url=' + encodeURIComponent(master);
+    var refQ = '&ref=' + encodeURIComponent(usedReferer);
+    out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(finalUrl) + refQ;
+    out.proxy_master = origin + '/proxy?url=' + encodeURIComponent(master) + refQ;
+    out.play_url = out.proxy_url;
   }
   cacheSet(cacheKey, out);
   return out;
