@@ -9785,57 +9785,136 @@ async function buscarPelisplusBz(query, limit) {
 }
 
 
+function normalizarIdiomaLamovie(lang) {
+  var s = String(lang || '').trim();
+  if (!s) return 'Desconocido';
+  var low = s.toLowerCase();
+  // Dual: "Latino - Inglés", "Lat-Eng", etc.
+  if (/dual|latino\s*[-–\/]\s*ingl|lat\s*[-+\/]\s*eng|multi/i.test(low)) return 'Dual';
+  if (/(^|[\s\-])lat(ino)?\b/.test(low) && !/sub/.test(low)) return 'Latino';
+  if (/sub|subt/.test(low)) return 'Subtitulado';
+  if (/cast|espa[nñ]ol(?!\s*latino)/.test(low)) return 'Castellano';
+  if (/ingl|english|\beng\b/.test(low) && !/lat/.test(low)) return 'Inglés';
+  return s;
+}
+
+function langCodeLamovie(idioma) {
+  var s = String(idioma || '').toLowerCase();
+  if (s.indexOf('dual') !== -1) return 'DUAL';
+  if (s.indexOf('latino') !== -1 || s === 'lat') return 'LAT';
+  if (s.indexOf('sub') !== -1) return 'SUB';
+  if (s.indexOf('cast') !== -1) return 'CAST';
+  if (s.indexOf('ingl') !== -1 || s.indexOf('english') !== -1) return 'ENG';
+  return null;
+}
+
+/** Extrae postId del HTML de la ficha (fallback si /search no devuelve hits). */
+async function buscarPostIdDesdeHtml(slug) {
+  slug = String(slug || '').replace(/^\/+|\/+$/g, '');
+  if (!slug) return null;
+  var paths = [
+    LAMOVIE_BASE + '/peliculas/' + slug + '/',
+    LAMOVIE_BASE + '/movies/' + slug + '/',
+    LAMOVIE_BASE + '/series/' + slug + '/',
+    LAMOVIE_BASE + '/tvshows/' + slug + '/',
+    LAMOVIE_BASE + '/animes/' + slug + '/',
+    LAMOVIE_BASE + '/anime/' + slug + '/'
+  ];
+  for (var i = 0; i < paths.length; i++) {
+    try {
+      var res = await fetch(paths[i], {
+        headers: Object.assign({}, HEADERS, {
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+          'Accept': 'text/html',
+          'Referer': LAMOVIE_BASE + '/'
+        }),
+        redirect: 'follow'
+      });
+      if (!res.ok) continue;
+      var html = await res.text();
+      if (!html || html.length < 400) continue;
+      if (/no encontrad|not found|404/i.test(html.slice(0, 2000))) continue;
+      var m =
+        html.match(/post_type=(?:movies|tvshows|animes)&p=(\d+)/i) ||
+        html.match(/[?&]p=(\d{3,})/i) ||
+        html.match(/["']_id["']\s*:\s*(\d+)/i) ||
+        html.match(/postId["']?\s*[:=]\s*["']?(\d+)/i) ||
+        html.match(/data-post[_-]?id=["']?(\d+)/i);
+      if (m && m[1]) {
+        return { postId: Number(m[1]) || m[1], post: { _id: Number(m[1]) || m[1], slug: slug }, from: 'html' };
+      }
+    } catch (eH) { /* next path */ }
+  }
+  return null;
+}
+
 async function buscarPostIdPorSlug(slug) {
+  slug = String(slug || '').replace(/^\/+|\/+$/g, '');
+  if (!slug) return null;
+
   var queries = [];
+  function addQ(q) {
+    q = String(q || '').replace(/\s+/g, ' ').trim();
+    if (q && queries.indexOf(q) === -1) queries.push(q);
+  }
   var q1 = slugAQuery(slug) || slug;
-  queries.push(q1);
-  // Sin año al final del query: "diario de una pasion 2004" → "diario de una pasion"
-  var q2 = String(q1).replace(/\s+(19|20)\d{2}\s*$/, '').trim();
-  if (q2 && q2 !== q1) queries.push(q2);
-  // Solo slug sin guiones
-  if (slug && queries.indexOf(slug) === -1) queries.push(slug);
+  addQ(q1);
+  addQ(String(q1).replace(/\s+(19|20)\d{2}\s*$/, ''));
+  addQ(slug);
+  addQ(String(slug).replace(/-\d{4}$/, ''));
+  // Queries progresivas: la API a veces no encuentra frases largas
+  // ("spider man un nuevo dia" → 0) pero sí "spider-man" / "spider"
+  var words = String(q1).split(/\s+/).filter(Boolean);
+  for (var n = words.length - 1; n >= 1; n--) {
+    addQ(words.slice(0, n).join(' '));
+  }
+  if (words.length) addQ(words[0]);
+
+  var postTypes = ['any', 'movies', 'tvshows', 'animes'];
+  var slugNoYear = String(slug).replace(/-\d{4}$/, '');
 
   for (var qi = 0; qi < queries.length; qi++) {
     var query = queries[qi];
-    if (!query) continue;
-    try {
-      var url = LAMOVIE_API + '/search?postType=any&q=' + encodeURIComponent(query) + '&postsPerPage=15';
-      var res = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
-          'Accept': 'application/json',
-          'Referer': LAMOVIE_BASE + '/'
-        }
-      });
-      if (!res.ok) continue;
-      var data = await res.json();
-      var posts = [];
-      if (data && data.data && data.data.posts) posts = data.data.posts;
-      else if (data && data.data && Array.isArray(data.data)) posts = data.data;
-      if (!Array.isArray(posts) || posts.length === 0) continue;
+    for (var pti = 0; pti < postTypes.length; pti++) {
+      try {
+        var url = LAMOVIE_API + '/search?postType=' + encodeURIComponent(postTypes[pti]) +
+          '&q=' + encodeURIComponent(query) + '&postsPerPage=20';
+        var res = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+            'Accept': 'application/json',
+            'Referer': LAMOVIE_BASE + '/'
+          }
+        });
+        if (!res.ok) continue;
+        var data = await res.json();
+        var posts = [];
+        if (data && data.data && data.data.posts) posts = data.data.posts;
+        else if (data && data.data && Array.isArray(data.data)) posts = data.data;
+        if (!Array.isArray(posts) || posts.length === 0) continue;
 
-      // Match exacto de slug
-      for (var i = 0; i < posts.length; i++) {
-        if (posts[i].slug === slug) return { postId: posts[i]._id, post: posts[i] };
-      }
-      // Slug sin año
-      var slugNoYear = String(slug).replace(/-\d{4}$/, '');
-      for (var i2 = 0; i2 < posts.length; i2++) {
-        if (posts[i2].slug === slugNoYear || posts[i2].slug === slug) {
-          return { postId: posts[i2]._id, post: posts[i2] };
+        for (var i = 0; i < posts.length; i++) {
+          if (posts[i].slug === slug) return { postId: posts[i]._id, post: posts[i] };
         }
-      }
-      for (var j = 0; j < posts.length; j++) {
-        if (posts[j].slug && (posts[j].slug.indexOf(slugNoYear) !== -1 || slugNoYear.indexOf(posts[j].slug) !== -1)) {
-          return { postId: posts[j]._id, post: posts[j] };
+        for (var i2 = 0; i2 < posts.length; i2++) {
+          if (posts[i2].slug === slugNoYear) return { postId: posts[i2]._id, post: posts[i2] };
         }
-      }
-      // Primer resultado solo si el título se parece
-      if (posts[0] && posts[0]._id) {
-        return { postId: posts[0]._id, post: posts[0] };
-      }
-    } catch (eQ) { /* next query */ }
+        for (var j = 0; j < posts.length; j++) {
+          var ps = String(posts[j].slug || '');
+          if (ps && (ps === slug || ps.indexOf(slugNoYear) === 0)) {
+            return { postId: posts[j]._id, post: posts[j] };
+          }
+        }
+      } catch (eQ) { /* next */ }
+    }
   }
+
+  // Fallback HTML: en la ficha viene p=90147 aunque /search falle
+  try {
+    var htmlHit = await buscarPostIdDesdeHtml(slug);
+    if (htmlHit && htmlHit.postId) return htmlHit;
+  } catch (eHtml) { /* ok */ }
+
   return null;
 }
 
@@ -9869,10 +9948,24 @@ async function getPlayerLamovie(postId) {
     if (!u || vistos[u]) continue;
     if (!esReproductorValido(u)) continue;
     vistos[u] = true;
+    var idiRaw = (e && (e.lang || e.language || e.idioma)) || '';
+    var idiNorm = (typeof normalizarIdiomaLamovie === 'function')
+      ? normalizarIdiomaLamovie(idiRaw)
+      : (idiRaw || 'Desconocido');
+    var srv = (e && e.server) || extraerServidor(u);
+    // Si server es genérico "LaMovie", usar host real
+    if (!srv || /^lamovie$/i.test(String(srv))) {
+      try { srv = extraerServidor(u) || srv; } catch (_) {}
+    }
     embeds.push({
       url: u,
-      idioma: (e && (e.lang || e.language || e.idioma)) || 'Desconocido',
-      servidor: (e && e.server) || extraerServidor(u),
+      idioma: idiNorm,
+      language: idiNorm,
+      lang: idiNorm,
+      lang_code: (typeof langCodeLamovie === 'function') ? langCodeLamovie(idiNorm) : null,
+      servidor: srv,
+      server: srv,
+      name: srv,
       calidad: (e && (e.quality || e.calidad)) || null,
       tipo: 'reproductor'
     });
@@ -9884,9 +9977,16 @@ async function getPlayerLamovie(postId) {
     if (!du || vistos[du]) continue;
     if (!esDescargaValida(du)) continue;
     vistos[du] = true;
+    var dlIdi = (dl && (dl.lang || dl.language || dl.idioma)) || '';
+    var dlIdiN = (typeof normalizarIdiomaLamovie === 'function')
+      ? normalizarIdiomaLamovie(dlIdi)
+      : (dlIdi || null);
     downloads.push({
       url: du,
       servidor: (dl && dl.server) || extraerServidor(du),
+      idioma: dlIdiN,
+      language: dlIdiN,
+      lang_code: (typeof langCodeLamovie === 'function') ? langCodeLamovie(dlIdiN) : null,
       calidad: (dl && (dl.quality || dl.calidad)) || null,
       size: (dl && dl.size) || null,
       tipo: 'descarga'
