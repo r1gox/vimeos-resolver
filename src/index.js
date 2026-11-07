@@ -8419,7 +8419,8 @@ async function buscarUniversal(query, sourceFilter, limit) {
     var c = cadena[i];
     if (sourceFilter !== 'all' && c.aliases.indexOf(sourceFilter) === -1) continue;
     if (sourceFilter === 'all') {
-      if (c.id === 'pelisplushd' || c.id === 'lamovie' || c.id === 'hackstore') continue;
+      // 10 (pelisplustv) aislado: solo /10/... o source=pelisplustv
+      if (c.id === 'pelisplushd' || c.id === 'lamovie' || c.id === 'hackstore' || c.id === 'pelisplustv') continue;
     }
     var tms = (c.id === 'animeav1') ? 12000
       : ((c.id === 'pelisplushd' || c.id === 'pelisplushd_bz') ? 15000 : 8000);
@@ -8683,9 +8684,17 @@ function mapHackstoreListItem(it, origin) {
   var kindPath = tipo === 'Serie' ? 'serie' : tipo === 'Anime' ? 'anime' : 'pelicula';
   var url = (origin || '') + '/2/' + kindPath + '/' + encodeURIComponent(slug);
   if (it.tmdb_id) url += '?tmdb_id=' + encodeURIComponent(it.tmdb_id);
+  function cleanHsTitle(tt) {
+    tt = String(tt || '').trim();
+    tt = tt.replace(/\s*Descargar\s+Espa[nñ]ol\s+Latino.*/i, '');
+    tt = tt.replace(/\s*Online\s+Gratis.*/i, '');
+    tt = tt.replace(/\s*Ver\s+Online.*/i, '');
+    return tt.trim() || slug;
+  }
+  var titleHs = cleanHsTitle(it.title || it.original_title || slug);
   return {
-    title: it.title || it.original_title || slug,
-    titulo: it.title || it.original_title || slug,
+    title: titleHs,
+    titulo: titleHs,
     slug: slug,
     url: url,
     link: HACKSTORE_BASE + '/' + (kind === 'tvshow' ? 'series' : kind === 'anime' ? 'animes' : 'peliculas') + '/' + slug,
@@ -8721,7 +8730,13 @@ function mapHackstoreDetalle(it, origin, extras) {
     tipo: tipo,
     link: HACKSTORE_BASE + '/' + (kind === 'tvshow' ? 'series' : kind === 'anime' ? 'animes' : 'peliculas') + '/' + slug,
     slug: slug,
-    titulo: it.title || it.original_title || slug,
+    titulo: (function () {
+      var tt = String(it.title || it.original_title || slug || '').trim();
+      tt = tt.replace(/\s*Descargar\s+Espa\S*ol\s+Latino.*/i, '');
+      tt = tt.replace(/\s*Online\s+Gratis.*/i, '');
+      tt = tt.replace(/\s*Ver\s+Online.*/i, '');
+      return tt.trim() || slug;
+    })(),
     titulo_original: it.original_title || null,
     portada: hackstoreImg(it.poster_path, 'w500'),
     portada_fuente_raw: hackstoreImg(it.poster_path, 'original'),
@@ -8855,19 +8870,29 @@ async function hackstoreResolveBySlug(slug, preferKind) {
     }
   }
 
+  function normSlug(s) {
+    return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '').replace(/^(the|el|la)/, '');
+  }
   function pickHit(items, wantSlug) {
     if (!items || !items.length) return null;
     var want = String(wantSlug || '').toLowerCase();
+    var wantN = normSlug(wantSlug);
     var exact = null;
-    var partial = null;
+    var normExact = null;
+    // Solo match exacto (o normalizado). NUNCA items[0] ni parcial flojo (revuelve titulos).
     for (var j = 0; j < items.length; j++) {
       var is = String(items[j].slug || '').toLowerCase();
+      var isN = normSlug(items[j].slug);
       if (is === want) { exact = items[j]; break; }
-      if (!partial && want && (is.indexOf(want) !== -1 || want.indexOf(is) !== -1)) {
-        partial = items[j];
+      // reacher === reacher-2022 solo si la base sin año coincide y el query no trae año distinto
+      if (!normExact && wantN && isN === wantN) normExact = items[j];
+      if (!normExact && wantN && isN.indexOf(wantN) === 0 && isN.length - wantN.length <= 4) {
+        // permitir sufijo año 4 digitos: reacher → reacher2022
+        var suf = isN.slice(wantN.length);
+        if (/^(19|20)\d{2}$/.test(suf)) normExact = items[j];
       }
     }
-    return exact || partial || items[0] || null;
+    return exact || normExact || null;
   }
 
   async function searchOnce(q) {
@@ -8917,23 +8942,7 @@ async function hackstoreResolveBySlug(slug, preferKind) {
   for (var qi2 = 0; qi2 < uniq.length && !hit; qi2++) {
     var items = await searchOnce(uniq[qi2]);
     hit = pickHit(items, slug);
-    // Si hay match exacto de slug, listo; si no, seguir buscando exacto
-    if (hit && String(hit.slug || '').toLowerCase() === slug.toLowerCase()) break;
-    if (hit && qi2 < uniq.length - 1) {
-      // guardar candidato pero seguir por si aparece exacto
-      var maybe = hit;
-      hit = null;
-      for (var qi3 = qi2 + 1; qi3 < uniq.length; qi3++) {
-        var items2 = await searchOnce(uniq[qi3]);
-        var h2 = pickHit(items2, slug);
-        if (h2 && String(h2.slug || '').toLowerCase() === slug.toLowerCase()) {
-          hit = h2;
-          break;
-        }
-      }
-      if (!hit) hit = maybe;
-      break;
-    }
+    if (hit) break; // pickHit ya exige match exacto/normalizado
   }
 
   if (!hit || !hit.tmdb_id) return hit || null;
@@ -9371,6 +9380,14 @@ async function scrapearHackstoreApi(pageUrl, opts) {
   }
   if (!card) card = await hackstoreResolveBySlug(slug, preferKind);
   if (!card) throw new Error('Hackstore: no encontrado ' + slug);
+  // No mezclar: si el slug de la card no cuadra con el pedido, rechazar
+  if (card.slug && slug) {
+    var a = String(card.slug).toLowerCase().replace(/[^a-z0-9]/g, '');
+    var b = String(slug).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (a && b && a !== b && a.indexOf(b) !== 0 && b.indexOf(a) !== 0) {
+      throw new Error('Hackstore: slug no coincide (pedido=' + slug + ', api=' + card.slug + ')');
+    }
+  }
 
   var kind = String(card.kind || preferKind || 'movie').toLowerCase();
 
