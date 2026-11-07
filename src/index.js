@@ -2797,15 +2797,20 @@ async function handleProxy(request, targetUrl) {
   var host = '';
   try { host = new URL(targetUrl).hostname || ''; } catch (eH) {}
 
-  // Referers a probar (vimeos CDN suele exigir vimeos.net)
+  // Referers a probar. NUNCA usar s1.vimeos.net / p6.vimeos.zip como Referer principal
   var referers = [];
-  if (refParam) referers.push(refParam);
-  if (host.indexOf('vimeos') !== -1) {
+  var isVimeos = host.indexOf('vimeos') !== -1;
+  if (isVimeos) {
     referers.push('https://vimeos.net/');
     referers.push('https://www.vimeos.net/');
+    if (refParam && refParam.indexOf('vimeos.net') !== -1 && refParam.indexOf('vimeos.zip') === -1) {
+      referers.push(refParam);
+    }
     referers.push('https://vimeos.zip/');
+  } else {
+    if (refParam) referers.push(refParam);
+    if (host) referers.push('https://' + host + '/');
   }
-  if (host) referers.push('https://' + host + '/');
   // dedupe
   var seenR = Object.create(null);
   var refs = [];
@@ -2878,8 +2883,12 @@ async function handleProxy(request, targetUrl) {
     return json({
       success: false,
       error: 'CDN HTTP ' + upstream.status,
-      target: String(targetUrl).slice(0, 160),
+      code: upstream.status === 403 ? 'CDN_BLOCKED' : 'CDN_ERROR',
+      target: String(targetUrl).slice(0, 200),
       referer: usedRef,
+      direct_url: targetUrl,
+      headers: { Referer: 'https://vimeos.net/', Origin: 'https://vimeos.net' },
+      hint: 'El CDN de Vimeos bloquea el proxy (IPs Cloudflare). Usa direct_url con header Referer: https://vimeos.net/ en el player nativo, o reproduce el embed en iframe.',
       body: snip
     }, 502);
   }
@@ -3212,11 +3221,20 @@ async function resolveVimeosEmbed(embedUrl, origin) {
     variants: variants,
     referer: usedReferer
   };
+  // Headers que debe enviar el cliente nativo (Roku / ExoPlayer) si usa url directa
+  out.headers = { 'Referer': 'https://vimeos.net/', 'Origin': 'https://vimeos.net' };
+  out.referer = 'https://vimeos.net/';
   if (origin) {
-    var refQ = '&ref=' + encodeURIComponent(usedReferer);
+    // ref fijo a vimeos.net (no al host del CDN)
+    var refQ = '&ref=' + encodeURIComponent('https://vimeos.net/');
     out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(finalUrl) + refQ;
     out.proxy_master = origin + '/proxy?url=' + encodeURIComponent(master) + refQ;
-    out.play_url = out.proxy_url;
+    // El CDN de vimeos bloquea IPs de Cloudflare → el proxy suele dar 403.
+    // play_url = directo para apps que pueden mandar Referer; proxy_url por si acaso.
+    out.play_url = finalUrl;
+    out.play_url_proxy = out.proxy_url;
+    out.proxy_may_fail = true;
+    out.note = 'Si /proxy da 403, usa "url"/"play_url" con header Referer: https://vimeos.net/ (Roku/ExoPlayer). El CDN bloquea IPs de Cloudflare.';
   }
   cacheSet(cacheKey, out);
   return out;
