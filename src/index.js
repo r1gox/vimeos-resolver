@@ -28,6 +28,8 @@ var HACKSTORE_API = 'https://tmdb.hackstore.fo';
 var HACKSTORE_TMDB_IMG = 'https://image.tmdb.org/t/p/';
 var PELISPLUS_BASE = 'https://www.pelisplushd.la';
 var PELISPLUS_BZ_BASE = 'https://pelisplushd.bz';
+var PELISPLUSTV_BASE = 'https://pelisplustv.lat';
+var PELISPLUSTV_PLAYER = 'https://player.pelisplustv.lat';
 // NO mezclar dominios PelisPlus: .la (fuente 3), .bz (fuente 9) y .to son catálogos distintos.
 var PELISPLUS_TO_BASE = 'https://pelisplushd.la'; // referencia; NO usar como espejo de .bz
 
@@ -759,7 +761,8 @@ async function handleRequest(request, env) {
         '5': 'jkanime',
         '6': 'doramasflix',
         '7': 'futbollibre',
-        '9': 'pelisplushd_bz'
+        '9': 'pelisplushd_bz',
+        '10': 'pelisplustv'
       },
       endpoints: {
         search: origin + '/search?q={texto}',
@@ -814,7 +817,7 @@ async function handleRequest(request, env) {
         bz_search: origin + '/9/search?q=the+office',
         search_3: origin + '/3/search?q=matrix'
       },
-      nota: 'IDs de fuente: 1=lamovie, 2=hackstore, 3=pelisplushd, 4=animeav1, 9=pelisplushd_bz. Van en la ruta: /{id}/anime/{slug}',
+      nota: 'IDs de fuente: 1=lamovie, 2=hackstore, 3=pelisplushd, 4=animeav1, 9=pelisplushd_bz, 10=pelisplustv. Van en la ruta: /{id}/anime/{slug}',
       meta: 'Búsqueda y detalle se enriquecen con TMDB (géneros, sinopsis, rating, poster, backdrop, temporadas)'
     });
   }
@@ -1257,7 +1260,7 @@ async function handleRequest(request, env) {
         !sourceParam &&
         pathSrc &&
         pathSrc !== 'search' &&
-        ['lamovie', 'hackstore', 'pelisplushd', 'pelisplushd_bz', 'animeav1', 'jkanime', 'doramasflix'].indexOf(pathSrc) !== -1
+        ['lamovie', 'hackstore', 'pelisplushd', 'pelisplushd_bz', 'pelisplustv', 'animeav1', 'jkanime', 'doramasflix'].indexOf(pathSrc) !== -1
       ) {
         sourceFilter = pathSrc;
       }
@@ -1274,6 +1277,7 @@ async function handleRequest(request, env) {
       else if (parts[0] === '2' || parts[0] === 'hackstore') sourceFilter = 'hackstore';
       else if (parts[0] === '6' || parts[0] === 'doramasflix') sourceFilter = 'doramasflix';
       else if (parts[0] === '5' || parts[0] === 'jkanime') sourceFilter = 'jkanime';
+      else if (parts[0] === '10' || parts[0] === 'pelisplustv' || parts[0] === 'pptv') sourceFilter = 'pelisplustv';
     }
     var resultados = await buscarUniversal(query, sourceFilter, limit);
       if (resultados.resultados) {
@@ -1589,7 +1593,7 @@ async function handleRequest(request, env) {
         search: origin + '/search?q=matrix'
       },
       sources: { '1': 'lamovie', '2': 'hackstore', '3': 'pelisplushd', '4': 'animeav1',
-        '6': 'doramasflix', '9': 'pelisplushd_bz' }
+        '6': 'doramasflix', '9': 'pelisplushd_bz', '10': 'pelisplustv' }
     }, 400);
   }
 
@@ -1600,6 +1604,8 @@ async function handleRequest(request, env) {
     var resultado;
     if (source === 'pelisplushd' || source === 'pelisplushd_bz') {
       resultado = await scrapearPelisplus(targetUrl, commonOpts);
+    } else if (source === 'pelisplustv') {
+      resultado = await scrapearPelisplustv(targetUrl, commonOpts);
     } else if (source === 'hackstore') {
       resultado = await scrapearHackstore(targetUrl, commonOpts);
     } else if (source === 'jkanime') {
@@ -1657,6 +1663,7 @@ function normalizarSourceId(s) {
   if (s === '6' || s === 'doramasflix' || s === 'doramas' || s === 'dfx') return 'doramasflix';
   if (s === '5' || s === 'jkanime' || s === 'jk') return 'jkanime';
   if (s === '9' || s === 'pelisplushd_bz' || s === 'ppbz' || s === 'pelisplushd.bz' || s === 'bz') return 'pelisplushd_bz';
+  if (s === '10' || s === 'pelisplustv' || s === 'pptv' || s === 'pelisplustv.lat') return 'pelisplustv';
   return '';
 }
 
@@ -1670,6 +1677,7 @@ function sourceIdFromName(name) {
   if (name === 'futbollibre' || name === 'futbol') return '7';
   if (name === 'lamovie') return '1';
   if (name === 'pelisplushd_bz') return '9';
+  if (name === 'pelisplustv') return '10';
   return '1';
 }
 
@@ -1682,6 +1690,7 @@ function sourceNameFromId(id) {
   if (id === '9' || id === 'pelisplushd_bz' || id === 'ppbz') return 'pelisplushd_bz';
   if (id === '1' || id === 'lamovie' || id === 'lm') return 'lamovie';
   if (id === '5' || id === 'jkanime' || id === 'jk') return 'jkanime';
+  if (id === '10' || id === 'pelisplustv' || id === 'pptv') return 'pelisplustv';
   return id || '';
 }
 
@@ -1725,10 +1734,14 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
       add('lamovie', LAMOVIE_BASE + '/peliculas/' + s + '/');
       add('hackstore', HACKSTORE_BASE + '/peliculas/' + s + '/');
       add('doramasflix', DORAMASFLIX_BASE + '/peliculas/' + s);
+      // pelisplustv.lat (solo si se fuerza /10/…; no altera cascada normal)
+      add('pelisplustv', PELISPLUSTV_BASE + '/api/rest/v1/content/movie/' + s);
     } else if (tipoRuta === 'anime') {
       // ANIME: fuentes de anime primero
       add('jkanime', JKANIME_BASE + '/' + s + '/');
       add('animeav1', ANIMEAV1_BASE + '/media/' + s);
+      add('pelisplustv', PELISPLUSTV_BASE + '/api/rest/v1/content/tv/' + s);
+      add('pelisplustv', PELISPLUSTV_BASE + '/api/rest/v1/content/anime/' + s);
       add('pelisplushd_bz', PELISPLUS_BZ_BASE + '/anime/' + s);
       add('pelisplushd', PELISPLUS_BASE + '/anime/' + s + '/');
       add('lamovie', LAMOVIE_BASE + '/animes/' + s + '/');
@@ -1740,6 +1753,7 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
     } else {
       // SERIE / dorama: NO poner animeav1 primero (mete películas live-action como Anime)
       add('doramasflix', DORAMASFLIX_BASE + '/doramas/' + s);
+      add('pelisplustv', PELISPLUSTV_BASE + '/api/rest/v1/content/tv/' + s);
       add('pelisplushd_bz', PELISPLUS_BZ_BASE + '/serie/' + s);
       add('pelisplushd', PELISPLUS_BASE + '/serie/' + s + '/');
       add('lamovie', LAMOVIE_BASE + '/series/' + s + '/');
@@ -1870,6 +1884,7 @@ async function scrapearPorSlug(tipoRuta, slug, sourceParam, opts, origin) {
       var r;
       var o2 = Object.assign({}, opts);
       if (c.fuente === 'pelisplushd' || c.fuente === 'pelisplushd_bz') r = await scrapearPelisplus(c.url, o2);
+      else if (c.fuente === 'pelisplustv') r = await scrapearPelisplustv(c.url, o2);
       else if (c.fuente === 'animeav1') r = await scrapearAnimeAv1(c.url, o2);
       else if (c.fuente === 'doramasflix') r = await scrapearDoramasflix(c.url, o2);
       else if (c.fuente === 'hackstore') r = await scrapearHackstore(c.url, o2);
@@ -8229,6 +8244,7 @@ async function buscarUniversal(query, sourceFilter, limit) {
     { id: 'doramasflix', aliases: ['doramasflix', '6', 'doramas', 'dfx'], fn: function () { return buscarDoramasflix(q, limit); } },
     { id: 'pelisplushd_bz', aliases: ['pelisplushd_bz', '9', 'ppbz', 'bz'], fn: function () { return buscarPelisplusBz(q, limit); } },
     { id: 'pelisplushd', aliases: ['pelisplushd', 'pelisplus', '3', 'pp'], fn: function () { return buscarPelisplus(q, limit); } },
+    { id: 'pelisplustv', aliases: ['pelisplustv', '10', 'pptv'], fn: function () { return buscarPelisplustv(q, limit); } },
     { id: 'lamovie', aliases: ['lamovie', '1', 'lm'], fn: function () { return buscarLamovie(q, limit); } },
     { id: 'hackstore', aliases: ['hackstore', '2', 'hs'], fn: function () { return buscarHackstore(q, limit); } }
   ];
@@ -14461,3 +14477,370 @@ async function scrapearJkanime(pageUrlOrSlug, opts) {
     url_extract: 'https://moviezone.tvjz.workers.dev/5/' + kindPathDet + '/' + slug
   };
 }
+
+
+/* ========== pelisplustv.lat (source_id 10) — solo agregado ========== */
+function pptvHeaders() {
+  return {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/html, */*',
+    'Referer': PELISPLUSTV_BASE + '/',
+    'Origin': PELISPLUSTV_BASE
+  };
+}
+
+async function pptvGetJson(pathOrUrl) {
+  var u = String(pathOrUrl || '');
+  if (u.indexOf('http') !== 0) u = PELISPLUSTV_BASE + (u.charAt(0) === '/' ? u : '/' + u);
+  var res = await fetch(u, { headers: pptvHeaders() });
+  if (!res.ok) throw new Error('pelisplustv HTTP ' + res.status + ' ' + u);
+  return res.json();
+}
+
+function pptvPoster(path) {
+  if (!path) return '';
+  if (String(path).indexOf('http') === 0) return path;
+  return 'https://image.tmdb.org/t/p/w500' + (path.charAt(0) === '/' ? path : '/' + path);
+}
+
+function pptvBackdrop(path) {
+  if (!path) return '';
+  if (String(path).indexOf('http') === 0) return path;
+  return 'https://image.tmdb.org/t/p/w1280' + (path.charAt(0) === '/' ? path : '/' + path);
+}
+
+function pptvKindToTipo(kind) {
+  kind = String(kind || '').toLowerCase();
+  if (kind === 'movie' || kind === 'pelicula' || kind === 'película') return 'Pelicula';
+  if (kind === 'anime') return 'Anime';
+  return 'Serie';
+}
+
+function pptvKindToPath(kind) {
+  kind = String(kind || '').toLowerCase();
+  if (kind === 'movie' || kind === 'pelicula' || kind === 'película') return 'pelicula';
+  if (kind === 'anime') return 'anime';
+  return 'serie';
+}
+
+function pptvContentKind(kind) {
+  kind = String(kind || '').toLowerCase();
+  if (kind === 'movie' || kind === 'pelicula' || kind === 'película') return 'movie';
+  if (kind === 'anime') return 'anime';
+  return 'tv';
+}
+
+async function extraerEmbedPelisplustvPlayer(playerUrl) {
+  if (!playerUrl) return null;
+  var res = await fetch(playerUrl, {
+    headers: Object.assign({}, pptvHeaders(), { Accept: 'text/html,application/xhtml+xml' })
+  });
+  if (!res.ok) return null;
+  var html = await res.text();
+  var m = html.match(/src=["'](https?:\/\/(?:www\.)?vimeos\.net\/[^"']+)["']/i);
+  if (m) return m[1].replace(/&amp;/g, '&');
+  m = html.match(/https?:\/\/(?:www\.)?vimeos\.net\/embed-[a-z0-9]+\.html[^"'\\\s]*/i);
+  if (m) return m[0].replace(/&amp;/g, '&');
+  return null;
+}
+
+async function buscarPelisplustv(query, limit) {
+  limit = limit || 15;
+  var q = String(query || '').trim();
+  if (!q) return [];
+  var data = await pptvGetJson('/api/rest/v1/search?q=' + encodeURIComponent(q) + '&_cv=1');
+  var items = (data && data.items) || [];
+  var out = [];
+  var seen = Object.create(null);
+  for (var i = 0; i < items.length && out.length < limit; i++) {
+    var it = items[i] || {};
+    var slug = String(it.slug || '').trim();
+    if (!slug || seen[slug]) continue;
+    seen[slug] = true;
+    var kind = it.kind || 'movie';
+    var tipo = pptvKindToTipo(kind);
+    var tipoPath = pptvKindToPath(kind);
+    var poster = pptvPoster(it.poster_path);
+    out.push({
+      title: it.title || slug,
+      titulo: it.title || slug,
+      slug: slug,
+      url: 'https://moviezone.tvjz.workers.dev/10/' + tipoPath + '/' + slug,
+      link: PELISPLUSTV_BASE + (it.url || ('/' + tipoPath + '/' + slug)),
+      portada: poster,
+      year: it.year ? String(it.year) : '',
+      source: 'pelisplustv',
+      type: tipo,
+      source_id: '10',
+      tmdb_id: it.tmdb_id || null
+    });
+  }
+  return out;
+}
+
+async function scrapearPelisplustv(pageUrl, opts) {
+  opts = opts || {};
+  var seasonOnly = opts.season ? parseInt(opts.season, 10) : null;
+  var episodeOnly = opts.episode ? parseInt(opts.episode, 10) : null;
+  var u = String(pageUrl || '');
+  var kind = 'movie';
+  var slug = '';
+
+  var mApi = u.match(/\/api\/rest\/v1\/content\/(movie|tv|anime|serie)\/([^\/\?\#]+)/i);
+  var mPage = u.match(/pelisplustv\.lat\/(pelicula|serie|anime)\/([^\/\?\#]+)/i);
+  if (mApi) {
+    kind = mApi[1].toLowerCase() === 'serie' ? 'tv' : mApi[1].toLowerCase();
+    slug = decodeURIComponent(mApi[2]);
+  } else if (mPage) {
+    var kp = mPage[1].toLowerCase();
+    kind = kp === 'pelicula' ? 'movie' : (kp === 'anime' ? 'anime' : 'tv');
+    slug = decodeURIComponent(mPage[2]);
+  } else if (u && u.indexOf('http') !== 0 && u.indexOf('/') === -1) {
+    slug = u;
+    kind = opts.tipoRuta === 'serie' || opts.tipoRuta === 'anime' ? 'tv' : 'movie';
+    if (opts.tipoRuta === 'anime') kind = 'anime';
+  } else {
+    throw new Error('pelisplustv: URL/slug no reconocido');
+  }
+
+  // Probar content kinds
+  var contentKinds = kind === 'movie' ? ['movie'] : (kind === 'anime' ? ['anime', 'tv'] : ['tv', 'anime']);
+  var data = null;
+  var usedKind = kind;
+  var lastErr = null;
+  for (var ci = 0; ci < contentKinds.length; ci++) {
+    try {
+      data = await pptvGetJson('/api/rest/v1/content/' + contentKinds[ci] + '/' + encodeURIComponent(slug) + '?_cv=1');
+      usedKind = contentKinds[ci];
+      break;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (!data || !data.item) {
+    throw new Error((lastErr && lastErr.message) || ('No se encontro "' + slug + '" en pelisplustv'));
+  }
+
+  var item = data.item;
+  var tipo = pptvKindToTipo(item.kind || usedKind);
+  var tipoPath = pptvKindToPath(item.kind || usedKind);
+  var tmdbId = item.tmdb_id || null;
+  var itemId = item.catalog_item_id || null;
+  var poster = pptvPoster(item.poster_path);
+  var backdrop = pptvBackdrop(item.backdrop_path);
+  var logo = item.logo_path ? pptvPoster(item.logo_path).replace('/w500', '/original') : null;
+  if (item.logo_path && String(item.logo_path).indexOf('http') !== 0) {
+    logo = 'https://image.tmdb.org/t/p/original' + (item.logo_path.charAt(0) === '/' ? item.logo_path : '/' + item.logo_path);
+  }
+
+  // Capítulo
+  if (seasonOnly && episodeOnly) {
+    if (!itemId) throw new Error('pelisplustv: sin item_id para episodios');
+    var epData = await pptvGetJson(
+      '/api/rest/v1/episodes?item_id=' + encodeURIComponent(itemId) +
+      '&season=' + seasonOnly + '&page=1&limit=50&_cv=1'
+    );
+    var eps = (epData && epData.episodes) || [];
+    var ep = null;
+    for (var ei = 0; ei < eps.length; ei++) {
+      if (Number(eps[ei].episode) === Number(episodeOnly) && Number(eps[ei].season || seasonOnly) === Number(seasonOnly)) {
+        ep = eps[ei];
+        break;
+      }
+    }
+    // más páginas
+    if (!ep && epData && epData.total_pages > 1) {
+      for (var pg = 2; pg <= Math.min(epData.total_pages, 6) && !ep; pg++) {
+        var epData2 = await pptvGetJson(
+          '/api/rest/v1/episodes?item_id=' + encodeURIComponent(itemId) +
+          '&season=' + seasonOnly + '&page=' + pg + '&limit=50&_cv=1'
+        );
+        var eps2 = (epData2 && epData2.episodes) || [];
+        for (var e2 = 0; e2 < eps2.length; e2++) {
+          if (Number(eps2[e2].episode) === Number(episodeOnly)) { ep = eps2[e2]; break; }
+        }
+      }
+    }
+    if (!ep) throw new Error('pelisplustv: episodio T' + seasonOnly + 'E' + episodeOnly + ' no encontrado');
+    var playerUrl = ep.player_url || (tmdbId ? (PELISPLUSTV_PLAYER + '/e/tv/' + tmdbId + '/' + seasonOnly + '/' + episodeOnly) : '');
+    var embed = await extraerEmbedPelisplustvPlayer(playerUrl);
+    var reproductores = [];
+    if (embed) {
+      reproductores.push({
+        url: embed,
+        link: embed,
+        idioma: 'Latino',
+        language: 'LATINO',
+        lang_code: 'LAT',
+        servidor: 'Vimeos',
+        server: 'vimeos',
+        name: 'Vimeos',
+        tipo: 'reproductor',
+        provider: 'vimeos',
+        fuente: 'pelisplustv'
+      });
+    }
+    if (playerUrl) {
+      reproductores.push({
+        url: playerUrl,
+        link: playerUrl,
+        idioma: 'Latino',
+        language: 'LATINO',
+        lang_code: 'LAT',
+        servidor: 'PelisplusTV',
+        server: 'pelisplustv',
+        name: 'PelisplusTV',
+        tipo: 'reproductor',
+        iframe: true,
+        provider: 'pelisplustv',
+        fuente: 'pelisplustv'
+      });
+    }
+    return {
+      success: true,
+      tipo: 'Capitulo',
+      fuente: 'pelisplustv',
+      source_id: '10',
+      slug: slug,
+      titulo: ep.title || (item.title + ' T' + seasonOnly + 'E' + episodeOnly),
+      temporada: seasonOnly,
+      episodio: episodeOnly,
+      descripcion: ep.overview || '',
+      back_img: ep.still_path ? pptvBackdrop(ep.still_path).replace('/w1280', '/w780') : null,
+      total: reproductores.length,
+      reproductores: reproductores,
+      link: PELISPLUSTV_BASE + (ep.url || ''),
+      player_url: playerUrl
+    };
+  }
+
+  // Detalle película / serie
+  var reproductoresDet = [];
+  var playerUrlDet = item.player_url || '';
+  if (!playerUrlDet && tmdbId && (item.kind === 'movie' || usedKind === 'movie')) {
+    playerUrlDet = PELISPLUSTV_PLAYER + '/e/movie/' + tmdbId;
+  }
+  if (playerUrlDet && (item.kind === 'movie' || usedKind === 'movie' || tipo === 'Pelicula')) {
+    var embedDet = await extraerEmbedPelisplustvPlayer(playerUrlDet);
+    if (embedDet) {
+      reproductoresDet.push({
+        url: embedDet,
+        link: embedDet,
+        idioma: 'Latino',
+        language: 'LATINO',
+        lang_code: 'LAT',
+        servidor: 'Vimeos',
+        server: 'vimeos',
+        name: 'Vimeos',
+        tipo: 'reproductor',
+        provider: 'vimeos',
+        fuente: 'pelisplustv'
+      });
+    }
+    reproductoresDet.push({
+      url: playerUrlDet,
+      link: playerUrlDet,
+      idioma: 'Latino',
+      language: 'LATINO',
+      lang_code: 'LAT',
+      servidor: 'PelisplusTV',
+      server: 'pelisplustv',
+      name: 'PelisplusTV',
+      tipo: 'reproductor',
+      iframe: true,
+      provider: 'pelisplustv',
+      fuente: 'pelisplustv'
+    });
+  }
+
+  var temporadas = [];
+  var seasonsMeta = data.episode_seasons || [];
+  if ((!seasonsMeta || !seasonsMeta.length) && itemId) {
+    try {
+      var sm = await pptvGetJson('/api/rest/v1/episode-seasons?item_id=' + encodeURIComponent(itemId) + '&_cv=1');
+      seasonsMeta = (sm && sm.seasons) || [];
+    } catch (eS) {}
+  }
+  for (var si = 0; si < seasonsMeta.length; si++) {
+    var sn = Number(seasonsMeta[si].season || (si + 1));
+    var lista = [];
+    var count = Number(seasonsMeta[si].count || seasonsMeta[si].playable_count || 0);
+    // cargar episodios de la temporada (páginas)
+    try {
+      var page = 1;
+      var totalPages = 1;
+      do {
+        var epPage = await pptvGetJson(
+          '/api/rest/v1/episodes?item_id=' + encodeURIComponent(itemId) +
+          '&season=' + sn + '&page=' + page + '&limit=50&_cv=1'
+        );
+        totalPages = Number(epPage.total_pages || 1);
+        var batch = epPage.episodes || [];
+        for (var bi = 0; bi < batch.length; bi++) {
+          var epr = batch[bi];
+          var epN = Number(epr.episode);
+          lista.push({
+            temporada: sn,
+            episodio: epN,
+            titulo: epr.title || ('Episodio ' + epN),
+            link: 'https://moviezone.tvjz.workers.dev/10/' + tipoPath + '/' + slug + '/' + sn + '/' + epN,
+            back_img: epr.still_path ? ('https://image.tmdb.org/t/p/w780' + epr.still_path) : null,
+            descripcion: epr.overview || ''
+          });
+        }
+        page++;
+      } while (page <= totalPages && page <= 20);
+    } catch (eEp) {
+      for (var fi = 1; fi <= count; fi++) {
+        lista.push({
+          temporada: sn,
+          episodio: fi,
+          link: 'https://moviezone.tvjz.workers.dev/10/' + tipoPath + '/' + slug + '/' + sn + '/' + fi
+        });
+      }
+    }
+    temporadas.push({
+      temporada: sn,
+      episodios: lista.length,
+      lista: lista
+    });
+  }
+
+  var detalle = {
+    success: true,
+    fuente: 'pelisplustv',
+    source_id: '10',
+    tipo: tipo,
+    link: PELISPLUSTV_BASE + (item.url || ('/' + tipoPath + '/' + slug)),
+    slug: slug,
+    titulo: item.title || slug,
+    titulo_original: item.original_title || null,
+    portada: poster,
+    portada_fuente_raw: poster,
+    logo: logo,
+    backdrop: backdrop,
+    descripcion: item.overview || data.overview || '',
+    year: item.year ? String(item.year) : '',
+    fecha_estreno: item.release_date || item.first_air_date || null,
+    rating: item.vote_average != null ? item.vote_average : null,
+    rating_source: item.vote_average != null ? 'tmdb' : null,
+    generos: (item.genres || []).map(function (g) { return g.title || g.name || g; }),
+    duracion_texto: item.runtime ? (item.runtime + ' min') : null,
+    imdb_id: item.imdb_id || (item.external_ids && item.external_ids.imdb_id) || null,
+    tmdb_id: tmdbId,
+    poster_source: 'pelisplustv',
+    url_extract: 'https://moviezone.tvjz.workers.dev/10/' + tipoPath + '/' + slug,
+    url_vid: 'https://moviezone.tvjz.workers.dev/10/' + tipoPath + '/b/' + slug,
+    total: reproductoresDet.length,
+    reproductores: reproductoresDet
+  };
+  if (temporadas.length) {
+    detalle.temporadas = temporadas;
+    detalle.total_temporadas = temporadas.length;
+    var te = 0;
+    for (var ti = 0; ti < temporadas.length; ti++) te += temporadas[ti].episodios || 0;
+    detalle.total_episodios = te;
+  }
+  return detalle;
+}
+
