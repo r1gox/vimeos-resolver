@@ -10421,18 +10421,36 @@ async function listarHackstoreCatalogo(seccion, filtro, page, origin) {
     var kindPath = (m[2].match(/peliculas|series|animes/i) || [''])[0].toLowerCase();
     var slug = decodeURIComponent(m[3] || '');
     if (!slug || seen[slug]) continue;
+    if (/^(feed|page|random|login|register|search|tag|category|author|wp-admin)$/i.test(slug)) continue;
     if (kindPath === 'peliculas' && seccion !== 'peliculas') continue;
     if (kindPath === 'series' && seccion !== 'series') continue;
     if (kindPath === 'animes' && seccion !== 'animes') continue;
     seen[slug] = true;
-    var slice = html.slice(Math.max(0, m.index - 500), m.index + 600);
+    // DESPUES del href: el title/alt de atras pertenece a la tarjeta ANTERIOR (slugs cruzados)
+    var sliceAfter = html.slice(m.index, Math.min(html.length, m.index + 1200));
+    var anchorEnd = sliceAfter.indexOf('>');
+    var anchorTag = anchorEnd > 0 ? sliceAfter.slice(0, anchorEnd + 1) : '';
     var portada = null;
-    var im = slice.match(/https:\/\/image\.tmdb\.org\/t\/p\/[^"'\s<>]+/i) ||
-             slice.match(/https:\/\/(?:www\.)?hackstore\.fo\/wp-content\/uploads\/[^"'\s<>]+/i);
+    var im = sliceAfter.match(/https:\/\/image\.tmdb\.org\/t\/p\/[^"'\s<>]+/i) ||
+             sliceAfter.match(/https:\/\/(?:www\.)?hackstore\.fo\/wp-content\/uploads\/[^"'\s<>]+/i);
     if (im) portada = im[0];
-    var titulo = slug.replace(/-/g, ' ');
-    var tm = slice.match(/title=["']([^"']+)["']/i) || slice.match(/alt=["']([^"']+)["']/i);
-    if (tm && tm[1] && tm[1].length > 2) titulo = tm[1].trim();
+    var titulo = '';
+    var tmA = anchorTag.match(/title=["']([^"']+)["']/i);
+    if (tmA && tmA[1]) titulo = tmA[1].trim();
+    if (!titulo || titulo.length < 2) {
+      var tmImg = sliceAfter.match(/<img[^>]+alt=["']([^"']+)["']/i);
+      if (tmImg && tmImg[1]) titulo = tmImg[1].trim();
+    }
+    if (!titulo || titulo.length < 2) {
+      var tmH = sliceAfter.match(/<h[123][^>]*>\s*(?:<a[^>]*>)?\s*([^<]{3,120})/i);
+      if (tmH && tmH[1]) titulo = tmH[1].trim();
+    }
+    if (!titulo || titulo.length < 2) titulo = slug.replace(/-/g, ' ');
+    titulo = titulo.replace(/\s*[-–|]\s*Hackstore.*$/i, '').trim();
+    titulo = titulo.replace(/\s*Descargar\s+Espa\S*ol.*/i, '').trim();
+    if (/hackstore\.fo/i.test(titulo) || /^oficial$/i.test(titulo)) {
+      titulo = slug.replace(/-/g, ' ');
+    }
     items.push({
       titulo: titulo,
       title: titulo,
@@ -10445,6 +10463,7 @@ async function listarHackstoreCatalogo(seccion, filtro, page, origin) {
       portada: portada,
       url: origin + '/2/' + tipoPath + '/' + encodeURIComponent(slug),
       url_extract: origin + '/2/' + tipoPath + '/' + encodeURIComponent(slug),
+      url_vid: origin + '/2/' + tipoPath + '/b/' + encodeURIComponent(slug),
       link: HACKSTORE_BASE + '/' + kindPath + '/' + slug + '/'
     });
   }
