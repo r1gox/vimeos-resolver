@@ -903,25 +903,42 @@ async function handleRequest(request, env) {
           catalogo = await listarAnimeAv1Catalogo(filtroAv1, pageNum, origin);
         }
       } else {
-        // PelisPlus (flujo original)
-        if (srcCat !== 'pelisplushd' && srcCat !== '3' && srcCat !== 'pelisplushd_bz' && srcCat !== '9' && srcCat !== 'ppbz') {
-          if (String(parts[0]) !== '3' && parts[0] !== 'pelisplushd' && parts[0] !== 'pp' && String(parts[0]) !== '9' && parts[0] !== 'pelisplushd_bz' && parts[0] !== 'ppbz') {
-            return json({
-              success: false,
-              error: 'Catalogos: PelisPlus /3/... o AnimeAV1 /4/animes/estrenos',
-              ejemplos: {
-                pelisplus: origin + '/3/peliculas/estrenos',
-                animeav1: origin + '/4/animes/estrenos'
-              }
-            }, 400);
+        // Hackstore (2) / Lamovie (1) / PelisPlus (3|9)
+        var esHsCat =
+          String(parts[0]) === '2' || parts[0] === 'hackstore' || parts[0] === 'hs' ||
+          srcCat === 'hackstore' || srcCat === '2';
+        var esLmCat =
+          String(parts[0]) === '1' || parts[0] === 'lamovie' || parts[0] === 'lm' ||
+          srcCat === 'lamovie' || srcCat === '1';
+
+        if (esHsCat) {
+          catalogo = await listarHackstoreCatalogo(catSeccion, catFiltro || null, pageNum, origin);
+        } else if (esLmCat) {
+          catalogo = await listarLamovieCatalogo(catSeccion, catFiltro || null, pageNum, origin);
+        } else {
+          // PelisPlus (flujo original)
+          if (srcCat !== 'pelisplushd' && srcCat !== '3' && srcCat !== 'pelisplushd_bz' && srcCat !== '9' && srcCat !== 'ppbz') {
+            if (String(parts[0]) !== '3' && parts[0] !== 'pelisplushd' && parts[0] !== 'pp' && String(parts[0]) !== '9' && parts[0] !== 'pelisplushd_bz' && parts[0] !== 'ppbz') {
+              return json({
+                success: false,
+                error: 'Catalogos: /1|2|3|9/peliculas|series|animes?page=  o AnimeAV1 /4/...',
+                ejemplos: {
+                  lamovie: origin + '/1/peliculas?page=1',
+                  hackstore: origin + '/2/peliculas?page=1',
+                  pelisplus: origin + '/3/peliculas/estrenos',
+                  bz: origin + '/9/peliculas?page=1',
+                  animeav1: origin + '/4/animes/estrenos'
+                }
+              }, 400);
+            }
           }
+          var catBase = PELISPLUS_BASE;
+          if (srcCat === 'pelisplushd_bz' || srcCat === '9' || srcCat === 'ppbz' || srcCat === 'bz' ||
+              String(parts[0]) === '9' || parts[0] === 'pelisplushd_bz' || parts[0] === 'ppbz') {
+            catBase = PELISPLUS_BZ_BASE;
+          }
+          catalogo = await listarPelisplusCatalogo(catSeccion, catFiltro || null, pageNum, origin, catBase);
         }
-        var catBase = PELISPLUS_BASE;
-        if (srcCat === 'pelisplushd_bz' || srcCat === '9' || srcCat === 'ppbz' || srcCat === 'bz' ||
-            String(parts[0]) === '9' || parts[0] === 'pelisplushd_bz' || parts[0] === 'ppbz') {
-          catBase = PELISPLUS_BZ_BASE;
-        }
-        catalogo = await listarPelisplusCatalogo(catSeccion, catFiltro || null, pageNum, origin, catBase);
       }
       // Home AV1: recientes + agregados (estructura propia)
       if (catalogo && catalogo.success && (catalogo.recientes || catalogo.agregados || catalogo.seccion === 'recientes' || catalogo.seccion === 'agregados')) {
@@ -937,12 +954,27 @@ async function handleRequest(request, env) {
           }
         } catch (eCat) { /* ok */ }
       }
+      // Home 1/2: estructura con peliculas/series/animes
+      if (catalogo && catalogo.seccion === 'home' && (catalogo.peliculas || catalogo.series || catalogo.animes)) {
+        return json(catalogo);
+      }
       var catLista = (catalogo && catalogo.resultados) ? catalogo.resultados : [];
+      var fuenteCat = 'pelisplushd';
+      if (esAnimeAv1Cat) fuenteCat = 'animeav1';
+      else if (String(parts[0]) === '9' || parts[0] === 'pelisplushd_bz' || parts[0] === 'ppbz') fuenteCat = 'pelisplushd_bz';
+      else if (String(parts[0]) === '2' || parts[0] === 'hackstore' || parts[0] === 'hs') fuenteCat = 'hackstore';
+      else if (String(parts[0]) === '1' || parts[0] === 'lamovie' || parts[0] === 'lm') fuenteCat = 'lamovie';
+      else if (catalogo && catalogo.fuente) fuenteCat = catalogo.fuente;
       return json({
+        success: true,
         page: pageNum || 1,
         count: catLista.length,
         results: catLista,
-        fuente: esAnimeAv1Cat ? 'animeav1' : ((String(parts[0]) === '9' || parts[0] === 'pelisplushd_bz' || parts[0] === 'ppbz') ? 'pelisplushd_bz' : 'pelisplushd')
+        resultados: catLista,
+        fuente: fuenteCat,
+        source_id: catalogo && catalogo.source_id ? catalogo.source_id : null,
+        seccion: catalogo && catalogo.seccion ? catalogo.seccion : catSeccion,
+        filtro: catalogo && catalogo.filtro ? catalogo.filtro : (catFiltro || 'todas')
       });
     } catch (err) {
       return json({ success: false, error: err.message }, 500);
@@ -10287,6 +10319,220 @@ function extraerPlayurlsPelisplus(html) {
 
   return reproductores;
 }
+
+
+
+/* ========== Catálogos Hackstore (2) y Lamovie (1) — como /9/peliculas?page= ========== */
+async function listarHackstoreCatalogo(seccion, filtro, page, origin) {
+  seccion = (seccion || 'peliculas').toLowerCase();
+  filtro = (filtro || '').toLowerCase();
+  page = page || 1;
+  origin = origin || '';
+
+  if (seccion === 'home') {
+    var pel = await listarHackstoreCatalogo('peliculas', '', 1, origin);
+    var ser = await listarHackstoreCatalogo('series', '', 1, origin);
+    var ani = await listarHackstoreCatalogo('animes', '', 1, origin);
+    return {
+      success: true,
+      fuente: 'hackstore',
+      source_id: '2',
+      seccion: 'home',
+      page: 1,
+      peliculas: (pel && pel.resultados) || [],
+      series: (ser && ser.resultados) || [],
+      animes: (ani && ani.resultados) || [],
+      total: ((pel && pel.total) || 0) + ((ser && ser.total) || 0) + ((ani && ani.total) || 0)
+    };
+  }
+
+  var pathCat = '/peliculas';
+  var tipoItem = 'Pelicula';
+  var tipoPath = 'pelicula';
+  if (seccion === 'series' || seccion === 'serie') {
+    pathCat = '/series'; tipoItem = 'Serie'; tipoPath = 'serie'; seccion = 'series';
+  } else if (seccion === 'animes' || seccion === 'anime') {
+    pathCat = '/animes'; tipoItem = 'Anime'; tipoPath = 'anime'; seccion = 'animes';
+  } else {
+    pathCat = '/peliculas'; seccion = 'peliculas';
+  }
+
+  try {
+    var kindApi = seccion === 'series' ? 'tvshow' : seccion === 'animes' ? 'anime' : 'movie';
+    if (filtro === 'estrenos' || filtro === 'now' || filtro === 'recien') {
+      var rawN = await hackstoreApiGet('/v1/now');
+      var itemsN = ((rawN && rawN.items) || []).map(function (it) {
+        return mapHackstoreListItem(it, origin);
+      }).filter(Boolean);
+      if (itemsN.length) {
+        return {
+          success: true, fuente: 'hackstore', source_id: '2',
+          seccion: seccion, filtro: filtro || 'estrenos', page: 1,
+          total: itemsN.length, resultados: itemsN
+        };
+      }
+    } else {
+      var raw = await hackstoreApiGet('/v1/items', { kind: kindApi, page: page, limit: 24 });
+      var itemsA = ((raw && raw.items) || []).map(function (it) {
+        return mapHackstoreListItem(it, origin);
+      }).filter(Boolean);
+      if (itemsA.length) {
+        var pag = (raw && raw.pagination) || {};
+        return {
+          success: true, fuente: 'hackstore', source_id: '2',
+          seccion: seccion, filtro: filtro || 'todas', page: page,
+          total: pag.total || itemsA.length, total_pages: pag.total_pages || null,
+          resultados: itemsA
+        };
+      }
+    }
+  } catch (eApi) { /* HTML */ }
+
+  var listUrl = HACKSTORE_BASE + pathCat + '/';
+  if (page > 1) listUrl = HACKSTORE_BASE + pathCat + '/page/' + page + '/';
+  var html = await fetchText(listUrl, Object.assign({}, HEADERS, {
+    Referer: HACKSTORE_BASE + '/',
+    Accept: 'text/html'
+  }), 18000);
+  if (!html || html.length < 500) throw new Error('Hackstore catalogo vacio ' + pathCat);
+
+  var items = [];
+  var seen = Object.create(null);
+  var re = /href=["']((?:https?:\/\/(?:www\.)?hackstore\.fo)?(\/?(?:peliculas|series|animes)\/([^"'\/?#]+))\/?)["']/gi;
+  var m;
+  while ((m = re.exec(html)) !== null) {
+    var kindPath = (m[2].match(/peliculas|series|animes/i) || [''])[0].toLowerCase();
+    var slug = decodeURIComponent(m[3] || '');
+    if (!slug || seen[slug]) continue;
+    if (kindPath === 'peliculas' && seccion !== 'peliculas') continue;
+    if (kindPath === 'series' && seccion !== 'series') continue;
+    if (kindPath === 'animes' && seccion !== 'animes') continue;
+    seen[slug] = true;
+    var slice = html.slice(Math.max(0, m.index - 500), m.index + 600);
+    var portada = null;
+    var im = slice.match(/https:\/\/image\.tmdb\.org\/t\/p\/[^"'\s<>]+/i) ||
+             slice.match(/https:\/\/(?:www\.)?hackstore\.fo\/wp-content\/uploads\/[^"'\s<>]+/i);
+    if (im) portada = im[0];
+    var titulo = slug.replace(/-/g, ' ');
+    var tm = slice.match(/title=["']([^"']+)["']/i) || slice.match(/alt=["']([^"']+)["']/i);
+    if (tm && tm[1] && tm[1].length > 2) titulo = tm[1].trim();
+    items.push({
+      titulo: titulo,
+      title: titulo,
+      tipo: tipoItem,
+      type: tipoItem,
+      fuente: 'hackstore',
+      source: 'hackstore',
+      source_id: '2',
+      slug: slug,
+      portada: portada,
+      url: origin + '/2/' + tipoPath + '/' + encodeURIComponent(slug),
+      url_extract: origin + '/2/' + tipoPath + '/' + encodeURIComponent(slug),
+      link: HACKSTORE_BASE + '/' + kindPath + '/' + slug + '/'
+    });
+  }
+
+  return {
+    success: true,
+    fuente: 'hackstore',
+    source_id: '2',
+    seccion: seccion,
+    filtro: filtro || 'todas',
+    page: page,
+    total: items.length,
+    resultados: items
+  };
+}
+
+async function listarLamovieCatalogo(seccion, filtro, page, origin) {
+  seccion = (seccion || 'peliculas').toLowerCase();
+  filtro = (filtro || '').toLowerCase();
+  page = page || 1;
+  origin = origin || '';
+
+  var postType = 'movies';
+  var tipoItem = 'Pelicula';
+  var tipoPath = 'pelicula';
+  var pathWeb = 'peliculas';
+  if (seccion === 'series' || seccion === 'serie') {
+    postType = 'tvshows'; tipoItem = 'Serie'; tipoPath = 'serie'; pathWeb = 'series'; seccion = 'series';
+  } else if (seccion === 'animes' || seccion === 'anime') {
+    postType = 'animes'; tipoItem = 'Anime'; tipoPath = 'anime'; pathWeb = 'animes'; seccion = 'animes';
+  } else if (seccion === 'home') {
+    var p1 = await listarLamovieCatalogo('peliculas', '', 1, origin);
+    var p2 = await listarLamovieCatalogo('series', '', 1, origin);
+    var p3 = await listarLamovieCatalogo('animes', '', 1, origin);
+    return {
+      success: true, fuente: 'lamovie', source_id: '1', seccion: 'home', page: 1,
+      peliculas: (p1 && p1.resultados) || [],
+      series: (p2 && p2.resultados) || [],
+      animes: (p3 && p3.resultados) || [],
+      total: ((p1 && p1.total) || 0) + ((p2 && p2.total) || 0) + ((p3 && p3.total) || 0)
+    };
+  } else {
+    seccion = 'peliculas';
+  }
+
+  var seeds = ['the', 'love', 'man', 'star', 'night', 'day', 'life', 'world', 'girl', 'war'];
+  var seed = seeds[(Math.max(page, 1) - 1) % seeds.length];
+  var apiPage = Math.floor((Math.max(page, 1) - 1) / seeds.length) + 1;
+  var url = LAMOVIE_API + '/search?postType=' + encodeURIComponent(postType) +
+    '&q=' + encodeURIComponent(seed) + '&postsPerPage=24&page=' + apiPage;
+  var res = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+      'Accept': 'application/json',
+      'Referer': LAMOVIE_BASE + '/'
+    }
+  });
+  if (!res.ok) throw new Error('Lamovie catalogo HTTP ' + res.status);
+  var data = await res.json();
+  var posts = (data && data.data && data.data.posts) ? data.data.posts : [];
+  var items = [];
+  var seen = Object.create(null);
+  for (var i = 0; i < posts.length; i++) {
+    var post = posts[i];
+    if (!post || !post.slug || seen[post.slug]) continue;
+    if (post.type && postType === 'movies' && post.type !== 'movies' && post.type !== 'movie') continue;
+    if (post.type && postType === 'tvshows' && post.type !== 'tvshows') continue;
+    if (post.type && postType === 'animes' && post.type !== 'animes') continue;
+    seen[post.slug] = true;
+    var portada = '';
+    if (post.images && post.images.poster) {
+      portada = post.images.poster.indexOf('http') === 0
+        ? post.images.poster
+        : 'https://lamovie.org/wp-content/uploads' + post.images.poster;
+    }
+    items.push({
+      titulo: post.title || post.slug,
+      title: post.title || post.slug,
+      tipo: tipoItem,
+      type: tipoItem,
+      fuente: 'lamovie',
+      source: 'lamovie',
+      source_id: '1',
+      slug: post.slug,
+      portada: portada,
+      year: post.release_date ? String(post.release_date).slice(0, 4) : null,
+      url: origin + '/1/' + tipoPath + '/' + encodeURIComponent(post.slug),
+      url_extract: origin + '/1/' + tipoPath + '/' + encodeURIComponent(post.slug),
+      link: LAMOVIE_BASE + '/' + pathWeb + '/' + post.slug + '/',
+      postId: post._id || null
+    });
+  }
+
+  return {
+    success: true,
+    fuente: 'lamovie',
+    source_id: '1',
+    seccion: seccion,
+    filtro: filtro || 'todas',
+    page: page,
+    total: items.length,
+    resultados: items
+  };
+}
+
 
 async function listarPelisplusCatalogo(seccion, filtro, page, origin, baseOpt) {
   seccion = (seccion || 'peliculas').toLowerCase();
