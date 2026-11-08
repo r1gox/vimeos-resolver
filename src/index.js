@@ -1,4 +1,5 @@
 var __LAST_ORIGIN__ = "";
+var __PROXY_BASE__ = "";
 // src/index.js — MovieZone Worker (Lamovie + Hackstore + PelisPlusHD)
 // Module worker (Wrangler moderno). El patrón addEventListener('fetch', ...)
 // clásico se retiró: event.env no existe en ese modelo y es código muerto
@@ -608,6 +609,23 @@ async function handleRequest(request, env) {
     return new Response(null, {
       status: 204,
       headers: corsHeaders()
+    });
+  }
+
+  // Debug: ver si PROXY_BASE llega al Worker
+  if (parts[0] === 'debug' && parts[1] === 'env') {
+    var keys = [];
+    try {
+      if (env && typeof env === 'object') keys = Object.keys(env);
+    } catch (eK) {}
+    return json({
+      ok: true,
+      proxy_base_set: !!__PROXY_BASE__,
+      proxy_base: __PROXY_BASE__ || null,
+      env_keys: keys,
+      hint: !__PROXY_BASE__
+        ? 'PROXY_BASE no está. En Cloudflare → Worker → Settings → Variables and secrets → Add → Name: PROXY_BASE → Value: https://tu-app.onrender.com → Save → Deploy'
+        : 'PROXY_BASE OK'
     });
   }
 
@@ -2754,8 +2772,6 @@ function selectVariant(variants, preferHeight) {
 
 /** Proxy URL helper */
 // Base externa para HLS (Render/Railway/Vercel). Evita 403 de Vimeos a IPs Cloudflare.
-var __PROXY_BASE__ = '';
-
 function proxyUrlFor(origin, target, ref) {
   var base = (__PROXY_BASE__ || origin || '').replace(/\/$/, '');
   var path = '/proxy';
@@ -3050,12 +3066,28 @@ async function resolveVimeosEmbed(embedUrl, origin) {
   var cacheKey = 'vimeos:' + embedUrl;
   var cached = cacheGet(cacheKey);
   if (cached) {
-    // Reconstruir proxy_url con el origin actual
-    if (origin && cached.url && !cached.proxy_url) {
-      cached = Object.assign({}, cached);
-      cached.proxy_url = origin + '/proxy?url=' + encodeURIComponent(cached.url);
-      if (cached.master) cached.proxy_master = origin + '/proxy?url=' + encodeURIComponent(cached.master);
+    cached = Object.assign({}, cached);
+    var refC = 'https://vimeos.net/';
+    var uC = cached.url || cached.master;
+    var mC = cached.master || cached.url;
+    if (origin && uC) {
+      cached.proxy_url = proxyUrlFor(origin, uC, refC);
+      if (mC) cached.proxy_master = proxyUrlFor(origin, mC, refC);
+      if (__PROXY_BASE__) {
+        cached.play_url = cached.proxy_url;
+        cached.proxy_may_fail = false;
+        cached.proxy_host = 'external';
+        cached.note = 'Proxy HLS vía PROXY_BASE (cache).';
+      } else {
+        cached.play_url = uC;
+        cached.play_url_proxy = cached.proxy_url;
+        cached.proxy_may_fail = true;
+        cached.note = 'Sin PROXY_BASE (cache). Define PROXY_BASE en el Worker.';
+      }
     }
+    cached.from_cache = true;
+    cached.proxy_base_set = !!__PROXY_BASE__;
+    cached.proxy_base_value = __PROXY_BASE__ ? String(__PROXY_BASE__).slice(0, 80) : null;
     return cached;
   }
 
@@ -3246,16 +3278,18 @@ async function resolveVimeosEmbed(embedUrl, origin) {
     out.proxy_url = proxyUrlFor(origin, finalUrl, ref);
     out.proxy_master = proxyUrlFor(origin, master, ref);
     // Con PROXY_BASE (Vercel) el proxy suele funcionar; sin él CF → 403
+    out.proxy_base_set = !!__PROXY_BASE__;
+    out.proxy_base_value = __PROXY_BASE__ ? String(__PROXY_BASE__).slice(0, 120) : null;
     if (__PROXY_BASE__) {
       out.play_url = out.proxy_url;
-      out.proxy_host = 'vercel';
+      out.proxy_host = 'external';
       out.proxy_may_fail = false;
-      out.note = 'Proxy HLS vía PROXY_BASE (Vercel).';
+      out.note = 'Proxy HLS vía PROXY_BASE.';
     } else {
       out.play_url = finalUrl;
       out.play_url_proxy = out.proxy_url;
       out.proxy_may_fail = true;
-      out.note = 'Sin PROXY_BASE: el proxy en Cloudflare suele dar 403. Define PROXY_BASE=https://tu-app.vercel.app o usa url directa con Referer.';
+      out.note = 'Sin PROXY_BASE: añade Variable PROXY_BASE=https://tu-app.onrender.com en Settings del Worker y vuelve a desplegar.';
     }
   }
   cacheSet(cacheKey, out);
