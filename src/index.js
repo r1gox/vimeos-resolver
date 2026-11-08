@@ -595,6 +595,7 @@ var PALABRAS_BLOQUEADAS_BUSQUEDA = ['estrenos', 'populares', 'genero', 'categori
 async function handleRequest(request, env) {
   // API key TMDB opcional (Cloudflare Worker secret / var)
   try {
+    if (env && env.PROXY_BASE) __PROXY_BASE__ = String(env.PROXY_BASE).replace(/\/$/, '');
     if (env && env.TMDB_API_KEY) __TMDB_KEY__ = env.TMDB_API_KEY;
     if (env && env.OMDB_API_KEY) __OMDB_KEY__ = env.OMDB_API_KEY;
   } catch (eEnv) { /* ok */ }
@@ -2752,8 +2753,24 @@ function selectVariant(variants, preferHeight) {
 }
 
 /** Proxy URL helper */
+// Base externa para HLS (Render/Railway/Vercel). Evita 403 de Vimeos a IPs Cloudflare.
+var __PROXY_BASE__ = '';
+
 function proxyUrlFor(origin, target, ref) {
-  var u = origin + '/proxy?url=' + encodeURIComponent(target);
+  var base = (__PROXY_BASE__ || origin || '').replace(/\/$/, '');
+  var path = '/proxy';
+  if (__PROXY_BASE__) {
+    base = String(__PROXY_BASE__).replace(/\/$/, '');
+    if (/\/api\/proxy$/i.test(base)) {
+      path = '/api/proxy';
+      base = base.replace(/\/api\/proxy$/i, '');
+    } else if (/vercel\.app/i.test(base)) {
+      path = '/api/proxy';
+    } else {
+      path = '/proxy'; // Render, Railway, Fly, VPS
+    }
+  }
+  var u = base + path + '?url=' + encodeURIComponent(target);
   if (ref) u += '&ref=' + encodeURIComponent(ref);
   return u;
 }
@@ -3225,16 +3242,21 @@ async function resolveVimeosEmbed(embedUrl, origin) {
   out.headers = { 'Referer': 'https://vimeos.net/', 'Origin': 'https://vimeos.net' };
   out.referer = 'https://vimeos.net/';
   if (origin) {
-    // ref fijo a vimeos.net (no al host del CDN)
-    var refQ = '&ref=' + encodeURIComponent('https://vimeos.net/');
-    out.proxy_url = origin + '/proxy?url=' + encodeURIComponent(finalUrl) + refQ;
-    out.proxy_master = origin + '/proxy?url=' + encodeURIComponent(master) + refQ;
-    // El CDN de vimeos bloquea IPs de Cloudflare → el proxy suele dar 403.
-    // play_url = directo para apps que pueden mandar Referer; proxy_url por si acaso.
-    out.play_url = finalUrl;
-    out.play_url_proxy = out.proxy_url;
-    out.proxy_may_fail = true;
-    out.note = 'Si /proxy da 403, usa "url"/"play_url" con header Referer: https://vimeos.net/ (Roku/ExoPlayer). El CDN bloquea IPs de Cloudflare.';
+    var ref = 'https://vimeos.net/';
+    out.proxy_url = proxyUrlFor(origin, finalUrl, ref);
+    out.proxy_master = proxyUrlFor(origin, master, ref);
+    // Con PROXY_BASE (Vercel) el proxy suele funcionar; sin él CF → 403
+    if (__PROXY_BASE__) {
+      out.play_url = out.proxy_url;
+      out.proxy_host = 'vercel';
+      out.proxy_may_fail = false;
+      out.note = 'Proxy HLS vía PROXY_BASE (Vercel).';
+    } else {
+      out.play_url = finalUrl;
+      out.play_url_proxy = out.proxy_url;
+      out.proxy_may_fail = true;
+      out.note = 'Sin PROXY_BASE: el proxy en Cloudflare suele dar 403. Define PROXY_BASE=https://tu-app.vercel.app o usa url directa con Referer.';
+    }
   }
   cacheSet(cacheKey, out);
   return out;
