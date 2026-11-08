@@ -1,4 +1,11 @@
 var __LAST_ORIGIN__ = "";
+// ============================================================
+// PROXY HLS FUERA DE CLOUDFLARE (Render / Railway / VPS)
+// Pon aquí tu URL sin barra final. Ejemplo:
+//   https://vimeos-proxy-xxxx.onrender.com
+// Si dejas vacío, se usa env.PROXY_BASE del dashboard (si existe).
+// ============================================================
+var PROXY_BASE_HARDCODE = "https://CAMBIA-ESTO.onrender.com";
 var __PROXY_BASE__ = "";
 // src/index.js — MovieZone Worker (Lamovie + Hackstore + PelisPlusHD)
 // Module worker (Wrangler moderno). El patrón addEventListener('fetch', ...)
@@ -596,7 +603,14 @@ var PALABRAS_BLOQUEADAS_BUSQUEDA = ['estrenos', 'populares', 'genero', 'categori
 async function handleRequest(request, env) {
   // API key TMDB opcional (Cloudflare Worker secret / var)
   try {
-    if (env && env.PROXY_BASE) __PROXY_BASE__ = String(env.PROXY_BASE).replace(/\/$/, '');
+    if (env && env.PROXY_BASE) {
+      __PROXY_BASE__ = String(env.PROXY_BASE).replace(/\/$/, '');
+    } else if (typeof PROXY_BASE_HARDCODE === 'string' && PROXY_BASE_HARDCODE &&
+               PROXY_BASE_HARDCODE.indexOf('CAMBIA-ESTO') === -1) {
+      __PROXY_BASE__ = String(PROXY_BASE_HARDCODE).replace(/\/$/, '');
+    } else {
+      __PROXY_BASE__ = '';
+    }
     if (env && env.TMDB_API_KEY) __TMDB_KEY__ = env.TMDB_API_KEY;
     if (env && env.OMDB_API_KEY) __OMDB_KEY__ = env.OMDB_API_KEY;
   } catch (eEnv) { /* ok */ }
