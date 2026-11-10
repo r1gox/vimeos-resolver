@@ -5,7 +5,7 @@ var __LAST_ORIGIN__ = "";
 //   https://vimeos-proxy-xxxx.onrender.com
 // Si dejas vacío, se usa env.PROXY_BASE del dashboard (si existe).
 // ============================================================
-var PROXY_BASE_HARDCODE = "https://kinox-proxy.onrender.com";
+var PROXY_BASE_HARDCODE = "https://CAMBIA-ESTO.onrender.com";
 var __PROXY_BASE__ = "";
 // src/index.js — MovieZone Worker (Lamovie + Hackstore + PelisPlusHD)
 // Module worker (Wrangler moderno). El patrón addEventListener('fetch', ...)
@@ -3814,17 +3814,21 @@ async function buildProviderRichResponse(embedUrl, origin, forceProvider) {
   if (base.master && hlsList.indexOf(base.master) === -1) hlsList.unshift(base.master);
   if (base.url && hlsList.indexOf(base.url) === -1) hlsList.unshift(base.url);
 
-  // Preferir master.txt; premilkyway suele 403
+  // Preferir .m3u8 firmado; master.txt suele abortar/403
   hlsList.sort(function (a, b) {
-    var sa = /\.txt(\?|$)/.test(String(a)) || String(a).indexOf('master.txt') !== -1 ? 0 : 1;
-    var sb = /\.txt(\?|$)/.test(String(b)) || String(b).indexOf('master.txt') !== -1 ? 0 : 1;
-    if (sa !== sb) return sa - sb;
-    var pa = /premilkyway/i.test(String(a)) ? 1 : 0;
-    var pb = /premilkyway/i.test(String(b)) ? 1 : 0;
-    return pa - pb;
+    function score(u) {
+      var s = 0;
+      var su = String(u);
+      if (/\.m3u8(\?|$)/i.test(su)) s += 100;
+      if (/master\.txt|\.txt(\?|$)/i.test(su)) s -= 50;
+      if (/premilkyway/i.test(su)) s -= 20;
+      if (/urlset/i.test(su) && su.indexOf(',') !== -1) s -= 10;
+      return s;
+    }
+    return score(b) - score(a);
   });
 
-  // Comprobar status en paralelo (máx 4): solo URL "activo" con #EXT
+  // Comprobar status en paralelo (máx 4)
   var hlsStatus = [];
   var activePlaylist = null;
   var activeMaster = null;
@@ -3835,20 +3839,58 @@ async function buildProviderRichResponse(embedUrl, origin, forceProvider) {
         return { url: u, status: 'error', body: null };
       });
     }));
+    // Si CF bloquea todo, probar mejor .m3u8 vía PROXY_BASE (Render)
+    var anyActive = false;
+    for (var cj = 0; cj < checks.length; cj++) {
+      if (checks[cj].status === 'activo') anyActive = true;
+    }
+    if (!anyActive && typeof __PROXY_BASE__ === 'string' && __PROXY_BASE__) {
+      for (var ri = 0; ri < checks.length; ri++) {
+        var ru = checks[ri].url;
+        if (!/\.m3u8(\?|$)/i.test(String(ru))) continue;
+        try {
+          var pUrl = proxyUrlFor(origin, ru, referer);
+          var pr = await fetchWithTimeout(pUrl, {
+            method: 'GET',
+            headers: { 'User-Agent': HEADERS['User-Agent'], 'Accept': '*/*' },
+            redirect: 'follow'
+          }, 15000);
+          var pb = '';
+          try { pb = await pr.text(); } catch (eP) {}
+          if (pr.ok && pb && pb.indexOf('#EXT') !== -1) {
+            checks[ri] = { url: ru, status: 'activo (proxy)', body: pb };
+            anyActive = true;
+            break;
+          }
+          checks[ri].status = 'proxy ' + (pr.status || 'fail');
+        } catch (eR) {
+          checks[ri].status = 'proxy error: ' + (eR.message || eR);
+        }
+      }
+    }
     for (var j = 0; j < checks.length; j++) {
       var st = checks[j];
       hlsStatus.push({ url: st.url, status: st.status });
-      if (!activePlaylist && st.status === 'activo' && st.body && String(st.body).indexOf('#EXT') !== -1) {
+      if (!activePlaylist && (st.status === 'activo' || st.status === 'activo (proxy)') && st.body && String(st.body).indexOf('#EXT') !== -1) {
         activePlaylist = st.body;
         activeMaster = st.url;
       }
     }
   }
+  // Fallback: mejor .m3u8 (play irá por Render aunque CF dé 403)
   if (!activeMaster) {
     for (var fi = 0; fi < hlsList.length; fi++) {
-      if (/\.txt(\?|$)/.test(String(hlsList[fi])) || String(hlsList[fi]).indexOf('master.txt') !== -1) {
+      if (/\.m3u8(\?|$)/i.test(String(hlsList[fi]))) {
         activeMaster = hlsList[fi];
         break;
+      }
+    }
+    if (!activeMaster) {
+      for (var fj = 0; fj < hlsList.length; fj++) {
+        if (!/master\.txt|\.txt(\?|$)/i.test(String(hlsList[fj]))) {
+          activeMaster = hlsList[fj];
+          break;
+        }
       }
     }
     if (!activeMaster) activeMaster = base.master || base.url || (hlsList[0] || null);
@@ -3885,6 +3927,8 @@ async function buildProviderRichResponse(embedUrl, origin, forceProvider) {
     if (String(qualities[q].quality).indexOf('720') !== -1) { best = qualities[q]; break; }
   }
 
+  var playTarget = best ? best.url : activeMaster;
+  var playProxy = best ? best.proxy_url : (activeMaster ? proxyUrlFor(origin, activeMaster, referer) : null);
   return {
     success: true,
     provider: base.provider || provider,
@@ -3893,11 +3937,12 @@ async function buildProviderRichResponse(embedUrl, origin, forceProvider) {
     type: 'hls',
     videos: { hls: hlsList, hls_status: hlsStatus },
     qualities: qualities,
-    play_url: best ? best.proxy_url : (activeMaster ? proxyUrlFor(origin, activeMaster, referer) : null),
-    play_direct: best ? best.url : activeMaster,
-    proxy_url: best ? best.proxy_url : (activeMaster ? proxyUrlFor(origin, activeMaster, referer) : null),
-    url: best ? best.url : activeMaster,
-    master: activeMaster || base.master
+    play_url: playProxy || playTarget,
+    play_direct: playTarget,
+    proxy_url: playProxy,
+    url: playTarget,
+    master: activeMaster || base.master,
+    note: (activePlaylist ? 'HLS ok' : 'CDN bloquea desde CF; play_url usa proxy externo si PROXY_BASE está activo')
   };
 }
 
