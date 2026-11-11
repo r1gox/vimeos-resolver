@@ -9026,52 +9026,112 @@ function mapHackstoreEmbed(e) {
   // provider real desde host/url (API suele mandar server:"Online")
   var provider = null;
   try {
-    if (typeof extraerServidor === 'function') provider = extraerServidor(e.url);
+    if (typeof extraerServidor === "function") provider = extraerServidor(e.url);
   } catch (_) {}
   if (!provider || /^(online|server|servidor|unknown|desconocido)$/i.test(String(provider))) {
-    var host = String(e.host || '').toLowerCase().replace(/^www\./, '');
+    var host = String(e.host || "").toLowerCase().replace(/^www\./, "");
     if (!host) {
-      try { host = new URL(e.url).hostname.toLowerCase().replace(/^www\./, ''); } catch (_) {}
+      try {
+        host = new URL(e.url).hostname.toLowerCase().replace(/^www\./, "");
+      } catch (_) {}
     }
     if (host) {
-      // voe.sx → voe, streamwish.to → streamwish, vimeos.net → vimeos
-      var base = host.split('.')[0];
-      if (base === 'voe' || host.indexOf('voe') !== -1) provider = 'voe';
-      else if (host.indexOf('streamwish') !== -1 || host.indexOf('flaswish') !== -1 || host.indexOf('strwish') !== -1) provider = 'streamwish';
-      else if (host.indexOf('vidhide') !== -1 || host.indexOf('filelions') !== -1 || host.indexOf('smoothpre') !== -1) provider = 'vidhide';
-      else if (host.indexOf('streamtape') !== -1 || host.indexOf('strtape') !== -1) provider = 'streamtape';
-      else if (host.indexOf('vimeos') !== -1) provider = 'vimeos';
+      var base = host.split(".")[0];
+      if (base === "voe" || host.indexOf("voe") !== -1) provider = "voe";
+      else if (
+        host.indexOf("streamwish") !== -1 ||
+        host.indexOf("flaswish") !== -1 ||
+        host.indexOf("strwish") !== -1
+      )
+        provider = "streamwish";
+      else if (
+        host.indexOf("vidhide") !== -1 ||
+        host.indexOf("filelions") !== -1 ||
+        host.indexOf("smoothpre") !== -1
+      )
+        provider = "vidhide";
+      else if (host.indexOf("streamtape") !== -1 || host.indexOf("strtape") !== -1)
+        provider = "streamtape";
+      else if (host.indexOf("vimeos") !== -1) provider = "vimeos";
       else if (base) provider = base;
     }
   }
-  if (!provider) provider = e.server || 'online';
+  if (!provider) provider = e.server || "online";
   provider = String(provider).toLowerCase().trim();
+
+  // Idioma: API/HTML pueden traer lang | language | idioma | label | video_language
+  var rawLang =
+    e.lang ||
+    e.language ||
+    e.idioma ||
+    e.label ||
+    e.video_language ||
+    e.lang_code ||
+    "";
+  if (!rawLang && e.subtitle) rawLang = "Subtitulado";
+  // Si la fuente no manda idioma, en hackstore casi todo es latino
+  if (!rawLang) rawLang = "Latino";
+
+  var idioma =
+    typeof normalizarIdiomaLabel === "function"
+      ? normalizarIdiomaLabel(rawLang)
+      : String(rawLang);
+  if (!idioma || /desconocido|unknown|^null$/i.test(idioma)) idioma = "Latino";
+
+  var language = String(idioma).toUpperCase();
+  if (/lat/i.test(idioma)) language = "LATINO";
+  else if (/sub/i.test(idioma)) language = "SUBTITULADO";
+  else if (/cast/i.test(idioma)) language = "CASTELLANO";
+  else if (/eng|ingl/i.test(idioma)) language = "ENGLISH";
+  else if (/dual/i.test(idioma)) language = "DUAL";
+
+  var lang_code = null;
+  if (typeof langCodeLamovie === "function") lang_code = langCodeLamovie(idioma);
+  if (!lang_code) {
+    if (language === "LATINO") lang_code = "LAT";
+    else if (language === "SUBTITULADO") lang_code = "SUB";
+    else if (language === "CASTELLANO") lang_code = "CAST";
+    else if (language === "ENGLISH") lang_code = "ENG";
+    else if (language === "DUAL") lang_code = "DUAL";
+  }
+
   return {
     url: e.url,
     provider: provider,
     servidor: provider,
     server: provider,
     name: provider,
-    idioma: e.lang || 'Desconocido',
-    lang: e.lang || null,
-    calidad: e.quality || null,
+    idioma: idioma,
+    lang: idioma,
+    language: language,
+    lang_code: lang_code,
+    calidad: e.quality || e.calidad || null,
     host: e.host || null,
-    subtitle: !!e.subtitle,
-    tipo: 'reproductor',
-    fuente: 'hackstore'
+    subtitle: !!e.subtitle || /sub/i.test(String(idioma)),
+    tipo: "reproductor",
+    fuente: "hackstore"
   };
 }
 function mapHackstoreDownload(d) {
   if (!d || !d.url) return null;
+  var raw =
+    d.lang || d.language || d.idioma || d.label || "";
+  var idioma =
+    typeof normalizarIdiomaLabel === "function"
+      ? normalizarIdiomaLabel(raw || "Latino")
+      : raw || "Latino";
   return {
     url: d.url,
-    servidor: d.server || 'Download',
-    idioma: d.lang || null,
-    calidad: d.quality || null,
+    servidor: d.server || "Download",
+    idioma: idioma,
+    language: String(idioma).toUpperCase(),
+    lang_code:
+      typeof langCodeLamovie === "function" ? langCodeLamovie(idioma) : null,
+    calidad: d.quality || d.calidad || null,
     size: d.size || null,
     subtitle: !!d.subtitle,
-    tipo: 'descarga',
-    fuente: 'hackstore'
+    tipo: "descarga",
+    fuente: "hackstore"
   };
 }
 async function hackstoreFetchCard(kind, tmdbId) {
