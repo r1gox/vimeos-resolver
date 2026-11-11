@@ -7605,7 +7605,7 @@ function slimResultadoLista(item, origin) {
   var fuente = item.fuente || (Array.isArray(item.fuentes) && item.fuentes[0]) || null;
   var sid = item.source_id != null ? String(item.source_id) : sourceIdFromName(fuente);
   var slug = item.slug || null;
-  var tipo = item.tipo || 'Pelicula';
+  var tipo = item.tipo || item.type || 'Pelicula';
   var tipoPath = tipoPathDesdeTipo(tipo);
   var url = item.url_extract || item.url || item.link || null;
   if (!url && slug && sid) {
@@ -7617,6 +7617,15 @@ function slimResultadoLista(item, origin) {
     var ym = String(year).match(/(19|20)\d{2}/);
     year = ym ? ym[0] : String(year);
   }
+
+  // Idioma: viene del item o, en hackstore (2), Latino por defecto
+  var lang =
+    item.lang ||
+    item.idioma ||
+    item.language ||
+    null;
+  if (!lang && (sid === '2' || fuente === 'hackstore')) lang = 'Latino';
+
   var out = {
     title: (function () {
       var t = limpiarTitulo(item.titulo || item.nombre || item.title || '') || '';
@@ -7631,14 +7640,13 @@ function slimResultadoLista(item, origin) {
     portada: image,
     year: year || null,
     source: fuente,
-    type: tipo
+    type: tipo,
+    lang: lang || null
   };
   if (sid) out.source_id = sid;
-  // Detalle básico (sin meta pesada / sin Cinemeta): /{id}/{tipo}/b/{slug}
   if (slug && sid) {
     out.url_vid = (origin || '') + '/' + sid + '/' + tipoPath + '/b/' + slug;
   }
-  // total episodios solo en DETALLE (junto a temporadas), no en listado
   Object.keys(out).forEach(function (k) {
     if (out[k] == null) delete out[k];
   });
