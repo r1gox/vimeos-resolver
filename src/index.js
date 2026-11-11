@@ -7612,13 +7612,37 @@ function slimResultadoLista(item, origin) {
     url = (origin || '') + '/' + sid + '/' + tipoPath + '/' + slug;
   }
   var image = item.portada || item.image || item.portada_fuente_raw || null;
+
+  // Año: campo year, fecha, o del título "(2026)"
   var year = item.year;
   if (year != null) {
     var ym = String(year).match(/(19|20)\d{2}/);
     year = ym ? ym[0] : String(year);
   }
+  if (!year) {
+    var titleForYear = item.titulo || item.nombre || item.title || slug || '';
+    var ym2 = String(titleForYear).match(/\(((?:19|20)\d{2})\)/);
+    if (ym2) year = ym2[1];
+    else {
+      var ym3 = String(titleForYear).match(/\b((?:19|20)\d{2})\b/);
+      if (ym3) year = ym3[1];
+    }
+  }
+  if (!year && item.fecha_estreno) {
+    var ym4 = String(item.fecha_estreno).match(/(19|20)\d{2}/);
+    if (ym4) year = ym4[1];
+  }
 
-  // Idioma: viene del item o, en hackstore (2), Latino por defecto
+  // date: fecha completa si hay; si no, el año
+  var date =
+    item.date ||
+    item.fecha ||
+    item.fecha_estreno ||
+    item.release_date ||
+    null;
+  if (date != null) date = String(date).trim() || null;
+  if (!date && year) date = String(year);
+
   var lang =
     item.lang ||
     item.idioma ||
@@ -7626,22 +7650,24 @@ function slimResultadoLista(item, origin) {
     null;
   if (!lang && (sid === '2' || fuente === 'hackstore')) lang = 'Latino';
 
+  var titleOut = (function () {
+    var t = limpiarTitulo(item.titulo || item.nombre || item.title || '') || '';
+    if (tituloPareceRoto(t)) {
+      var fs = tituloDesdeSlug(item.slug);
+      if (fs) t = fs;
+    }
+    return t || null;
+  })();
+
   var out = {
-    title: (function () {
-      var t = limpiarTitulo(item.titulo || item.nombre || item.title || '') || '';
-      if (tituloPareceRoto(t)) {
-        var fs = tituloDesdeSlug(item.slug);
-        if (fs) t = fs;
-      }
-      return t || null;
-    })(),
+    title: titleOut,
     slug: slug,
     url: url,
     portada: image,
-    year: year || null,
     source: fuente,
     type: tipo,
-    lang: lang || null
+    lang: lang || null,
+    year: year || null
   };
   if (sid) out.source_id = sid;
   if (slug && sid) {
