@@ -5,7 +5,7 @@ var __LAST_ORIGIN__ = "";
 //   https://vimeos-proxy-xxxx.onrender.com
 // Si dejas vacío, se usa env.PROXY_BASE del dashboard (si existe).
 // ============================================================
-var PROXY_BASE_HARDCODE = "https://kinox-proxy.onrender.com";
+//var PROXY_BASE_HARDCODE = "https://kinox-proxy.onrender.com";
 var __PROXY_BASE__ = "";
 // src/index.js — MovieZone Worker (Lamovie + Hackstore + PelisPlusHD)
 // Module worker (Wrangler moderno). El patrón addEventListener('fetch', ...)
